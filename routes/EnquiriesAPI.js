@@ -54,6 +54,22 @@ const buildFallbackGreeting = (summary) => {
   return `Dr. ${username}, your workspace is looking strong with ${counts.courses} courses, ${counts.lectures} lectures, and ${counts.terminology} saved medical terms ready for today.`;
 };
 
+const getGreetingErrorReply = (error, summary) => {
+  const message = String(error?.message || "").toLowerCase();
+  const status = error?.status;
+
+  if (
+    status === 429 ||
+    message.includes("quota") ||
+    message.includes("billing") ||
+    message.includes("rate limit")
+  ) {
+    return "ChatGPT API has low balance.";
+  }
+
+  return buildFallbackGreeting(summary);
+};
+
 EnquiriesRouter.post("/", async function (req, res) {
   const client = getOpenAIClient();
   const message = req.body?.message?.trim();
@@ -151,8 +167,9 @@ Database summary:
       source: "openai",
     });
   } catch (error) {
-    return res.status(500).json({
-      message: error?.message || "Unable to generate greeting.",
+    return res.status(200).json({
+      reply: getGreetingErrorReply(error, summary),
+      source: "fallback",
     });
   }
 });
