@@ -113,6 +113,7 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
   const client = getOpenAIClient();
   const userId = req.body?.userId?.trim();
   const username = req.body?.username?.trim();
+  let summary = null;
 
   if (!userId && !username) {
     return res.status(400).json({
@@ -135,7 +136,7 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
       });
     }
 
-    const summary = buildUserSummary(user);
+    summary = buildUserSummary(user);
 
     if (!client) {
       return res.status(200).json({
@@ -168,7 +169,17 @@ Database summary:
     });
   } catch (error) {
     return res.status(200).json({
-      reply: getGreetingErrorReply(error, summary),
+      reply: getGreetingErrorReply(
+        error,
+        summary || {
+          username: username || "Doctor",
+          counts: {
+            courses: 0,
+            lectures: 0,
+            terminology: 0,
+          },
+        }
+      ),
       source: "fallback",
     });
   }
