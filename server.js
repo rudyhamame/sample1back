@@ -58,7 +58,7 @@ app.use(
       return callback(new Error("CORS origin not allowed."));
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
+  }),
 );
 app.use(morgan("dev"));
 app.use(express.json());
