@@ -15,6 +15,29 @@ import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 // const PostsAPI = require("./routes/PostsAPI");
 
 import "dotenv/config.js";
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) {
+    return true;
+  }
+
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const hostname = new URL(origin).hostname;
+    return hostname.endsWith(".vercel.app");
+  } catch {
+    return false;
+  }
+};
 //////////////////////////connect to mongoDB///////////////////////////////
 mongoose.connect(process.env.DB_CONNECTION);
 const db = mongoose.connection;
@@ -25,7 +48,18 @@ db.once("open", function () {
 ////////////////////////////////////////////////////////////////////
 
 //we use this middleware to access the body of the request
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (isAllowedOrigin(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS origin not allowed."));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
 app.use(morgan("dev"));
 app.use(express.json());
 
