@@ -9,6 +9,31 @@ import jwt from "jsonwebtoken";
 import "dotenv/config.js";
 import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
+
+const recalculateCourseLectureTotals = (user) => {
+  const lectures = Array.isArray(user.schoolPlanner?.lectures)
+    ? user.schoolPlanner.lectures
+    : [];
+
+  user.schoolPlanner.courses.forEach((course) => {
+    let courseLength = 0;
+    let courseProgress = 0;
+
+    lectures.forEach((lecture) => {
+      if (
+        lecture.lecture_course === course.course_name &&
+        lecture.lecture_partOfPlan === true
+      ) {
+        courseLength += Number(lecture.lecture_length) || 0;
+        courseProgress += Number(lecture.lecture_progress) || 0;
+      }
+    });
+
+    course.course_length = courseLength;
+    course.course_progress = courseProgress;
+  });
+};
+
 //Login API
 UserRouter.post("/login", function (req, res, next) {
   UserModel.findOne({
@@ -720,6 +745,7 @@ UserRouter.post("/addLecture/:my_id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
       user.schoolPlanner.lectures.push(req.body);
+      recalculateCourseLectureTotals(user);
       return user.save();
     })
     .then((result) => {
@@ -766,6 +792,7 @@ UserRouter.delete(
           user.schoolPlanner.lectures.splice(lectureIndex, 1);
         }
 
+        recalculateCourseLectureTotals(user);
         return user.save();
       })
       .then((result) => {
@@ -904,6 +931,7 @@ UserRouter.put(
               user.schoolPlanner.lectures[i].lecture_pagesFinished.length;
           }
         }
+        recalculateCourseLectureTotals(user);
         user.save();
         return lectureFound;
       })
@@ -993,6 +1021,7 @@ UserRouter.post("/editLecture/:my_id/:lectureID", function (req, res, next) {
           user.schoolPlanner.lectures.splice(i, 1, req.body);
         }
       }
+      recalculateCourseLectureTotals(user);
       return user.save();
     })
     .then((result) => {
