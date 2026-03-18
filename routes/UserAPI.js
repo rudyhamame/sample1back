@@ -1016,10 +1016,12 @@ UserRouter.put("/unhideUncheckedLectures/:my_id", function (req, res, next) {
 UserRouter.post("/editLecture/:my_id/:lectureID", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      for (i = 0; i < user.schoolPlanner.lectures.length; i++) {
-        if (user.schoolPlanner.lectures[i]._id == req.params.lectureID) {
-          user.schoolPlanner.lectures.splice(i, 1, req.body);
-        }
+      const lectureIndex = user.schoolPlanner.lectures.findIndex(
+        (lecture) => String(lecture._id) === req.params.lectureID,
+      );
+
+      if (lectureIndex !== -1) {
+        user.schoolPlanner.lectures.splice(lectureIndex, 1, req.body);
       }
       recalculateCourseLectureTotals(user);
       return user.save();
