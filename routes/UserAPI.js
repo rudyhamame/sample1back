@@ -779,11 +779,14 @@ UserRouter.delete(
 UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      for (i = 0; i < user.schoolPlanner.courses.length; i++) {
-        if (user.schoolPlanner.courses[i]._id == req.params.courseID) {
-          user.schoolPlanner.courses.splice(i, 1, req.body);
-        }
+      const courseIndex = user.schoolPlanner.courses.findIndex(
+        (course) => String(course._id) === req.params.courseID,
+      );
+
+      if (courseIndex !== -1) {
+        user.schoolPlanner.courses.splice(courseIndex, 1, req.body);
       }
+
       return user.save();
     })
     .then((result) => {
