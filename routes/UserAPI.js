@@ -784,7 +784,40 @@ UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
       );
 
       if (courseIndex !== -1) {
+        const previousCourse = user.schoolPlanner.courses[courseIndex];
+        const previousCourseName = previousCourse.course_name;
+        const previousInstructors = Array.isArray(previousCourse.course_instructors)
+          ? previousCourse.course_instructors
+          : [];
+        const nextInstructors = Array.isArray(req.body.course_instructors)
+          ? req.body.course_instructors
+          : [];
+
         user.schoolPlanner.courses.splice(courseIndex, 1, req.body);
+
+        user.schoolPlanner.lectures = user.schoolPlanner.lectures.map((lecture) => {
+          if (lecture.lecture_course !== previousCourseName) {
+            return lecture;
+          }
+
+          let nextLectureInstructor = lecture.lecture_instructor;
+
+          if (previousInstructors.includes(lecture.lecture_instructor)) {
+            if (nextInstructors.includes(lecture.lecture_instructor)) {
+              nextLectureInstructor = lecture.lecture_instructor;
+            } else if (nextInstructors.length > 0) {
+              nextLectureInstructor = nextInstructors[0];
+            } else {
+              nextLectureInstructor = "-";
+            }
+          }
+
+          return {
+            ...lecture.toObject(),
+            lecture_course: req.body.course_name,
+            lecture_instructor: nextLectureInstructor,
+          };
+        });
       }
 
       return user.save();
