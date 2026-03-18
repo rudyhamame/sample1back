@@ -814,10 +814,12 @@ UserRouter.post(
                 user.schoolPlanner.courses[i].course_instructors,
               course_grade: user.schoolPlanner.courses[i].course_grade,
               course_fullGrade: user.schoolPlanner.courses[i].course_fullGrade,
+              course_exams: user.schoolPlanner.courses[i].course_exams,
               course_length: req.body.course_length,
               course_progress: req.body.course_progress,
               course_partOfPlan:
                 user.schoolPlanner.courses[i].course_partOfPlan,
+              exam_type: user.schoolPlanner.courses[i].exam_type,
               exam_date: user.schoolPlanner.courses[i].exam_date,
               exam_time: user.schoolPlanner.courses[i].exam_time,
             });
