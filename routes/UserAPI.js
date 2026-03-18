@@ -15,7 +15,7 @@ const recalculateCourseLectureTotals = (user) => {
     ? user.schoolPlanner.lectures
     : [];
 
-  user.schoolPlanner.courses.forEach((course) => {
+  user.schoolPlanner.courses = user.schoolPlanner.courses.map((course) => {
     let courseLength = 0;
     let courseProgress = 0;
 
@@ -29,8 +29,14 @@ const recalculateCourseLectureTotals = (user) => {
       }
     });
 
-    course.course_length = courseLength;
-    course.course_progress = courseProgress;
+    const normalizedCourse =
+      typeof course.toObject === "function" ? course.toObject() : { ...course };
+
+    return {
+      ...normalizedCourse,
+      course_length: courseLength,
+      course_progress: courseProgress,
+    };
   });
 };
 
