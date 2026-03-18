@@ -758,11 +758,14 @@ UserRouter.delete(
   function (req, res, next) {
     UserModel.findOne({ _id: req.params.my_id })
       .then((user) => {
-        for (i = 0; i < user.schoolPlanner.lectures.length; i++) {
-          if (user.schoolPlanner.lectures[i]._id == req.params.lectureID) {
-            user.schoolPlanner.lectures.splice(i, 1);
-          }
+        const lectureIndex = user.schoolPlanner.lectures.findIndex(
+          (lecture) => String(lecture._id) === req.params.lectureID,
+        );
+
+        if (lectureIndex !== -1) {
+          user.schoolPlanner.lectures.splice(lectureIndex, 1);
         }
+
         return user.save();
       })
       .then((result) => {
