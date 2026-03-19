@@ -81,13 +81,65 @@ const io = new Server(server, {
 
 app.locals.io = io;
 
+const activeChatPartnersByUser = new Map();
+
+const emitChatPresence = ({ userId, friendId, isChatting }) => {
+  if (!userId || !friendId) {
+    return;
+  }
+
+  io.to(`user:${userId}`).emit("chat:presence", {
+    userId,
+    friendId,
+    isChatting,
+  });
+  io.to(`user:${friendId}`).emit("chat:presence", {
+    userId,
+    friendId,
+    isChatting,
+  });
+};
+
 io.on("connection", (socket) => {
   socket.on("user:join", ({ userId }) => {
     if (!userId) {
       return;
     }
 
+    socket.data.userId = userId;
     socket.join(`user:${userId}`);
+  });
+
+  socket.on("user:chat-status", ({ userId, friendId, isChatting }) => {
+    if (!userId || !friendId) {
+      return;
+    }
+
+    if (isChatting) {
+      activeChatPartnersByUser.set(String(userId), String(friendId));
+    } else {
+      activeChatPartnersByUser.delete(String(userId));
+    }
+
+    emitChatPresence({
+      userId: String(userId),
+      friendId: String(friendId),
+      isChatting: Boolean(isChatting),
+    });
+  });
+
+  socket.on("disconnect", () => {
+    const userId = socket.data.userId ? String(socket.data.userId) : "";
+    const friendId = activeChatPartnersByUser.get(userId);
+
+    if (userId && friendId) {
+      activeChatPartnersByUser.delete(userId);
+      emitChatPresence({
+        userId,
+        friendId,
+        isChatting: false,
+      });
+    }
   });
 });
 
