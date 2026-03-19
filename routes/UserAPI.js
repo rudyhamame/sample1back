@@ -43,8 +43,21 @@ const recalculateCourseLectureTotals = (user) => {
   });
 };
 
+const getUserAndFriendIds = (user) => {
+  if (!user) {
+    return [];
+  }
+
+  const friendIds = Array.isArray(user.friends)
+    ? user.friends.map((friend) => String(friend))
+    : [];
+
+  return [String(user._id), ...friendIds];
+};
+
 //Login API
 UserRouter.post("/login", function (req, res, next) {
+  const io = req.app.locals.io;
   UserModel.findOne({
     "info.username": req.body.username,
   })
@@ -63,6 +76,15 @@ UserRouter.post("/login", function (req, res, next) {
               }
             )
               .then((updatedUser) => {
+                emitUserRefresh(
+                  io,
+                  getUserAndFriendIds(updatedUser),
+                  "connection:changed",
+                  {
+                    isConnected: true,
+                    targetUserId: String(updatedUser._id),
+                  }
+                );
                 const token = jwt.sign(
                   {
                     username: updatedUser.info.username,
@@ -588,6 +610,7 @@ UserRouter.post("/newTerminology/:my_id", function (req, res, next) {
 
 //////////////////////Posting update for a user before leaving app
 UserRouter.put("/isOnline/:id", function (req, res, next) {
+  const io = req.app.locals.io;
   UserModel.findByIdAndUpdate(
     { _id: req.params.id },
     {
@@ -595,10 +618,15 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
     },
     {
       useFindAndModify: false,
+      new: true,
     }
   )
-    .then((response) => {
-      res.status(201).json(response);
+    .then((user) => {
+      emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
+        isConnected: Boolean(req.body.isConnected),
+        targetUserId: String(req.params.id),
+      });
+      res.status(201).json(user);
     })
     .catch(next);
 });
