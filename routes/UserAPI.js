@@ -147,6 +147,15 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
       message: "Verification code sent successfully.",
     });
   } catch (error) {
+    const message = String(error?.message || "");
+
+    if (message.includes("Missing SMTP")) {
+      return res.status(503).json({
+        message:
+          "Email verification is not configured on the backend yet. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.",
+      });
+    }
+
     return next(error);
   }
 });
