@@ -9,6 +9,8 @@ import jwt from "jsonwebtoken";
 import "dotenv/config.js";
 import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
+import SignupVerificationModel from "../models/SignupVerification.js";
+import { sendSignupVerificationEmail } from "../helpers/signupVerificationEmail.js";
 
 const recalculateCourseLectureTotals = (user) => {
   const lectures = Array.isArray(user.schoolPlanner?.lectures)
@@ -76,42 +78,137 @@ UserRouter.post("/login", function (req, res, next) {
     .catch(next);
 });
 
-//SignUp API
-UserRouter.post("/signup", function (req, res, next) {
-  let flag = true;
-  UserModel.findOne({ "info.username": req.body.username })
-    .then((user) => {
-      if (!user) {
-        bcrypt.hash(req.body.password, 10, (err, hash) => {
-          if (!err) {
-            UserModel.create({
-              "info.username": req.body.username,
-              "info.password": hash,
-              "info.firstname": req.body.firstname,
-              "info.lastname": req.body.lastname,
-              "info.email": req.body.email,
-              "info.dob": req.body.dob,
-            })
-              .then((response) => {
-                return response._id;
-              })
-              .then((userID) => {
-                if (flag == true) {
-                  res.status(201).json({
-                    userID: userID,
-                  });
-                } else {
-                  res.status(500).json(user);
-                }
-              });
-          }
-        });
-      } else {
-        flag = false;
-      }
-    })
+// Request signup verification code by email
+UserRouter.post("/signup/request-code", async function (req, res, next) {
+  try {
+    const { username, password, firstname, lastname, email, dob } = req.body;
 
-    .catch(next);
+    if (!username || !password || !firstname || !lastname || !email) {
+      return res.status(400).json({
+        message: "Please provide all required signup information.",
+      });
+    }
+
+    const [existingUsernameUser, existingEmailUser] = await Promise.all([
+      UserModel.findOne({ "info.username": username }),
+      UserModel.findOne({ "info.email": email }),
+    ]);
+
+    if (existingUsernameUser) {
+      return res.status(409).json({
+        message: "That username is already in use.",
+      });
+    }
+
+    if (existingEmailUser) {
+      return res.status(409).json({
+        message: "That email address is already in use.",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const verificationCode = String(
+      Math.floor(100000 + Math.random() * 900000)
+    );
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await SignupVerificationModel.findOneAndUpdate(
+      { username },
+      {
+        username,
+        email,
+        firstname,
+        lastname,
+        dob,
+        passwordHash,
+        verificationCode,
+        expiresAt,
+      },
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    await SignupVerificationModel.deleteMany({
+      email,
+      username: { $ne: username },
+    });
+
+    await sendSignupVerificationEmail({
+      email,
+      firstname,
+      code: verificationCode,
+    });
+
+    return res.status(200).json({
+      message: "Verification code sent successfully.",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// Complete signup after verification
+UserRouter.post("/signup/verify-code", async function (req, res, next) {
+  try {
+    const { username, email, verificationCode } = req.body;
+
+    if (!username || !email || !verificationCode) {
+      return res.status(400).json({
+        message: "Username, email, and verification code are required.",
+      });
+    }
+
+    const pendingSignup = await SignupVerificationModel.findOne({
+      username,
+      email,
+    });
+
+    if (!pendingSignup) {
+      return res.status(404).json({
+        message: "No pending signup was found for this account.",
+      });
+    }
+
+    if (pendingSignup.expiresAt.getTime() < Date.now()) {
+      await pendingSignup.deleteOne();
+      return res.status(410).json({
+        message: "Verification code expired. Please request a new one.",
+      });
+    }
+
+    if (pendingSignup.verificationCode !== String(verificationCode).trim()) {
+      return res.status(401).json({
+        message: "Verification code is not correct.",
+      });
+    }
+
+    const createdUser = await UserModel.create({
+      "info.username": pendingSignup.username,
+      "info.password": pendingSignup.passwordHash,
+      "info.firstname": pendingSignup.firstname,
+      "info.lastname": pendingSignup.lastname,
+      "info.email": pendingSignup.email,
+      "info.dob": pendingSignup.dob,
+    });
+
+    await pendingSignup.deleteOne();
+
+    return res.status(201).json({
+      userID: createdUser._id,
+      message: "Signup completed successfully.",
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        message: "This account already exists.",
+      });
+    }
+
+    return next(error);
+  }
 });
 
 //Modifiying User's Connection Status
@@ -168,6 +265,28 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
     .then((array2) => {
       res.status(200).json({
         array: array2,
+      });
+    })
+    .catch(next);
+});
+
+// Public doctor profile with populated posts
+UserRouter.get("/profile/:username", function (req, res, next) {
+  UserModel.findOne({ "info.username": req.params.username })
+    .select("info.username info.firstname info.lastname posts")
+    .populate("posts")
+    .then((user) => {
+      if (!user) {
+        return res.status(404).json({
+          message: "Doctor profile not found.",
+        });
+      }
+
+      return res.status(200).json({
+        username: user.info.username,
+        firstname: user.info.firstname,
+        lastname: user.info.lastname,
+        posts: Array.isArray(user.posts) ? user.posts : [],
       });
     })
     .catch(next);
