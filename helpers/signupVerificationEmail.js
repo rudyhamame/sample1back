@@ -15,7 +15,11 @@ const buildTransporter = () => {
   return nodemailer.createTransport({
     host,
     port,
+    family: 4,
     secure: process.env.SMTP_SECURE === "true" || port === 465,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
     auth: {
       user,
       pass,
