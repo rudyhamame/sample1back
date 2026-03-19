@@ -4,6 +4,22 @@ import UserModel from "../models/Users.js";
 import { emitUserRefresh } from "../helpers/realtime.js";
 const ChatRouter = express.Router();
 
+const ensureChatDocument = async (userId) => {
+  await ChatModel.findOneAndUpdate(
+    { _id: userId },
+    { $setOnInsert: { _id: userId, conversation: [] } },
+    { upsert: true, new: true }
+  );
+
+  await UserModel.findByIdAndUpdate(
+    userId,
+    { chat: userId },
+    { useFindAndModify: false }
+  );
+
+  return ChatModel.findOne({ _id: userId });
+};
+
 // ///Add your chat
 // ChatRouter.post("/addNew/:my_id", function (req, res, next) {
 //   ChatModel.findOne({ _id: req.params.my_id })
@@ -60,7 +76,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
   const io = req.app.locals.io;
 
   Promise.all([
-    ChatModel.findOne({ _id: senderId }).then((chatObject) => {
+    ensureChatDocument(senderId).then((chatObject) => {
       chatObject.conversation.push({
         _id: friendId,
         message,
@@ -68,7 +84,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
       });
       return chatObject.save();
     }),
-    ChatModel.findOne({ _id: friendId }).then((chatObject) => {
+    ensureChatDocument(friendId).then((chatObject) => {
       chatObject.conversation.push({
         _id: senderId,
         message,
@@ -90,18 +106,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
 
 //////////////////////Preparing chat
 ChatRouter.post("/prepareChat/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (user.chat == null) {
-        UserModel.findByIdAndUpdate(
-          { _id: req.params.my_id },
-          { chat: req.params.my_id },
-          { useFindAndModify: false }
-        ).then(() => {
-          ChatModel.create({ _id: req.params.my_id });
-        });
-      }
-    })
+  ensureChatDocument(req.params.my_id)
     .then(() => {
       return res.status(201).json();
     })
