@@ -278,7 +278,9 @@ UserRouter.get("/update/:id", function (req, res, next) {
     .populate("posts")
     .then((profile) => {
       res.status(200).json({
-        // chat: profile.chat.conversation,
+        chat: Array.isArray(profile.chat?.conversation)
+          ? profile.chat.conversation
+          : [],
         friends: profile.friends,
         notifications: profile.notifications,
         posts: profile.posts,
