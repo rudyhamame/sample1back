@@ -150,28 +150,19 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
     );
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await SignupVerificationModel.findOneAndUpdate(
-      { username },
-      {
-        username,
-        email,
-        firstname,
-        lastname,
-        dob,
-        passwordHash,
-        verificationCode,
-        expiresAt,
-      },
-      {
-        upsert: true,
-        new: true,
-        setDefaultsOnInsert: true,
-      }
-    );
-
     await SignupVerificationModel.deleteMany({
+      $or: [{ username }, { email }],
+    });
+
+    await SignupVerificationModel.create({
+      username,
       email,
-      username: { $ne: username },
+      firstname,
+      lastname,
+      dob,
+      passwordHash,
+      verificationCode,
+      expiresAt,
     });
 
     await sendSignupVerificationEmail({
