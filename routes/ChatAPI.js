@@ -1,6 +1,7 @@
 import express from "express";
 import ChatModel from "../models/Chat.js";
 import UserModel from "../models/Users.js";
+import { emitUserRefresh } from "../helpers/realtime.js";
 const ChatRouter = express.Router();
 
 // ///Add your chat
@@ -53,30 +54,36 @@ const ChatRouter = express.Router();
 
 //Send to friend chat
 ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
-  ChatModel.findOne({ _id: req.params.my_id })
-    .then((chatObject) => {
+  const senderId = req.params.my_id;
+  const friendId = req.params.friendID;
+  const { message } = req.body;
+  const io = req.app.locals.io;
+
+  Promise.all([
+    ChatModel.findOne({ _id: senderId }).then((chatObject) => {
       chatObject.conversation.push({
-        _id: req.params.friendID,
-        message: req.body.message,
+        _id: friendId,
+        message,
         from: "me",
       });
       return chatObject.save();
-    })
-    .then(() => {
-      res.status(201).json();
-    })
-    .catch(next);
-  ChatModel.findOne({ _id: req.params.friendID })
-    .then((chatObject) => {
+    }),
+    ChatModel.findOne({ _id: friendId }).then((chatObject) => {
       chatObject.conversation.push({
-        _id: req.params.my_id,
-        message: req.body.message,
+        _id: senderId,
+        message,
         from: "them",
       });
       return chatObject.save();
-    })
+    }),
+  ])
     .then(() => {
-      res.status(201).json();
+      emitUserRefresh(io, [senderId, friendId], "chat:message", {
+        friendId,
+      });
+      res.status(201).json({
+        message: "Message sent.",
+      });
     })
     .catch(next);
 });

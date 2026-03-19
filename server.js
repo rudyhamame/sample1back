@@ -2,7 +2,10 @@ import morgan from "morgan";
 import mongoose from "mongoose";
 import cors from "cors";
 import express from "express";
+import http from "http";
+import { Server } from "socket.io";
 const app = express(); // initialie express
+const server = http.createServer(app);
 ////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////
@@ -63,6 +66,31 @@ app.use(
 app.use(morgan("dev"));
 app.use(express.json());
 
+const io = new Server(server, {
+  cors: {
+    origin(origin, callback) {
+      if (isAllowedOrigin(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Socket origin not allowed."));
+    },
+    methods: ["GET", "POST"],
+  },
+});
+
+app.locals.io = io;
+
+io.on("connection", (socket) => {
+  socket.on("user:join", ({ userId }) => {
+    if (!userId) {
+      return;
+    }
+
+    socket.join(`user:${userId}`);
+  });
+});
+
 //initialize routes
 app.use("/api/user", UserAPI);
 app.use("/api/chat", ChatAPI);
@@ -74,7 +102,7 @@ app.use("/api/enquiries", EnquiriesAPI);
 // app.use("/api/posts", PostsAPI);
 
 app.use(function (error, req, res, next) {
-  res.status(err.status || 500);
+  res.status(error.status || 500);
   res.json({
     error: {
       message: error.message,
@@ -82,6 +110,6 @@ app.use(function (error, req, res, next) {
   });
 });
 
-app.listen(process.env.PORT || 4000, function () {
+server.listen(process.env.PORT || 4000, function () {
   console.log("now listening on port 4000");
 });

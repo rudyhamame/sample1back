@@ -11,6 +11,7 @@ import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
 import SignupVerificationModel from "../models/SignupVerification.js";
 import { sendSignupVerificationEmail } from "../helpers/signupVerificationEmail.js";
+import { emitUserRefresh } from "../helpers/realtime.js";
 
 const recalculateCourseLectureTotals = (user) => {
   const lectures = Array.isArray(user.schoolPlanner?.lectures)
@@ -294,6 +295,7 @@ UserRouter.get("/profile/:username", function (req, res, next) {
 
 // Requesting a friend
 UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
+  const io = req.app.locals.io;
   UserModel.findOne({ "info.username": req.params.username })
     .then((user) => {
       user.notifications.push({
@@ -302,7 +304,8 @@ UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
       });
       return user.save();
     })
-    .then(() => {
+    .then((user) => {
+      emitUserRefresh(io, user?._id?.toString(), "notification:new");
       res.status(201).json({
         message: "Request sent!",
       });
@@ -312,6 +315,7 @@ UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
 
 ////////ACCEPT REQUEST JUST ONE TIME
 UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
+  const io = req.app.locals.io;
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
       let conflict = false;
@@ -346,6 +350,11 @@ UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
               });
               user.save();
             });
+            emitUserRefresh(
+              io,
+              [req.params.my_id, req.params.friend_id],
+              "friends:updated"
+            );
             res.status(201).json({
               message: "Request accepted. You're now friends!",
             });
@@ -356,6 +365,7 @@ UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
 
 ///////Update Notification INFO USER
 UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
+  const io = req.app.locals.io;
   UserModel.findOne({ _id: req.params.me_id })
     .then((user) => {
       user.notifications.forEach((notification) => {
@@ -364,9 +374,11 @@ UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
           user.save();
         }
       });
+      return user;
     })
-    .then((response) => {
-      res.status(200).json(response);
+    .then((user) => {
+      emitUserRefresh(io, req.params.me_id, "notification:read");
+      res.status(200).json(user);
     })
     .catch(next);
 });
