@@ -188,19 +188,21 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
     if (message.includes("Missing SMTP")) {
       return res.status(503).json({
         message:
-          "Email verification is not configured on the backend yet. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.",
+          "Email verification is not configured on the backend yet. Set RESEND_API_KEY and EMAIL_FROM, or configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.",
       });
     }
 
     if (
+      message.includes("Missing sender configuration") ||
       message.includes("SMTP_FROM") ||
+      message.includes("Resend email failed") ||
       message.includes("Invalid login") ||
       message.includes("Username and Password not accepted") ||
       message.includes("authentication")
     ) {
       return res.status(503).json({
         message:
-          "Email delivery is currently unavailable. Please verify the SMTP sender address and email account credentials on the backend.",
+          "Email delivery is currently unavailable. Please verify the Resend API key and sender address, or check the SMTP sender address and email account credentials on the backend.",
       });
     }
 
