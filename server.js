@@ -82,6 +82,7 @@ const io = new Server(server, {
 app.locals.io = io;
 
 const activeChatPartnersByUser = new Map();
+const activeTypingPartnersByUser = new Map();
 
 const emitChatPresence = ({ userId, friendId, isChatting }) => {
   if (!userId || !friendId) {
@@ -97,6 +98,23 @@ const emitChatPresence = ({ userId, friendId, isChatting }) => {
     userId,
     friendId,
     isChatting,
+  });
+};
+
+const emitTypingPresence = ({ userId, friendId, isTyping }) => {
+  if (!userId || !friendId) {
+    return;
+  }
+
+  io.to(`user:${userId}`).emit("chat:typing", {
+    userId,
+    friendId,
+    isTyping,
+  });
+  io.to(`user:${friendId}`).emit("chat:typing", {
+    userId,
+    friendId,
+    isTyping,
   });
 };
 
@@ -128,9 +146,28 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("user:typing-status", ({ userId, friendId, isTyping }) => {
+    if (!userId || !friendId) {
+      return;
+    }
+
+    if (isTyping) {
+      activeTypingPartnersByUser.set(String(userId), String(friendId));
+    } else {
+      activeTypingPartnersByUser.delete(String(userId));
+    }
+
+    emitTypingPresence({
+      userId: String(userId),
+      friendId: String(friendId),
+      isTyping: Boolean(isTyping),
+    });
+  });
+
   socket.on("disconnect", () => {
     const userId = socket.data.userId ? String(socket.data.userId) : "";
     const friendId = activeChatPartnersByUser.get(userId);
+    const typingFriendId = activeTypingPartnersByUser.get(userId);
 
     if (userId && friendId) {
       activeChatPartnersByUser.delete(userId);
@@ -138,6 +175,15 @@ io.on("connection", (socket) => {
         userId,
         friendId,
         isChatting: false,
+      });
+    }
+
+    if (userId && typingFriendId) {
+      activeTypingPartnersByUser.delete(userId);
+      emitTypingPresence({
+        userId,
+        friendId: typingFriendId,
+        isTyping: false,
       });
     }
   });
