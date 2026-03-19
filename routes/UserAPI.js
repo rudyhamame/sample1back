@@ -10,7 +10,6 @@ import "dotenv/config.js";
 import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
 import SignupVerificationModel from "../models/SignupVerification.js";
-import { sendSignupVerificationEmail } from "../helpers/signupVerificationEmail.js";
 import { emitUserRefresh } from "../helpers/realtime.js";
 
 const recalculateCourseLectureTotals = (user) => {
@@ -165,63 +164,12 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
       expiresAt,
     });
 
-    if (process.env.BYPASS_SIGNUP_EMAIL === "true") {
-      return res.status(200).json({
-        message: "Verification code generated successfully.",
-        verificationCode,
-      });
-    }
-
-    await sendSignupVerificationEmail({
-      email,
-      firstname,
-      code: verificationCode,
-    });
-
     return res.status(200).json({
-      message: "Verification code sent successfully.",
+      message: "Verification code generated successfully.",
+      verificationCode,
     });
   } catch (error) {
     const message = String(error?.message || "");
-    const errorCode = String(error?.code || "");
-
-    if (message.includes("Missing SMTP")) {
-      return res.status(503).json({
-        message:
-          "Email verification is not configured on the backend yet. Set RESEND_API_KEY and EMAIL_FROM, or configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.",
-      });
-    }
-
-    if (
-      message.includes("Missing sender configuration") ||
-      message.includes("SMTP_FROM") ||
-      message.includes("Resend email failed") ||
-      message.includes("Invalid login") ||
-      message.includes("Username and Password not accepted") ||
-      message.includes("authentication")
-    ) {
-      return res.status(503).json({
-        message:
-          "Email delivery is currently unavailable. Please verify the Resend API key and sender address, or check the SMTP sender address and email account credentials on the backend.",
-      });
-    }
-
-    if (
-      errorCode === "EAUTH" ||
-      errorCode === "EENVELOPE" ||
-      errorCode === "ESOCKET" ||
-      errorCode === "ECONNECTION" ||
-      errorCode === "ETIMEDOUT" ||
-      message.includes("Invalid login") ||
-      message.includes("Missing credentials") ||
-      message.includes("connect ECONNREFUSED") ||
-      message.includes("getaddrinfo") ||
-      message.includes("No recipients defined")
-    ) {
-      return res.status(503).json({
-        message: `Signup email failed: ${message || errorCode || "Unknown email error."}`,
-      });
-    }
 
     return res.status(500).json({
       message: `Signup request failed: ${message || "Unknown server error."}`,
