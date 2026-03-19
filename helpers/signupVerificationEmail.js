@@ -24,7 +24,14 @@ const buildTransporter = () => {
 };
 
 export const sendSignupVerificationEmail = async ({ email, firstname, code }) => {
-  const from = process.env.SMTP_FROM;
+  const fromName = process.env.SMTP_FROM;
+  const smtpUser = process.env.SMTP_USER;
+  const from =
+    fromName && fromName.includes("@")
+      ? fromName
+      : fromName && smtpUser
+        ? `"${fromName.replace(/"/g, "")}" <${smtpUser}>`
+        : smtpUser;
 
   if (!from) {
     throw new Error("Missing SMTP_FROM configuration.");

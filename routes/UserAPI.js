@@ -193,6 +193,18 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
       });
     }
 
+    if (
+      message.includes("SMTP_FROM") ||
+      message.includes("Invalid login") ||
+      message.includes("Username and Password not accepted") ||
+      message.includes("authentication")
+    ) {
+      return res.status(503).json({
+        message:
+          "Email delivery is currently unavailable. Please verify the SMTP sender address and email account credentials on the backend.",
+      });
+    }
+
     return next(error);
   }
 });
