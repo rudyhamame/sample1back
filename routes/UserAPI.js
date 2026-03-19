@@ -165,6 +165,13 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
       expiresAt,
     });
 
+    if (process.env.BYPASS_SIGNUP_EMAIL === "true") {
+      return res.status(200).json({
+        message: "Verification code generated successfully.",
+        verificationCode,
+      });
+    }
+
     await sendSignupVerificationEmail({
       email,
       firstname,
