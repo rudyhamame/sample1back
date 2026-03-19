@@ -25,6 +25,20 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+const corsOptions = {
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("CORS origin not allowed."));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+
 const isAllowedOrigin = (origin) => {
   if (!origin) {
     return true;
@@ -52,17 +66,9 @@ db.once("open", function () {
 
 //we use this middleware to access the body of the request
 app.use(
-  cors({
-    origin(origin, callback) {
-      if (isAllowedOrigin(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("CORS origin not allowed."));
-    },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  }),
+  cors(corsOptions),
 );
+app.options("*", cors(corsOptions));
 app.use(morgan("dev"));
 app.use(express.json());
 
