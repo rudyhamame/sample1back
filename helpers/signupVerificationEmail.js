@@ -1,3 +1,4 @@
+import dns from "node:dns";
 import nodemailer from "nodemailer";
 
 const buildTransporter = () => {
@@ -15,11 +16,16 @@ const buildTransporter = () => {
   return nodemailer.createTransport({
     host,
     port,
-    family: 4,
     secure: process.env.SMTP_SECURE === "true" || port === 465,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 20000,
+    tls: {
+      servername: host,
+    },
+    lookup(hostname, options, callback) {
+      dns.lookup(hostname, { ...options, family: 4, all: false }, callback);
+    },
     auth: {
       user,
       pass,
