@@ -185,6 +185,7 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
     });
   } catch (error) {
     const message = String(error?.message || "");
+    const errorCode = String(error?.code || "");
 
     if (message.includes("Missing SMTP")) {
       return res.status(503).json({
@@ -205,7 +206,26 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
       });
     }
 
-    return next(error);
+    if (
+      errorCode === "EAUTH" ||
+      errorCode === "EENVELOPE" ||
+      errorCode === "ESOCKET" ||
+      errorCode === "ECONNECTION" ||
+      errorCode === "ETIMEDOUT" ||
+      message.includes("Invalid login") ||
+      message.includes("Missing credentials") ||
+      message.includes("connect ECONNREFUSED") ||
+      message.includes("getaddrinfo") ||
+      message.includes("No recipients defined")
+    ) {
+      return res.status(503).json({
+        message: `Signup email failed: ${message || errorCode || "Unknown email error."}`,
+      });
+    }
+
+    return res.status(500).json({
+      message: `Signup request failed: ${message || "Unknown server error."}`,
+    });
   }
 });
 
