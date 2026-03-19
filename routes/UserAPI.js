@@ -53,17 +53,32 @@ UserRouter.post("/login", function (req, res, next) {
       if (user) {
         bcrypt.compare(req.body.password, user.info.password, (err, result) => {
           if (result) {
-            const token = jwt.sign(
-              { username: user.info.username, userId: user._id },
-              process.env.JWT_KEY,
+            UserModel.findByIdAndUpdate(
+              user._id,
               {
-                expiresIn: "1h",
+                "status.isConnected": true,
+              },
+              {
+                new: true,
               }
-            );
-            res.status(201).json({
-              token: token,
-              user: user,
-            });
+            )
+              .then((updatedUser) => {
+                const token = jwt.sign(
+                  {
+                    username: updatedUser.info.username,
+                    userId: updatedUser._id,
+                  },
+                  process.env.JWT_KEY,
+                  {
+                    expiresIn: "1h",
+                  }
+                );
+                res.status(201).json({
+                  token: token,
+                  user: updatedUser,
+                });
+              })
+              .catch(next);
           } else {
             res.status(401).json({
               message: "Authorized failed",
