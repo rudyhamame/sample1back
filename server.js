@@ -50,7 +50,10 @@ const isAllowedOrigin = (origin) => {
 
   try {
     const hostname = new URL(origin).hostname;
-    return hostname.endsWith(".vercel.app");
+    return (
+      hostname.endsWith(".vercel.app") ||
+      hostname.endsWith(".trycloudflare.com")
+    );
   } catch {
     return false;
   }
