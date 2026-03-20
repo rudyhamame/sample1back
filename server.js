@@ -20,8 +20,8 @@ import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import "dotenv/config.js";
 
 const allowedOrigins = [
-  "http://localhost:3000",
   "http://localhost:5173",
+  "http://10.201.132.72:5173",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -68,9 +68,7 @@ db.once("open", function () {
 ////////////////////////////////////////////////////////////////////
 
 //we use this middleware to access the body of the request
-app.use(
-  cors(corsOptions),
-);
+app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(morgan("dev"));
 app.use(express.json());
