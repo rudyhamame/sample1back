@@ -20,8 +20,8 @@ import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import "dotenv/config.js";
 
 const allowedOrigins = [
-  "http://localhost:5174",
-  "http://10.201.132.72:5174",
+  "http://localhost:5173",
+  "http://10.201.132.72:5173",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
