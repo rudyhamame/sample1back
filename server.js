@@ -21,7 +21,7 @@ import "dotenv/config.js";
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "http://10.201.132.72:5173",
+  "http://10.147.159.72:5173/",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
