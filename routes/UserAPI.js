@@ -253,22 +253,47 @@ UserRouter.get("/update/:id", function (req, res, next) {
     .select(
       "friends notifications chat posts terminology study_session schoolPlanner study"
     )
-    .populate("friends")
+    .populate({
+      path: "friends",
+      populate: {
+        path: "posts",
+      },
+    })
     .populate("chat")
     .populate("posts")
     .then((profile) => {
-      res.status(200).json({
-        chat: Array.isArray(profile.chat?.conversation)
-          ? profile.chat.conversation
-          : [],
-        friends: profile.friends,
-        notifications: profile.notifications,
-        posts: profile.posts,
-        terminology: profile.terminology,
-        study_session: profile.study_session,
-        isOnline: profile.status.isConnected,
-        schoolPlanner: profile.schoolPlanner,
-        study: profile.study,
+      const ownPosts = Array.isArray(profile.posts) ? profile.posts : [];
+      const friendPosts = Array.isArray(profile.friends)
+        ? profile.friends.flatMap((friend) =>
+            Array.isArray(friend.posts) ? friend.posts : []
+          )
+        : [];
+      const posts = [...ownPosts, ...friendPosts]
+        .filter(Boolean)
+        .filter(
+          (post, index, allPosts) =>
+            allPosts.findIndex(
+              (candidate) => String(candidate?._id) === String(post?._id)
+            ) === index
+        )
+        .sort((firstPost, secondPost) => {
+          const firstDate = new Date(firstPost?.date || 0).getTime();
+          const secondDate = new Date(secondPost?.date || 0).getTime();
+          return secondDate - firstDate;
+        });
+
+        res.status(200).json({
+          chat: Array.isArray(profile.chat?.conversation)
+            ? profile.chat.conversation
+            : [],
+          friends: profile.friends,
+          notifications: profile.notifications,
+          posts,
+          terminology: profile.terminology,
+          study_session: profile.study_session,
+          isOnline: profile.status.isConnected,
+          schoolPlanner: profile.schoolPlanner,
+          study: profile.study,
       });
     })
     .catch(next);
