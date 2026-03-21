@@ -140,6 +140,10 @@ const UserSchema = new Schema({
       length: { type: Object, required: true },
     },
   ],
+  clinicalReality: {
+    html: { type: String, default: "" },
+    updatedAt: { type: Date, default: null },
+  },
 });
 const UserModel = mongoose.model("user", UserSchema);
 export default UserModel;

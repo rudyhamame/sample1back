@@ -54,6 +54,8 @@ const getUserAndFriendIds = (user) => {
   return [String(user._id), ...friendIds];
 };
 
+const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
+
 //Login API
 UserRouter.post("/login", function (req, res, next) {
   const io = req.app.locals.io;
@@ -251,7 +253,7 @@ UserRouter.put("/connection/:id", function (req, res, next) {
 UserRouter.get("/update/:id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.id })
     .select(
-      "friends notifications chat posts terminology study_session schoolPlanner study"
+      "friends notifications chat posts terminology study_session schoolPlanner study clinicalReality"
     )
     .populate({
       path: "friends",
@@ -294,9 +296,68 @@ UserRouter.get("/update/:id", function (req, res, next) {
           isOnline: profile.status.isConnected,
           schoolPlanner: profile.schoolPlanner,
           study: profile.study,
+          clinicalReality: profile.clinicalReality,
       });
     })
     .catch(next);
+});
+
+UserRouter.get("/clinical-reality", checkAuth, async function (req, res, next) {
+  try {
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "clinicalReality"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    return res.status(200).json({
+      clinicalReality: user.clinicalReality || { html: "", updatedAt: null },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
+  try {
+    const html = String(req.body?.html || "");
+
+    if (html.length > CLINICAL_REALITY_HTML_MAX_LENGTH) {
+      return res.status(413).json({
+        message: "Clinical reality content is too large.",
+      });
+    }
+
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      req.authentication.userId,
+      {
+        clinicalReality: {
+          html,
+          updatedAt: new Date(),
+        },
+      },
+      {
+        new: true,
+      }
+    ).select("clinicalReality");
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Clinical reality saved.",
+      clinicalReality: updatedUser.clinicalReality,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 /////Searching for a user to be a friend
