@@ -305,11 +305,16 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
     .select("info.firstname info.lastname info.username")
     .then((users) => {
       const array = [];
+      const searchTerm = String(req.params.name || "").trim().toLowerCase();
       users.forEach((user) => {
+        const firstname = String(user?.info?.firstname || "").toLowerCase();
+        const lastname = String(user?.info?.lastname || "").toLowerCase();
+        const username = String(user?.info?.username || "").toLowerCase();
+
         if (
-          user.info.firstname.includes(req.params.name) ||
-          user.info.lastname.includes(req.params.name) ||
-          user.info.username === req.params.name
+          firstname.includes(searchTerm) ||
+          lastname.includes(searchTerm) ||
+          username.includes(searchTerm)
         ) {
           array.push(user);
         }
