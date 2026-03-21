@@ -322,6 +322,29 @@ UserRouter.get("/clinical-reality", checkAuth, async function (req, res, next) {
   }
 });
 
+UserRouter.get(
+  "/clinical-reality/public/:username",
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findOne({
+        "info.username": req.params.username,
+      }).select("clinicalReality");
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      return res.status(200).json({
+        clinicalReality: user.clinicalReality || { html: "", updatedAt: null },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
 UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
   try {
     const html = String(req.body?.html || "");
