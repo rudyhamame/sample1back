@@ -416,6 +416,41 @@ UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
     });
 });
 
+UserRouter.delete(
+  "/removeFriend/:my_id/:friend_id",
+  checkAuth,
+  function (req, res, next) {
+    const io = req.app.locals.io;
+    const { my_id, friend_id } = req.params;
+
+    Promise.all([
+      UserModel.findByIdAndUpdate(
+        my_id,
+        { $pull: { friends: friend_id } },
+        { new: true }
+      ),
+      UserModel.findByIdAndUpdate(
+        friend_id,
+        { $pull: { friends: my_id } },
+        { new: true }
+      ),
+    ])
+      .then(([me, friend]) => {
+        if (!me || !friend) {
+          return res.status(404).json({
+            message: "Friendship record was not found.",
+          });
+        }
+
+        emitUserRefresh(io, [my_id, friend_id], "friends:updated");
+        return res.status(200).json({
+          message: "Friend removed.",
+        });
+      })
+      .catch(next);
+  }
+);
+
 ///////Update Notification INFO USER
 UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
   const io = req.app.locals.io;
