@@ -547,6 +547,21 @@ UserRouter.post("/visit-log", async function (req, res, next) {
       visitedAt: new Date(),
     });
 
+    const io = req.app.locals.io;
+    const visitLogOwner = await UserModel.findOne({
+      "info.username": VISIT_LOG_OWNER_USERNAME,
+    }).select("_id");
+
+    if (io && visitLogOwner?._id) {
+      io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
+        visitLog: {
+          _id: String(visitLog._id),
+          ip: visitLog.ip,
+          visitedAt: visitLog.visitedAt,
+        },
+      });
+    }
+
     return res.status(201).json({
       visitLog: {
         _id: String(visitLog._id),
@@ -718,7 +733,19 @@ UserRouter.put(
         });
       }
 
-      const notification = user.notifications.id(req.params.notificationId);
+      let notification = user.notifications.id(req.params.notificationId);
+
+      if (!notification) {
+        notification = (user.notifications || []).find(
+          (entry) => String(entry?._id) === String(req.params.notificationId)
+        );
+      }
+
+      if (!notification) {
+        notification = (user.notifications || []).find(
+          (entry) => String(entry?.id) === String(req.params.notificationId)
+        );
+      }
 
       if (!notification) {
         return res.status(404).json({
@@ -734,7 +761,7 @@ UserRouter.put(
 
       return res.status(200).json({
         message: "Notification marked as read.",
-        notificationId: String(notification._id),
+        notificationId: String(notification._id || req.params.notificationId),
       });
     } catch (error) {
       return next(error);
