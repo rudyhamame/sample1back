@@ -70,7 +70,15 @@ UserRouter.post("/login", function (req, res, next) {
             UserModel.findByIdAndUpdate(
               user._id,
               {
-                "status.isConnected": true,
+                $set: {
+                  "status.isConnected": true,
+                },
+                $push: {
+                  login_record: {
+                    $each: [{ loggedInAt: new Date() }],
+                    $slice: -100,
+                  },
+                },
               },
               {
                 new: true,
@@ -253,7 +261,7 @@ UserRouter.put("/connection/:id", function (req, res, next) {
 UserRouter.get("/update/:id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.id })
     .select(
-      "friends notifications chat posts terminology study_session schoolPlanner study clinicalReality"
+      "friends notifications chat posts terminology study_session login_record schoolPlanner study clinicalReality"
     )
     .populate({
       path: "friends",
@@ -293,6 +301,7 @@ UserRouter.get("/update/:id", function (req, res, next) {
           posts,
           terminology: profile.terminology,
           study_session: profile.study_session,
+          login_record: profile.login_record || [],
           isOnline: profile.status.isConnected,
           schoolPlanner: profile.schoolPlanner,
           study: profile.study,
