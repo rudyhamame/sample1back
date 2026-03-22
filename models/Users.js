@@ -121,6 +121,8 @@ const UserSchema = new Schema({
     {
       id: { type: String, required: true },
       message: { type: String, required: true },
+      type: { type: String, default: "friend_request" },
+      count: { type: Number, default: 1 },
       status: { type: String, default: "unread" },
     },
   ],

@@ -92,7 +92,39 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
       });
       return chatObject.save();
     }),
+    UserModel.findById(senderId).select("info.firstname info.lastname"),
+    UserModel.findById(friendId).select("notifications"),
   ])
+    .then(([, , senderUser, friendUser]) => {
+      if (friendUser && senderUser) {
+        const senderName = `${senderUser.info?.firstname || ""} ${senderUser.info?.lastname || ""}`.trim() || "a contact";
+        const existingNotification = (friendUser.notifications || []).find(
+          (notification) =>
+            String(notification?.id) === String(senderId) &&
+            notification?.type === "chat_message" &&
+            notification?.status !== "read"
+        );
+
+        if (existingNotification) {
+          const nextCount = Number(existingNotification.count || 0) + 1;
+          existingNotification.count = nextCount;
+          existingNotification.message = `You have ${nextCount} new ${nextCount === 1 ? "message" : "messages"} from ${senderName}`;
+          existingNotification.status = "unread";
+        } else {
+          friendUser.notifications.push({
+            id: String(senderId),
+            type: "chat_message",
+            count: 1,
+            message: `You have 1 new message from ${senderName}`,
+            status: "unread",
+          });
+        }
+
+        return friendUser.save();
+      }
+
+      return null;
+    })
     .then(() => {
       emitUserRefresh(io, [senderId, friendId], "chat:message", {
         friendId,

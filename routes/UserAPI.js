@@ -392,6 +392,63 @@ UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
   }
 });
 
+UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
+  try {
+    const currentPassword = String(req.body?.currentPassword || "");
+    const nextPassword = String(req.body?.newPassword || "");
+
+    if (!currentPassword || !nextPassword) {
+      return res.status(400).json({
+        message: "Current password and new password are required.",
+      });
+    }
+
+    if (nextPassword.length < 6) {
+      return res.status(400).json({
+        message: "New password must be at least 6 characters long.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "info.password"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      currentPassword,
+      user.info.password
+    );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        message: "Current password is not correct.",
+      });
+    }
+
+    const isSamePassword = await bcrypt.compare(nextPassword, user.info.password);
+
+    if (isSamePassword) {
+      return res.status(409).json({
+        message: "New password must be different from the current password.",
+      });
+    }
+
+    user.info.password = await bcrypt.hash(nextPassword, 10);
+    await user.save();
+
+    return res.status(200).json({
+      message: "Password changed successfully.",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /////Searching for a user to be a friend
 UserRouter.get("/searchUsers/:name", function (req, res, next) {
   UserModel.find({})
@@ -451,6 +508,8 @@ UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
     .then((user) => {
       user.notifications.push({
         id: req.body.id,
+        type: "friend_request",
+        count: 1,
         message: req.body.message,
       });
       return user.save();
