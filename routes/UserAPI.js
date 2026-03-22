@@ -55,6 +55,7 @@ const getUserAndFriendIds = (user) => {
 };
 
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
+const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 
 //Login API
 UserRouter.post("/login", function (req, res, next) {
@@ -501,6 +502,51 @@ UserRouter.get("/profile/:username", function (req, res, next) {
     .catch(next);
 });
 
+UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
+  try {
+    if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
+      return res.status(403).json({
+        message: "You are not allowed to view the visit log.",
+      });
+    }
+
+    const users = await UserModel.find({})
+      .select(
+        "info.username info.firstname info.lastname login_record status.isConnected"
+      )
+      .lean();
+
+    const visitLog = users
+      .flatMap((user) => {
+        const loginRecord = Array.isArray(user?.login_record)
+          ? user.login_record
+          : [];
+
+        return loginRecord.map((record) => ({
+          userId: String(user?._id || ""),
+          username: String(user?.info?.username || ""),
+          firstname: String(user?.info?.firstname || ""),
+          lastname: String(user?.info?.lastname || ""),
+          loggedInAt: record?.loggedInAt || null,
+          loggedOutAt: record?.loggedOutAt || null,
+          isConnected: Boolean(user?.status?.isConnected && !record?.loggedOutAt),
+        }));
+      })
+      .sort(
+        (firstRecord, secondRecord) =>
+          new Date(secondRecord.loggedInAt || 0).getTime() -
+          new Date(firstRecord.loggedInAt || 0).getTime()
+      )
+      .slice(0, 200);
+
+    return res.status(200).json({
+      visitLog,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // Requesting a friend
 UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
   const io = req.app.locals.io;
@@ -627,6 +673,43 @@ UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
     })
     .catch(next);
 });
+
+UserRouter.put(
+  "/notifications/:notificationId/read",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.authentication.userId);
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const notification = user.notifications.id(req.params.notificationId);
+
+      if (!notification) {
+        return res.status(404).json({
+          message: "Notification not found.",
+        });
+      }
+
+      notification.status = "read";
+      await user.save();
+
+      const io = req.app.locals.io;
+      emitUserRefresh(io, String(user._id), "notification:read");
+
+      return res.status(200).json({
+        message: "Notification marked as read.",
+        notificationId: String(notification._id),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 /////////////Update User isConnected status
 UserRouter.put("/connection/:id", function (req, res, next) {
