@@ -68,6 +68,7 @@ db.once("open", function () {
 ////////////////////////////////////////////////////////////////////
 
 //we use this middleware to access the body of the request
+app.set("trust proxy", true);
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(morgan("dev"));

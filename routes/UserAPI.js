@@ -10,6 +10,7 @@ import "dotenv/config.js";
 import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
 import SignupVerificationModel from "../models/SignupVerification.js";
+import VisitLogModel from "../models/VisitLog.js";
 import { emitUserRefresh } from "../helpers/realtime.js";
 
 const recalculateCourseLectureTotals = (user) => {
@@ -56,6 +57,22 @@ const getUserAndFriendIds = (user) => {
 
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
+const VISIT_LOG_LIMIT = 200;
+
+const getRequestIp = (req) => {
+  const forwardedFor = req.headers["x-forwarded-for"];
+
+  if (typeof forwardedFor === "string" && forwardedFor.trim()) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  return (
+    req.ip ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    "Unknown IP"
+  );
+};
 
 //Login API
 UserRouter.post("/login", function (req, res, next) {
@@ -510,37 +527,32 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    const users = await UserModel.find({})
-      .select(
-        "info.username info.firstname info.lastname login_record status.isConnected"
-      )
+    const visitLog = await VisitLogModel.find({})
+      .sort({ visitedAt: -1 })
+      .limit(VISIT_LOG_LIMIT)
       .lean();
-
-    const visitLog = users
-      .flatMap((user) => {
-        const loginRecord = Array.isArray(user?.login_record)
-          ? user.login_record
-          : [];
-
-        return loginRecord.map((record) => ({
-          userId: String(user?._id || ""),
-          username: String(user?.info?.username || ""),
-          firstname: String(user?.info?.firstname || ""),
-          lastname: String(user?.info?.lastname || ""),
-          loggedInAt: record?.loggedInAt || null,
-          loggedOutAt: record?.loggedOutAt || null,
-          isConnected: Boolean(user?.status?.isConnected && !record?.loggedOutAt),
-        }));
-      })
-      .sort(
-        (firstRecord, secondRecord) =>
-          new Date(secondRecord.loggedInAt || 0).getTime() -
-          new Date(firstRecord.loggedInAt || 0).getTime()
-      )
-      .slice(0, 200);
 
     return res.status(200).json({
       visitLog,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post("/visit-log", async function (req, res, next) {
+  try {
+    const visitLog = await VisitLogModel.create({
+      ip: getRequestIp(req),
+      visitedAt: new Date(),
+    });
+
+    return res.status(201).json({
+      visitLog: {
+        _id: String(visitLog._id),
+        ip: visitLog.ip,
+        visitedAt: visitLog.visitedAt,
+      },
     });
   } catch (error) {
     return next(error);
