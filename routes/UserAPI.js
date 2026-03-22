@@ -559,6 +559,25 @@ UserRouter.post("/visit-log", async function (req, res, next) {
   }
 });
 
+UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
+  try {
+    if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
+      return res.status(403).json({
+        message: "You are not allowed to delete the visit log.",
+      });
+    }
+
+    const result = await VisitLogModel.deleteMany({});
+
+    return res.status(200).json({
+      message: "Visit log cleared.",
+      deletedCount: result.deletedCount || 0,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // Requesting a friend
 UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
   const io = req.app.locals.io;
