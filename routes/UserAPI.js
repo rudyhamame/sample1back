@@ -11,6 +11,7 @@ import checkAuth from "../check-auth.js";
 import PostsModel from "../models/Posts.js";
 import SignupVerificationModel from "../models/SignupVerification.js";
 import VisitLogModel from "../models/VisitLog.js";
+import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
 
 const recalculateCourseLectureTotals = (user) => {
@@ -72,6 +73,28 @@ const getRequestIp = (req) => {
     req.connection?.remoteAddress ||
     "Unknown IP"
   );
+};
+
+const getCountryFromIp = (ipAddress) => {
+  if (!ipAddress || ipAddress === "Unknown IP") {
+    return "Unknown";
+  }
+
+  const normalizedIp = String(ipAddress).replace(/^::ffff:/, "").trim();
+
+  if (
+    normalizedIp === "::1" ||
+    normalizedIp === "127.0.0.1" ||
+    normalizedIp.startsWith("192.168.") ||
+    normalizedIp.startsWith("10.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalizedIp)
+  ) {
+    return "Local";
+  }
+
+  const lookup = geoip.lookup(normalizedIp);
+
+  return lookup?.country || "Unknown";
 };
 
 //Login API
@@ -542,8 +565,12 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
 
 UserRouter.post("/visit-log", async function (req, res, next) {
   try {
+    const ip = getRequestIp(req);
+    const country = getCountryFromIp(ip);
+
     const visitLog = await VisitLogModel.create({
-      ip: getRequestIp(req),
+      ip,
+      country,
       visitedAt: new Date(),
     });
 
@@ -552,23 +579,25 @@ UserRouter.post("/visit-log", async function (req, res, next) {
       "info.username": VISIT_LOG_OWNER_USERNAME,
     }).select("_id");
 
-    if (io && visitLogOwner?._id) {
-      io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
+      if (io && visitLogOwner?._id) {
+        io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
+          visitLog: {
+            _id: String(visitLog._id),
+            ip: visitLog.ip,
+            country: visitLog.country || "Unknown",
+            visitedAt: visitLog.visitedAt,
+          },
+        });
+      }
+
+      return res.status(201).json({
         visitLog: {
           _id: String(visitLog._id),
           ip: visitLog.ip,
+          country: visitLog.country || "Unknown",
           visitedAt: visitLog.visitedAt,
         },
       });
-    }
-
-    return res.status(201).json({
-      visitLog: {
-        _id: String(visitLog._id),
-        ip: visitLog.ip,
-        visitedAt: visitLog.visitedAt,
-      },
-    });
   } catch (error) {
     return next(error);
   }
