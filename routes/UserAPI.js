@@ -1,5 +1,8 @@
 //For user data
 import express from "express";
+import { execFileSync } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
 import TestModel from "../models/Test.js";
 import UserModel from "../models/Users.js";
 import ChatModel from "../models/Chat.js";
@@ -13,6 +16,10 @@ import SignupVerificationModel from "../models/SignupVerification.js";
 import VisitLogModel from "../models/VisitLog.js";
 import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FRONTEND_REPO_PATH = path.resolve(__dirname, "../../sample1front");
 
 const recalculateCourseLectureTotals = (user) => {
   const lectures = Array.isArray(user.schoolPlanner?.lectures)
@@ -95,6 +102,27 @@ const getCountryFromIp = (ipAddress) => {
   const lookup = geoip.lookup(normalizedIp);
 
   return lookup?.country || "Unknown";
+};
+
+const getFrontendLastUpdated = () => {
+  try {
+    const committedAt = execFileSync(
+      "git",
+      ["-C", FRONTEND_REPO_PATH, "log", "-1", "--format=%cI"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    ).trim();
+
+    if (!committedAt) {
+      return null;
+    }
+
+    return committedAt;
+  } catch {
+    return null;
+  }
 };
 
 //Login API
@@ -484,6 +512,41 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     return res.status(200).json({
       message: "Password changed successfully.",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.get("/app-last-updated", function (req, res) {
+  const committedAt = getFrontendLastUpdated();
+
+  if (!committedAt) {
+    return res.status(200).json({
+      committedAt: null,
+    });
+  }
+
+  return res.status(200).json({
+    committedAt,
+  });
+});
+
+UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
+  try {
+    const user = await UserModel.findById(req.authentication.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    user.login_record = [];
+    await user.save();
+
+    return res.status(200).json({
+      message: "Login log cleared.",
     });
   } catch (error) {
     return next(error);
