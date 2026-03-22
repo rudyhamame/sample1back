@@ -92,37 +92,47 @@ app.locals.io = io;
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
 
-const emitChatPresence = ({ userId, friendId, isChatting }) => {
+const emitChatPresenceForPair = ({ userId, friendId }) => {
   if (!userId || !friendId) {
     return;
   }
 
+  const userIsChattingWithFriend =
+    activeChatPartnersByUser.get(String(userId)) === String(friendId);
+  const friendIsChattingWithUser =
+    activeChatPartnersByUser.get(String(friendId)) === String(userId);
+
   io.to(`user:${userId}`).emit("chat:presence", {
-    userId,
-    friendId,
-    isChatting,
+    userId: String(friendId),
+    friendId: String(userId),
+    isChatting: friendIsChattingWithUser,
   });
   io.to(`user:${friendId}`).emit("chat:presence", {
-    userId,
-    friendId,
-    isChatting,
+    userId: String(userId),
+    friendId: String(friendId),
+    isChatting: userIsChattingWithFriend,
   });
 };
 
-const emitTypingPresence = ({ userId, friendId, isTyping }) => {
+const emitTypingPresenceForPair = ({ userId, friendId }) => {
   if (!userId || !friendId) {
     return;
   }
 
+  const userIsTypingToFriend =
+    activeTypingPartnersByUser.get(String(userId)) === String(friendId);
+  const friendIsTypingToUser =
+    activeTypingPartnersByUser.get(String(friendId)) === String(userId);
+
   io.to(`user:${userId}`).emit("chat:typing", {
-    userId,
-    friendId,
-    isTyping,
+    userId: String(friendId),
+    friendId: String(userId),
+    isTyping: friendIsTypingToUser,
   });
   io.to(`user:${friendId}`).emit("chat:typing", {
-    userId,
-    friendId,
-    isTyping,
+    userId: String(userId),
+    friendId: String(friendId),
+    isTyping: userIsTypingToFriend,
   });
 };
 
@@ -147,10 +157,9 @@ io.on("connection", (socket) => {
       activeChatPartnersByUser.delete(String(userId));
     }
 
-    emitChatPresence({
+    emitChatPresenceForPair({
       userId: String(userId),
       friendId: String(friendId),
-      isChatting: Boolean(isChatting),
     });
   });
 
@@ -165,10 +174,9 @@ io.on("connection", (socket) => {
       activeTypingPartnersByUser.delete(String(userId));
     }
 
-    emitTypingPresence({
+    emitTypingPresenceForPair({
       userId: String(userId),
       friendId: String(friendId),
-      isTyping: Boolean(isTyping),
     });
   });
 
@@ -179,19 +187,17 @@ io.on("connection", (socket) => {
 
     if (userId && friendId) {
       activeChatPartnersByUser.delete(userId);
-      emitChatPresence({
+      emitChatPresenceForPair({
         userId,
         friendId,
-        isChatting: false,
       });
     }
 
     if (userId && typingFriendId) {
       activeTypingPartnersByUser.delete(userId);
-      emitTypingPresence({
+      emitTypingPresenceForPair({
         userId,
         friendId: typingFriendId,
-        isTyping: false,
       });
     }
   });
