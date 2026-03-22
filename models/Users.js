@@ -143,6 +143,7 @@ const UserSchema = new Schema({
   login_record: [
     {
       loggedInAt: { type: Date, required: true, default: Date.now },
+      loggedOutAt: { type: Date, default: null },
     },
   ],
   clinicalReality: {

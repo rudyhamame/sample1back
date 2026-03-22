@@ -75,7 +75,7 @@ UserRouter.post("/login", function (req, res, next) {
                 },
                 $push: {
                   login_record: {
-                    $each: [{ loggedInAt: new Date() }],
+                    $each: [{ loggedInAt: new Date(), loggedOutAt: null }],
                     $slice: -100,
                   },
                 },
@@ -751,17 +751,32 @@ UserRouter.post("/newTerminology/:my_id", function (req, res, next) {
 //////////////////////Posting update for a user before leaving app
 UserRouter.put("/isOnline/:id", function (req, res, next) {
   const io = req.app.locals.io;
-  UserModel.findByIdAndUpdate(
-    { _id: req.params.id },
-    {
-      "status.isConnected": req.body.isConnected,
-    },
-    {
-      useFindAndModify: false,
-      new: true,
-    }
-  )
+  UserModel.findById(req.params.id)
     .then((user) => {
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      user.status.isConnected = req.body.isConnected;
+
+      if (!req.body.isConnected && Array.isArray(user.login_record)) {
+        for (let i = user.login_record.length - 1; i >= 0; i -= 1) {
+          if (!user.login_record[i].loggedOutAt) {
+            user.login_record[i].loggedOutAt = new Date();
+            break;
+          }
+        }
+      }
+
+      return user.save();
+    })
+    .then((user) => {
+      if (!user) {
+        return null;
+      }
+
       emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
         isConnected: Boolean(req.body.isConnected),
         targetUserId: String(req.params.id),
