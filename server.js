@@ -15,6 +15,7 @@ import PostsAPI from "./routes/PostsAPI.js";
 import AtomAPI from "./routes/AtomAPI.js";
 import KeywordsAPI from "./routes/KeywordsAPI.js";
 import EnquiriesAPI from "./routes/EnquiriesAPI.js";
+import ECGAPI from "./routes/ECGAPI.js";
 // const PostsAPI = require("./routes/PostsAPI");
 
 import "dotenv/config.js";
@@ -210,6 +211,7 @@ app.use("/api/posts", PostsAPI);
 app.use("/api/atom", AtomAPI);
 app.use("/api/keywords", KeywordsAPI);
 app.use("/api/enquiries", EnquiriesAPI);
+app.use("/api/ecg", ECGAPI);
 
 // app.use("/api/posts", PostsAPI);
 
