@@ -806,7 +806,31 @@ UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
       return user;
     })
     .then((user) => {
-      emitUserRefresh(io, req.params.me_id, "notification:read");
+      return ChatModel.findOne({ _id: req.params.friend_id }).then((chat) => {
+        if (chat) {
+          let hasChatUpdates = false;
+
+          chat.conversation.forEach((message) => {
+            if (
+              String(message?._id) === String(req.params.me_id) &&
+              message?.from === "me" &&
+              message?.status !== "read"
+            ) {
+              message.status = "read";
+              hasChatUpdates = true;
+            }
+          });
+
+          if (hasChatUpdates) {
+            return chat.save().then(() => user);
+          }
+        }
+
+        return user;
+      });
+    })
+    .then((user) => {
+      emitUserRefresh(io, [req.params.me_id, req.params.friend_id], "notification:read");
       res.status(200).json(user);
     })
     .catch(next);

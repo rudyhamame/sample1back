@@ -81,6 +81,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
         _id: friendId,
         message,
         from: "me",
+        status: "received",
       });
       return chatObject.save();
     }),
@@ -89,6 +90,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
         _id: senderId,
         message,
         from: "them",
+        status: "received",
       });
       return chatObject.save();
     }),
