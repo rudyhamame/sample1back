@@ -70,6 +70,24 @@ const usingRemoteEcgService = () => Boolean(ECG_PYTHON_SERVICE_URL);
 
 const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
 
+const shouldFallbackToLocalEcg = (error) => {
+  const status = Number(error?.status || 0);
+  const remoteMessage = String(
+    error?.payload?.message || error?.message || "",
+  ).toLowerCase();
+
+  if ([502, 503, 504].includes(status)) {
+    return true;
+  }
+
+  return (
+    remoteMessage.includes("local ecg toolchain is unavailable") ||
+    remoteMessage.includes("missing model/config files") ||
+    remoteMessage.includes("missing python modules") ||
+    remoteMessage.includes("remote ecg service is unavailable")
+  );
+};
+
 const extractAnalysisRequest = (req) => {
   const uploadedFile = req.file || null;
   const jsonMimeType = String(req.body?.mimeType || "").trim();
@@ -446,14 +464,16 @@ ECGRouter.get("/health", async function (req, res) {
         serviceUrl: ECG_PYTHON_SERVICE_URL,
       });
     } catch (error) {
-      return res.status(error?.status || 503).json({
-        status: "offline",
-        mode: "remote-python-service",
-        method: LOCAL_METHOD,
-        serviceUrl: ECG_PYTHON_SERVICE_URL,
-        message: error?.payload?.message || error?.message || "Remote ECG service is unavailable.",
-        toolchain: error?.payload?.toolchain || null,
-      });
+      if (!shouldFallbackToLocalEcg(error)) {
+        return res.status(error?.status || 503).json({
+          status: "offline",
+          mode: "remote-python-service",
+          method: LOCAL_METHOD,
+          serviceUrl: ECG_PYTHON_SERVICE_URL,
+          message: error?.payload?.message || error?.message || "Remote ECG service is unavailable.",
+          toolchain: error?.payload?.toolchain || null,
+        });
+      }
     }
   }
 
@@ -466,6 +486,8 @@ ECGRouter.get("/health", async function (req, res) {
     method: LOCAL_METHOD,
     pythonBinary: PYTHON_BINARY,
     toolchain,
+    remoteServiceFallback: usingRemoteEcgService(),
+    remoteServiceUrl: usingRemoteEcgService() ? ECG_PYTHON_SERVICE_URL : null,
   });
 });
 
@@ -521,15 +543,17 @@ ECGRouter.post(
             sourceType,
           });
         } catch (error) {
-          return res.status(error?.status || 503).json({
-            ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
-            message:
-              error?.payload?.message ||
-              error?.message ||
-              "Remote ECG service is unavailable.",
-            serviceMode: "remote-python-service",
-            serviceUrl: ECG_PYTHON_SERVICE_URL,
-          });
+          if (!shouldFallbackToLocalEcg(error)) {
+            return res.status(error?.status || 503).json({
+              ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+              message:
+                error?.payload?.message ||
+                error?.message ||
+                "Remote ECG service is unavailable.",
+              serviceMode: "remote-python-service",
+              serviceUrl: ECG_PYTHON_SERVICE_URL,
+            });
+          }
         }
       }
 
@@ -566,6 +590,7 @@ ECGRouter.post(
           analysis,
           pdfPage: rasterizedPage.selectedPage,
           pdfPageCount: rasterizedPage.pageCount,
+          serviceMode: "local-only",
         });
       }
 
@@ -594,6 +619,7 @@ ECGRouter.post(
         sourceType,
         method: LOCAL_METHOD,
         analysis,
+        serviceMode: "local-only",
       });
     } catch (error) {
       return res.status(500).json({
