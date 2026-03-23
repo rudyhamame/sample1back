@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 const LOCAL_METHOD = "deterministic_digitizer";
 const PYTHON_BINARY = process.env.PYTHON_BINARY || "python";
 const PYTHON_TOOL_TIMEOUT_MS = 45000;
-const ECG_SERVICE_TIMEOUT_MS = 120000;
+const ECG_SERVICE_TIMEOUT_MS = 600000;
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const ECG_PYTHON_SERVICE_URL = String(
   process.env.ECG_PYTHON_SERVICE_URL || "",
