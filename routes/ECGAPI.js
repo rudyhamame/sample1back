@@ -101,6 +101,21 @@ const runPythonJsonTool = ({
       stderr += String(chunk);
     });
 
+    child.stdin.on("error", (error) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
+      reject(
+        new Error(
+          error?.code === "EPIPE"
+            ? `${startupErrorMessage} The Python process closed its input pipe unexpectedly.`
+            : error?.message || startupErrorMessage,
+        ),
+      );
+    });
+
     child.on("error", (error) => {
       if (finished) {
         return;
@@ -146,8 +161,23 @@ const runPythonJsonTool = ({
       }
     });
 
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
+    try {
+      child.stdin.write(JSON.stringify(payload));
+      child.stdin.end();
+    } catch (error) {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
+      reject(
+        new Error(
+          error?.code === "EPIPE"
+            ? `${startupErrorMessage} The Python process closed its input pipe unexpectedly.`
+            : error?.message || startupErrorMessage,
+        ),
+      );
+    }
   });
 
 const runPythonCommand = ({ args, timeoutMs = 12000 }) =>
