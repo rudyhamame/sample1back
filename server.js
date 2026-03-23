@@ -93,6 +93,19 @@ app.locals.io = io;
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
 
+app.get("/api/health", function (req, res) {
+  const dbReadyState = mongoose.connection?.readyState ?? 0;
+  const dbHealthy = dbReadyState === 1;
+
+  return res.status(dbHealthy ? 200 : 503).json({
+    status: dbHealthy ? "healthy" : "degraded",
+    app: "ready",
+    database: dbHealthy ? "connected" : "disconnected",
+    uptimeSeconds: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 const emitChatPresenceForPair = ({ userId, friendId }) => {
   if (!userId || !friendId) {
     return;
