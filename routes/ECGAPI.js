@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import OpenAI from "openai";
 import path from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
@@ -9,11 +8,7 @@ const ECGRouter = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
 const LOCAL_METHOD = "deterministic_digitizer";
-const LOCAL_DIGITIZER_ENABLED =
-  String(process.env.ECG_LOCAL_DIGITIZER_ENABLED || "").trim().toLowerCase() ===
-  "true";
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -33,174 +28,6 @@ const upload = multer({
     fileSize: MAX_FILE_SIZE_BYTES,
   },
 });
-
-const ECG_ANALYSIS_INSTRUCTIONS = `You are PhenoMed ECG, a non-diagnostic ECG phenomenon extraction assistant.
-Your job is to analyze an ECG image, ECG PDF, or textual ECG observations and return only observable/measurable findings.
-Do not diagnose, do not name diseases, do not recommend treatment, and do not infer clinical meaning beyond what is visibly present.
-Focus on the graph, points, intervals, amplitudes, segment changes, polarity, rhythm regularity, lead-specific increases/decreases, and any limitations in the source quality.
-If something cannot be read clearly, say it is unclear instead of guessing.`;
-
-const ECG_ANALYSIS_SCHEMA = {
-  name: "ecg_phenomenon_analysis",
-  strict: true,
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      sourceType: {
-        type: "string",
-        enum: ["image", "pdf", "text"],
-      },
-      summary: {
-        type: "string",
-      },
-      acquisitionNote: {
-        type: "string",
-      },
-      qualityAssessment: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          readability: {
-            type: "string",
-            enum: ["good", "fair", "limited", "unreadable"],
-          },
-          gridVisible: {
-            type: ["boolean", "null"],
-          },
-          calibrationVisible: {
-            type: ["boolean", "null"],
-          },
-          limitations: {
-            type: "array",
-            items: {
-              type: "string",
-            },
-          },
-        },
-        required: [
-          "readability",
-          "gridVisible",
-          "calibrationVisible",
-          "limitations",
-        ],
-      },
-      measurements: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            label: { type: "string" },
-            value: { type: ["number", "null"] },
-            unit: { type: "string" },
-            lead: { type: "string" },
-            qualifier: { type: "string" },
-            evidence: { type: "string" },
-          },
-          required: ["label", "value", "unit", "lead", "qualifier", "evidence"],
-        },
-      },
-      waveformPoints: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            structure: { type: "string" },
-            observedState: { type: "string" },
-            leads: {
-              type: "array",
-              items: { type: "string" },
-            },
-            evidence: { type: "string" },
-          },
-          required: ["structure", "observedState", "leads", "evidence"],
-        },
-      },
-      leadFindings: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            lead: { type: "string" },
-            phenomenon: { type: "string" },
-            direction: {
-              type: "string",
-              enum: ["increase", "decrease", "flat", "inverted", "biphasic", "none", "unclear"],
-            },
-            magnitude: { type: "string" },
-            evidence: { type: "string" },
-          },
-          required: ["lead", "phenomenon", "direction", "magnitude", "evidence"],
-        },
-      },
-      rhythmFeatures: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            feature: { type: "string" },
-            observedState: { type: "string" },
-            evidence: { type: "string" },
-          },
-          required: ["feature", "observedState", "evidence"],
-        },
-      },
-      trends: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          increases: {
-            type: "array",
-            items: { type: "string" },
-          },
-          decreases: {
-            type: "array",
-            items: { type: "string" },
-          },
-          stableOrNeutral: {
-            type: "array",
-            items: { type: "string" },
-          },
-        },
-        required: ["increases", "decreases", "stableOrNeutral"],
-      },
-      extractedText: {
-        type: "array",
-        items: { type: "string" },
-      },
-      nonDiagnosticNotice: {
-        type: "string",
-      },
-    },
-    required: [
-      "sourceType",
-      "summary",
-      "acquisitionNote",
-      "qualityAssessment",
-      "measurements",
-      "waveformPoints",
-      "leadFindings",
-      "rhythmFeatures",
-      "trends",
-      "extractedText",
-      "nonDiagnosticNotice",
-    ],
-  },
-};
-
-const getOpenAIClient = () => {
-  if (!process.env.OPENAI_API_KEY) {
-    return null;
-  }
-
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
-};
 
 const inferSourceType = ({ mimeType, hasFile, observedText }) => {
   if (mimeType === "application/pdf") {
@@ -223,18 +50,24 @@ const LOCAL_DIGITIZER_SCRIPT = path.resolve(
   __dirname,
   "../scripts/ecg_digitize.py",
 );
+const LOCAL_PDF_RASTERIZER_SCRIPT = path.resolve(
+  __dirname,
+  "../scripts/ecg_pdf_to_image.py",
+);
 
 const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
 
-const runLocalDigitizer = ({
-  acquisitionNote,
-  observedText,
-  base64Data,
+const runPythonJsonTool = ({
+  scriptPath,
+  payload,
+  startupErrorMessage,
+  exitErrorMessage,
+  parseErrorMessage,
 }) =>
   new Promise((resolve, reject) => {
     const child = spawn(
       "python",
-      [LOCAL_DIGITIZER_SCRIPT],
+      [scriptPath],
       {
         stdio: ["pipe", "pipe", "pipe"],
       },
@@ -254,7 +87,7 @@ const runLocalDigitizer = ({
     child.on("error", (error) => {
       reject(
         new Error(
-          error?.message || "Unable to start the local ECG digitizer.",
+          error?.message || startupErrorMessage,
         ),
       );
     });
@@ -265,7 +98,7 @@ const runLocalDigitizer = ({
           new Error(
             stderr.trim() ||
               stdout.trim() ||
-              "Local ECG digitizer exited unexpectedly.",
+              exitErrorMessage,
           ),
         );
         return;
@@ -273,127 +106,63 @@ const runLocalDigitizer = ({
 
       try {
         const parsed = JSON.parse(stdout || "{}");
-
-        if (!parsed?.ok || !parsed?.analysis) {
-          throw new Error(parsed?.error || "Local ECG digitizer returned no analysis.");
+        if (!parsed?.ok) {
+          throw new Error(parsed?.error || exitErrorMessage);
         }
-
-        resolve(parsed.analysis);
+        resolve(parsed);
       } catch (error) {
         reject(
           new Error(
-            error?.message || "Unable to parse the local ECG digitizer response.",
+            error?.message || parseErrorMessage,
           ),
         );
       }
     });
 
-    child.stdin.write(
-      JSON.stringify({
-        acquisitionNote,
-        observedText,
-        base64Data,
-      }),
-    );
+    child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   });
 
-const buildFileInput = ({ mimeType, fileName, base64Data }) => {
-  if (!mimeType || !base64Data) {
-    return null;
-  }
-
-  if (mimeType === "application/pdf") {
-    return {
-      type: "input_file",
-      filename: fileName || "ecg.pdf",
-      file_data: base64Data,
-    };
-  }
-
-  return {
-    type: "input_image",
-    detail: "high",
-    image_url: `data:${mimeType};base64,${base64Data}`,
-  };
-};
-
-const buildUserPrompt = ({ acquisitionNote, observedText, pdfPage }) => {
-  return `Analyze this ECG source and extract observable phenomena only.
-
-Acquisition note:
-${acquisitionNote || "Not provided."}
-
-Selected PDF page:
-${pdfPage || "Not specified."}
-
-Additional textual observations:
-${observedText || "None provided."}
-
-Return only structured ECG phenomena, measurements, waveform points, increases, decreases, lead-based observations, and source limitations.
-Do not provide diagnosis or interpretation.`;
-};
-
-const parseStructuredOutput = (response) => {
-  const raw = String(response?.output_text || "").trim();
-
-  if (!raw) {
-    throw new Error("OpenAI returned an empty ECG analysis.");
-  }
-
-  return JSON.parse(raw);
-};
-
-const requestOpenAIAnalysis = async ({
-  client,
+const runLocalDigitizer = ({
   acquisitionNote,
   observedText,
-  pdfPage,
-  mimeType,
-  fileName,
   base64Data,
-}) => {
-  const content = [
-    {
-      type: "input_text",
-      text: buildUserPrompt({
-        acquisitionNote,
-        observedText,
-        pdfPage,
-      }),
+}) =>
+  runPythonJsonTool({
+    scriptPath: LOCAL_DIGITIZER_SCRIPT,
+    payload: {
+      acquisitionNote,
+      observedText,
+      base64Data,
     },
-  ];
+    startupErrorMessage: "Unable to start the local ECG digitizer.",
+    exitErrorMessage: "Local ECG digitizer exited unexpectedly.",
+    parseErrorMessage: "Unable to parse the local ECG digitizer response.",
+  }).then((parsed) => {
+    if (!parsed?.analysis) {
+      throw new Error("Local ECG digitizer returned no analysis.");
+    }
 
-  const fileInput = buildFileInput({
-    mimeType,
-    fileName,
-    base64Data,
+    return parsed.analysis;
   });
 
-  if (fileInput) {
-    content.push(fileInput);
-  }
-
-  const response = await client.responses.create({
-    model: DEFAULT_MODEL,
-    instructions: ECG_ANALYSIS_INSTRUCTIONS,
-    input: [
-      {
-        role: "user",
-        content,
-      },
-    ],
-    text: {
-      verbosity: "low",
-      format: {
-        type: "json_schema",
-        ...ECG_ANALYSIS_SCHEMA,
-      },
+const rasterizePdfPage = ({ base64Data, pdfPage }) =>
+  runPythonJsonTool({
+    scriptPath: LOCAL_PDF_RASTERIZER_SCRIPT,
+    payload: {
+      base64Data,
+      pdfPage,
     },
-  });
+    startupErrorMessage: "Unable to start the local ECG PDF rasterizer.",
+    exitErrorMessage: "Local ECG PDF rasterizer exited unexpectedly.",
+    parseErrorMessage: "Unable to parse the local ECG PDF rasterizer response.",
+  }).then((parsed) => {
+    if (!parsed?.base64Data) {
+      throw new Error("Local ECG PDF rasterizer returned no image data.");
+    }
 
-  return parseStructuredOutput(response);
-};
+    return parsed;
+  });
 
 ECGRouter.get("/", function (req, res) {
   return res.status(200).json({
@@ -406,6 +175,7 @@ ECGRouter.get("/", function (req, res) {
       "text-only ECG observations in JSON body",
     ],
     supportedMimeTypes: [...SUPPORTED_FILE_TYPES],
+    method: LOCAL_METHOD,
   });
 });
 
@@ -446,83 +216,54 @@ ECGRouter.post(
         observedText,
       });
 
-      if (
-        LOCAL_DIGITIZER_ENABLED &&
-        sourceType === "image" &&
-        base64Data &&
-        isImageMimeType(mimeType)
-      ) {
-        try {
-          const analysis = await runLocalDigitizer({
-            acquisitionNote,
-            observedText,
-            base64Data,
-          });
+      if (sourceType === "pdf") {
+        const rasterizedPage = await rasterizePdfPage({
+          base64Data,
+          pdfPage,
+        });
 
-          return res.status(200).json({
-            mode: "non-diagnostic",
-            sourceType,
-            method: LOCAL_METHOD,
-            analysis,
-          });
-        } catch (localError) {
-          const client = getOpenAIClient();
+        const analysis = await runLocalDigitizer({
+          acquisitionNote:
+            acquisitionNote ||
+            `PDF ECG page ${rasterizedPage.selectedPage} rasterized locally before digitization.`,
+          observedText,
+          base64Data: rasterizedPage.base64Data,
+        });
 
-          if (!client) {
-            return res.status(500).json({
-              message: `Local ECG digitization failed: ${localError.message}`,
-            });
-          }
-
-          const analysis = await requestOpenAIAnalysis({
-            client,
-            acquisitionNote,
-            observedText,
-            pdfPage,
-            mimeType,
-            fileName,
-            base64Data,
-          });
-
-          return res.status(200).json({
-            model: DEFAULT_MODEL,
-            mode: "non-diagnostic",
-            sourceType,
-            method: "openai_fallback_after_local_failure",
-            analysis,
-            warning: `Local ECG digitization failed and the request used model fallback: ${localError.message}`,
-          });
-        }
-      }
-
-      const client = getOpenAIClient();
-
-      if (!client) {
-        return res.status(500).json({
-          message:
-            sourceType === "pdf"
-              ? "PDF ECG analysis currently needs OPENAI_API_KEY because local PDF digitization is not configured yet."
-              : LOCAL_DIGITIZER_ENABLED
-                ? "Missing OPENAI_API_KEY in the backend environment."
-                : "OPENAI_API_KEY is required because local ECG digitization is disabled on this deployment.",
+        return res.status(200).json({
+          mode: "non-diagnostic",
+          sourceType,
+          method: `${LOCAL_METHOD}_via_pdf_rasterization`,
+          analysis,
+          pdfPage: rasterizedPage.selectedPage,
+          pdfPageCount: rasterizedPage.pageCount,
         });
       }
 
-      const analysis = await requestOpenAIAnalysis({
-        client,
+      if (sourceType === "text") {
+        return res.status(501).json({
+          message:
+            "Local ECG digitization currently needs an ECG image upload. Text-only local analysis is not implemented.",
+        });
+      }
+
+      if (!base64Data || !isImageMimeType(mimeType)) {
+        return res.status(400).json({
+          message:
+            "Local ECG digitization needs a supported ECG image upload: JPG, PNG, WEBP, HEIC, or HEIF.",
+        });
+      }
+
+      const analysis = await runLocalDigitizer({
         acquisitionNote,
         observedText,
-        pdfPage,
-        mimeType,
-        fileName,
         base64Data,
       });
 
       return res.status(200).json({
-        model: DEFAULT_MODEL,
         mode: "non-diagnostic",
         sourceType,
-        method: "openai",
+        method: LOCAL_METHOD,
         analysis,
       });
     } catch (error) {

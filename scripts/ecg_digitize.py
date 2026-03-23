@@ -148,6 +148,12 @@ def detect_key_points(normalized_trace, max_points=6):
     return entries
 
 
+def encode_preview_image(rgb):
+    output = io.BytesIO()
+    Image.fromarray(rgb).save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode("ascii")
+
+
 def build_analysis(payload):
     base64_data = str(payload.get("base64Data") or "").strip()
     if not base64_data:
@@ -341,6 +347,9 @@ def build_analysis(payload):
         "nonDiagnosticNotice": (
             "Observable ECG findings only. This local digitizer extracts graph behavior and does not provide a diagnosis."
         ),
+        "previewImageBase64": encode_preview_image(rgb),
+        "previewImageMimeType": "image/png",
+        "rotationApplied": oriented["label"],
     }
 
     return analysis
