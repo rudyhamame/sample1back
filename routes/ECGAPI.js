@@ -9,6 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const LOCAL_METHOD = "deterministic_digitizer";
+const PYTHON_BINARY = process.env.PYTHON_BINARY || "python";
+const PYTHON_TOOL_TIMEOUT_MS = 45000;
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -54,6 +56,11 @@ const LOCAL_PDF_RASTERIZER_SCRIPT = path.resolve(
   __dirname,
   "../scripts/ecg_pdf_to_image.py",
 );
+let ecgHealthCache = {
+  checkedAt: 0,
+  status: "checking",
+  details: null,
+};
 
 const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
 
@@ -66,7 +73,7 @@ const runPythonJsonTool = ({
 }) =>
   new Promise((resolve, reject) => {
     const child = spawn(
-      "python",
+      PYTHON_BINARY,
       [scriptPath],
       {
         stdio: ["pipe", "pipe", "pipe"],
@@ -75,6 +82,16 @@ const runPythonJsonTool = ({
 
     let stdout = "";
     let stderr = "";
+    let finished = false;
+    const timeoutId = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      child.kill("SIGKILL");
+      reject(new Error(`${exitErrorMessage} Timed out after ${PYTHON_TOOL_TIMEOUT_MS / 1000} seconds.`));
+    }, PYTHON_TOOL_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
@@ -85,6 +102,11 @@ const runPythonJsonTool = ({
     });
 
     child.on("error", (error) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
       reject(
         new Error(
           error?.message || startupErrorMessage,
@@ -93,6 +115,11 @@ const runPythonJsonTool = ({
     });
 
     child.on("close", (code) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
       if (code !== 0) {
         reject(
           new Error(
@@ -122,6 +149,102 @@ const runPythonJsonTool = ({
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   });
+
+const runPythonCommand = ({ args, timeoutMs = 12000 }) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(PYTHON_BINARY, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+    const timeoutId = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      child.kill("SIGKILL");
+      reject(new Error(`Timed out after ${timeoutMs / 1000} seconds.`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutId);
+
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || stdout.trim() || `Exited with code ${code}.`));
+        return;
+      }
+
+      resolve({
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+      });
+    });
+  });
+
+const checkLocalEcgEnvironment = async () => {
+  const now = Date.now();
+  if (now - ecgHealthCache.checkedAt < 30000 && ecgHealthCache.details) {
+    return ecgHealthCache.details;
+  }
+
+  try {
+    const result = await runPythonCommand({
+      args: [
+        "-c",
+        "import importlib.util, json; mods=['PIL','cv2','numpy','scipy','pypdfium2']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print(json.dumps({'python':'ok','missing':missing}))",
+      ],
+      timeoutMs: 12000,
+    });
+    const parsed = JSON.parse(result.stdout || "{}");
+    const details = {
+      status: Array.isArray(parsed.missing) && parsed.missing.length === 0 ? "healthy" : "degraded",
+      python: "ok",
+      missingModules: Array.isArray(parsed.missing) ? parsed.missing : [],
+    };
+    ecgHealthCache = {
+      checkedAt: now,
+      status: details.status,
+      details,
+    };
+    return details;
+  } catch (error) {
+    const details = {
+      status: "offline",
+      python: "unavailable",
+      missingModules: [],
+      error: error?.message || "Python ECG toolchain is unavailable.",
+    };
+    ecgHealthCache = {
+      checkedAt: now,
+      status: details.status,
+      details,
+    };
+    return details;
+  }
+};
 
 const runLocalDigitizer = ({
   acquisitionNote,
@@ -179,11 +302,36 @@ ECGRouter.get("/", function (req, res) {
   });
 });
 
+ECGRouter.get("/health", async function (req, res) {
+  const toolchain = await checkLocalEcgEnvironment();
+  const httpStatus = toolchain.status === "healthy" ? 200 : 503;
+
+  return res.status(httpStatus).json({
+    status: toolchain.status,
+    mode: "local-only",
+    method: LOCAL_METHOD,
+    pythonBinary: PYTHON_BINARY,
+    toolchain,
+  });
+});
+
 ECGRouter.post(
   "/analyze",
   upload.single("file"),
   async function (req, res, next) {
     try {
+      const toolchain = await checkLocalEcgEnvironment();
+      if (toolchain.status !== "healthy") {
+        return res.status(503).json({
+          message:
+            toolchain.error ||
+            (toolchain.missingModules?.length
+              ? `Local ECG toolchain is unavailable. Missing Python modules: ${toolchain.missingModules.join(", ")}.`
+              : "Local ECG toolchain is unavailable on this deployment."),
+          toolchain,
+        });
+      }
+
       const uploadedFile = req.file || null;
       const jsonMimeType = String(req.body?.mimeType || "").trim();
       const jsonFileName = String(req.body?.fileName || "").trim();
