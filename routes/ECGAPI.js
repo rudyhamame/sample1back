@@ -70,6 +70,35 @@ const usingRemoteEcgService = () => Boolean(ECG_PYTHON_SERVICE_URL);
 
 const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
 
+const extractAnalysisRequest = (req) => {
+  const uploadedFile = req.file || null;
+  const jsonMimeType = String(req.body?.mimeType || "").trim();
+  const jsonFileName = String(req.body?.fileName || "").trim();
+  const acquisitionNote = String(req.body?.acquisitionNote || "").trim();
+  const observedText = String(req.body?.observedText || "").trim();
+  const pdfPage = Math.max(1, Number(req.body?.pdfPage) || 1);
+  const rawBase64 = normalizeBase64(req.body?.fileData || "");
+  const mimeType = uploadedFile?.mimetype || jsonMimeType;
+  const fileName = uploadedFile?.originalname || jsonFileName || "ecg-source";
+  const base64Data = uploadedFile?.buffer?.toString("base64") || rawBase64;
+  const sourceType = inferSourceType({
+    mimeType,
+    hasFile: Boolean(uploadedFile || base64Data),
+    observedText,
+  });
+
+  return {
+    uploadedFile,
+    acquisitionNote,
+    observedText,
+    pdfPage,
+    mimeType,
+    fileName,
+    base64Data,
+    sourceType,
+  };
+};
+
 const callRemoteEcgService = async ({ pathname, method = "GET", payload }) => {
   if (!usingRemoteEcgService()) {
     throw new Error("ECG_PYTHON_SERVICE_URL is not configured.");
@@ -445,17 +474,16 @@ ECGRouter.post(
   upload.single("file"),
   async function (req, res, next) {
     try {
-      const uploadedFile = req.file || null;
-      const jsonMimeType = String(req.body?.mimeType || "").trim();
-      const jsonFileName = String(req.body?.fileName || "").trim();
-      const acquisitionNote = String(req.body?.acquisitionNote || "").trim();
-      const observedText = String(req.body?.observedText || "").trim();
-      const pdfPage = Math.max(1, Number(req.body?.pdfPage) || 1);
-      const rawBase64 = normalizeBase64(req.body?.fileData || "");
-
-      const mimeType = uploadedFile?.mimetype || jsonMimeType;
-      const fileName = uploadedFile?.originalname || jsonFileName || "ecg-source";
-      const base64Data = uploadedFile?.buffer?.toString("base64") || rawBase64;
+      const {
+        uploadedFile,
+        acquisitionNote,
+        observedText,
+        pdfPage,
+        mimeType,
+        fileName,
+        base64Data,
+        sourceType,
+      } = extractAnalysisRequest(req);
 
       if (!uploadedFile && !base64Data && !observedText) {
         return res.status(400).json({
@@ -471,16 +499,10 @@ ECGRouter.post(
         });
       }
 
-      const sourceType = inferSourceType({
-        mimeType,
-        hasFile: Boolean(uploadedFile || base64Data),
-        observedText,
-      });
-
       if (usingRemoteEcgService()) {
         try {
-          const remoteAnalysis = await callRemoteEcgService({
-            pathname: "/api/ecg/analyze",
+          const remoteJob = await callRemoteEcgService({
+            pathname: "/api/ecg/jobs",
             method: "POST",
             payload: {
               acquisitionNote,
@@ -492,10 +514,11 @@ ECGRouter.post(
             },
           });
 
-          return res.status(200).json({
-            ...remoteAnalysis,
+          return res.status(202).json({
+            ...remoteJob,
             serviceMode: "remote-python-service",
             serviceUrl: ECG_PYTHON_SERVICE_URL,
+            sourceType,
           });
         } catch (error) {
           return res.status(error?.status || 503).json({
@@ -581,6 +604,35 @@ ECGRouter.post(
     }
   }
 );
+
+ECGRouter.get("/jobs/:jobId", async function (req, res) {
+  if (usingRemoteEcgService()) {
+    try {
+      const remoteJob = await callRemoteEcgService({
+        pathname: `/api/ecg/jobs/${encodeURIComponent(String(req.params.jobId || ""))}`,
+      });
+      return res.status(200).json({
+        ...remoteJob,
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    } catch (error) {
+      return res.status(error?.status || 503).json({
+        ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+        message:
+          error?.payload?.message ||
+          error?.message ||
+          "Remote ECG service is unavailable.",
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    }
+  }
+
+  return res.status(501).json({
+    message: "Local ECG job polling is not implemented.",
+  });
+});
 
 ECGRouter.use(function (error, req, res, next) {
   if (error?.code === "LIMIT_FILE_SIZE") {
