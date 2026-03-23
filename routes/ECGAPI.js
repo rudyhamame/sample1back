@@ -408,7 +408,7 @@ ECGRouter.get("/health", async function (req, res) {
   if (usingRemoteEcgService()) {
     try {
       const remoteHealth = await callRemoteEcgService({
-        pathname: "/health",
+        pathname: "/api/ecg/health",
       });
       const httpStatus = remoteHealth?.status === "healthy" ? 200 : 503;
       return res.status(httpStatus).json({
@@ -480,7 +480,7 @@ ECGRouter.post(
       if (usingRemoteEcgService()) {
         try {
           const remoteAnalysis = await callRemoteEcgService({
-            pathname: "/analyze",
+            pathname: "/api/ecg/analyze",
             method: "POST",
             payload: {
               acquisitionNote,
