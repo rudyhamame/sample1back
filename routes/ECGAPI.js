@@ -11,7 +11,11 @@ const __dirname = path.dirname(__filename);
 const LOCAL_METHOD = "deterministic_digitizer";
 const PYTHON_BINARY = process.env.PYTHON_BINARY || "python";
 const PYTHON_TOOL_TIMEOUT_MS = 45000;
+const ECG_SERVICE_TIMEOUT_MS = 60000;
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
+const ECG_PYTHON_SERVICE_URL = String(
+  process.env.ECG_PYTHON_SERVICE_URL || "",
+).trim().replace(/\/+$/, "");
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -62,7 +66,75 @@ let ecgHealthCache = {
   details: null,
 };
 
+const usingRemoteEcgService = () => Boolean(ECG_PYTHON_SERVICE_URL);
+
 const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
+
+const callRemoteEcgService = async ({ pathname, method = "GET", payload }) => {
+  if (!usingRemoteEcgService()) {
+    throw new Error("ECG_PYTHON_SERVICE_URL is not configured.");
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, ECG_SERVICE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${ECG_PYTHON_SERVICE_URL}${pathname}`, {
+      method,
+      headers:
+        method === "GET"
+          ? undefined
+          : {
+              "Content-Type": "application/json",
+            },
+      body: method === "GET" ? undefined : JSON.stringify(payload || {}),
+      signal: controller.signal,
+    });
+
+    const rawText = await response.text();
+    let parsed = null;
+    try {
+      parsed = rawText ? JSON.parse(rawText) : {};
+    } catch (error) {
+      parsed = {
+        message: rawText || "Remote ECG service returned a non-JSON response.",
+      };
+    }
+
+    if (!response.ok) {
+      const serviceError = new Error(
+        parsed?.message || `Remote ECG service responded with HTTP ${response.status}.`,
+      );
+      serviceError.status = response.status;
+      serviceError.payload = parsed;
+      throw serviceError;
+    }
+
+    return parsed;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error(
+        `Remote ECG service timed out after ${ECG_SERVICE_TIMEOUT_MS / 1000} seconds.`,
+      );
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+
+    if (typeof error?.status === "number") {
+      throw error;
+    }
+
+    const networkError = new Error(
+      error?.message || "Unable to reach the remote ECG service.",
+    );
+    networkError.status = 503;
+    throw networkError;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 const runPythonJsonTool = ({
   scriptPath,
@@ -333,6 +405,29 @@ ECGRouter.get("/", function (req, res) {
 });
 
 ECGRouter.get("/health", async function (req, res) {
+  if (usingRemoteEcgService()) {
+    try {
+      const remoteHealth = await callRemoteEcgService({
+        pathname: "/health",
+      });
+      const httpStatus = remoteHealth?.status === "healthy" ? 200 : 503;
+      return res.status(httpStatus).json({
+        ...remoteHealth,
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    } catch (error) {
+      return res.status(error?.status || 503).json({
+        status: "offline",
+        mode: "remote-python-service",
+        method: LOCAL_METHOD,
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+        message: error?.payload?.message || error?.message || "Remote ECG service is unavailable.",
+        toolchain: error?.payload?.toolchain || null,
+      });
+    }
+  }
+
   const toolchain = await checkLocalEcgEnvironment();
   const httpStatus = toolchain.status === "healthy" ? 200 : 503;
 
@@ -350,18 +445,6 @@ ECGRouter.post(
   upload.single("file"),
   async function (req, res, next) {
     try {
-      const toolchain = await checkLocalEcgEnvironment();
-      if (toolchain.status !== "healthy") {
-        return res.status(503).json({
-          message:
-            toolchain.error ||
-            (toolchain.missingModules?.length
-              ? `Local ECG toolchain is unavailable. Missing Python modules: ${toolchain.missingModules.join(", ")}.`
-              : "Local ECG toolchain is unavailable on this deployment."),
-          toolchain,
-        });
-      }
-
       const uploadedFile = req.file || null;
       const jsonMimeType = String(req.body?.mimeType || "").trim();
       const jsonFileName = String(req.body?.fileName || "").trim();
@@ -393,6 +476,51 @@ ECGRouter.post(
         hasFile: Boolean(uploadedFile || base64Data),
         observedText,
       });
+
+      if (usingRemoteEcgService()) {
+        try {
+          const remoteAnalysis = await callRemoteEcgService({
+            pathname: "/analyze",
+            method: "POST",
+            payload: {
+              acquisitionNote,
+              observedText,
+              mimeType,
+              fileName,
+              fileData: base64Data,
+              pdfPage,
+            },
+          });
+
+          return res.status(200).json({
+            ...remoteAnalysis,
+            serviceMode: "remote-python-service",
+            serviceUrl: ECG_PYTHON_SERVICE_URL,
+          });
+        } catch (error) {
+          return res.status(error?.status || 503).json({
+            ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+            message:
+              error?.payload?.message ||
+              error?.message ||
+              "Remote ECG service is unavailable.",
+            serviceMode: "remote-python-service",
+            serviceUrl: ECG_PYTHON_SERVICE_URL,
+          });
+        }
+      }
+
+      const toolchain = await checkLocalEcgEnvironment();
+      if (toolchain.status !== "healthy") {
+        return res.status(503).json({
+          message:
+            toolchain.error ||
+            (toolchain.missingModules?.length
+              ? `Local ECG toolchain is unavailable. Missing Python modules: ${toolchain.missingModules.join(", ")}.`
+              : "Local ECG toolchain is unavailable on this deployment."),
+          toolchain,
+        });
+      }
 
       if (sourceType === "pdf") {
         const rasterizedPage = await rasterizePdfPage({
