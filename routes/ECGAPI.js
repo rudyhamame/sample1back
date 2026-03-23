@@ -11,6 +11,9 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
 const LOCAL_METHOD = "deterministic_digitizer";
+const LOCAL_DIGITIZER_ENABLED =
+  String(process.env.ECG_LOCAL_DIGITIZER_ENABLED || "").trim().toLowerCase() ===
+  "true";
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -443,7 +446,12 @@ ECGRouter.post(
         observedText,
       });
 
-      if (sourceType === "image" && base64Data && isImageMimeType(mimeType)) {
+      if (
+        LOCAL_DIGITIZER_ENABLED &&
+        sourceType === "image" &&
+        base64Data &&
+        isImageMimeType(mimeType)
+      ) {
         try {
           const analysis = await runLocalDigitizer({
             acquisitionNote,
@@ -494,7 +502,9 @@ ECGRouter.post(
           message:
             sourceType === "pdf"
               ? "PDF ECG analysis currently needs OPENAI_API_KEY because local PDF digitization is not configured yet."
-              : "Missing OPENAI_API_KEY in the backend environment.",
+              : LOCAL_DIGITIZER_ENABLED
+                ? "Missing OPENAI_API_KEY in the backend environment."
+                : "OPENAI_API_KEY is required because local ECG digitization is disabled on this deployment.",
         });
       }
 
