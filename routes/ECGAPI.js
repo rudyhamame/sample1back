@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const LOCAL_METHOD = "deterministic_digitizer";
+const DIGITAL_TRACE_METHOD = "digital_trace_ingest";
 const PYTHON_BINARY = process.env.PYTHON_BINARY || "python";
 const PYTHON_TOOL_TIMEOUT_MS = 45000;
 const ECG_SERVICE_TIMEOUT_MS = 600000;
@@ -16,18 +17,6 @@ const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const ECG_PYTHON_SERVICE_URL = String(
   process.env.ECG_PYTHON_SERVICE_URL || "",
 ).trim().replace(/\/+$/, "");
-const SUPPORTED_IMAGE_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-]);
-const SUPPORTED_FILE_TYPES = new Set([
-  ...SUPPORTED_IMAGE_TYPES,
-  "application/pdf",
-]);
-
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -35,13 +24,46 @@ const upload = multer({
   },
 });
 
-const inferSourceType = ({ mimeType, hasFile, observedText }) => {
-  if (mimeType === "application/pdf") {
-    return "pdf";
+const parseJsonField = (value) => {
+  if (typeof value !== "string") {
+    return value;
   }
 
-  if (hasFile) {
-    return "image";
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return value;
+  }
+};
+
+const hasDeviceTracePayload = (payload) =>
+  [
+    payload?.digitalTraces,
+    payload?.leadTraces,
+    payload?.deviceTraces,
+    payload?.traces,
+    payload?.leadSignals,
+    payload?.leads,
+  ].some((value) => {
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+
+    if (value && typeof value === "object") {
+      return Object.keys(value).length > 0;
+    }
+
+    return typeof value === "string" && value.trim().length > 0;
+  });
+
+const inferSourceType = ({ mimeType, hasFile, observedText, hasDigitalTraces }) => {
+  if (hasDigitalTraces) {
+    return "device";
   }
 
   if (String(observedText || "").trim()) {
@@ -52,13 +74,9 @@ const inferSourceType = ({ mimeType, hasFile, observedText }) => {
 };
 
 const normalizeBase64 = (value) => String(value || "").replace(/\s/g, "");
-const LOCAL_DIGITIZER_SCRIPT = path.resolve(
+const LOCAL_DIGITAL_TRACE_SCRIPT = path.resolve(
   __dirname,
-  "../scripts/ecg_digitize.py",
-);
-const LOCAL_PDF_RASTERIZER_SCRIPT = path.resolve(
-  __dirname,
-  "../scripts/ecg_pdf_to_image.py",
+  "../scripts/ecg_digital_trace_analysis.py",
 );
 let ecgHealthCache = {
   checkedAt: 0,
@@ -67,8 +85,6 @@ let ecgHealthCache = {
 };
 
 const usingRemoteEcgService = () => Boolean(ECG_PYTHON_SERVICE_URL);
-
-const isImageMimeType = (mimeType) => SUPPORTED_IMAGE_TYPES.has(String(mimeType || "").trim());
 
 const shouldFallbackToLocalEcg = (error) => {
   const status = Number(error?.status || 0);
@@ -95,14 +111,31 @@ const extractAnalysisRequest = (req) => {
   const acquisitionNote = String(req.body?.acquisitionNote || "").trim();
   const observedText = String(req.body?.observedText || "").trim();
   const pdfPage = Math.max(1, Number(req.body?.pdfPage) || 1);
+  const digitalTraces = parseJsonField(req.body?.digitalTraces);
+  const leadTraces = parseJsonField(req.body?.leadTraces);
+  const deviceTraces = parseJsonField(req.body?.deviceTraces);
+  const traces = parseJsonField(req.body?.traces);
+  const leadSignals = parseJsonField(req.body?.leadSignals);
+  const leads = parseJsonField(req.body?.leads);
+  const sampleRateHz = Number(req.body?.sampleRateHz || req.body?.samplingRateHz) || undefined;
+  const traceUnit = String(req.body?.traceUnit || req.body?.signalUnit || req.body?.unit || "").trim();
   const rawBase64 = normalizeBase64(req.body?.fileData || "");
   const mimeType = uploadedFile?.mimetype || jsonMimeType;
   const fileName = uploadedFile?.originalname || jsonFileName || "ecg-source";
   const base64Data = uploadedFile?.buffer?.toString("base64") || rawBase64;
+  const hasDigitalTraces = hasDeviceTracePayload({
+    digitalTraces,
+    leadTraces,
+    deviceTraces,
+    traces,
+    leadSignals,
+    leads,
+  });
   const sourceType = inferSourceType({
     mimeType,
     hasFile: Boolean(uploadedFile || base64Data),
     observedText,
+    hasDigitalTraces,
   });
 
   return {
@@ -114,6 +147,14 @@ const extractAnalysisRequest = (req) => {
     fileName,
     base64Data,
     sourceType,
+    digitalTraces,
+    leadTraces,
+    deviceTraces,
+    traces,
+    leadSignals,
+    leads,
+    sampleRateHz,
+    traceUnit,
   };
 };
 
@@ -363,7 +404,7 @@ const checkLocalEcgEnvironment = async () => {
     const result = await runPythonCommand({
       args: [
         "-c",
-        "import importlib.util, json; mods=['PIL','cv2','numpy','scipy','pypdfium2']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print(json.dumps({'python':'ok','missing':missing}))",
+        "import importlib.util, json; mods=['numpy','scipy']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print(json.dumps({'python':'ok','missing':missing,'engine':'digital_trace_ingest'}))",
       ],
       timeoutMs: 12000,
     });
@@ -372,6 +413,7 @@ const checkLocalEcgEnvironment = async () => {
       status: Array.isArray(parsed.missing) && parsed.missing.length === 0 ? "healthy" : "degraded",
       python: "ok",
       missingModules: Array.isArray(parsed.missing) ? parsed.missing : [],
+      engine: String(parsed.engine || DIGITAL_TRACE_METHOD),
     };
     ecgHealthCache = {
       checkedAt: now,
@@ -395,45 +437,41 @@ const checkLocalEcgEnvironment = async () => {
   }
 };
 
-const runLocalDigitizer = ({
+const runLocalDigitalTraceAnalyzer = ({
   acquisitionNote,
   observedText,
-  base64Data,
+  digitalTraces,
+  leadTraces,
+  deviceTraces,
+  traces,
+  leadSignals,
+  leads,
+  sampleRateHz,
+  traceUnit,
 }) =>
   runPythonJsonTool({
-    scriptPath: LOCAL_DIGITIZER_SCRIPT,
+    scriptPath: LOCAL_DIGITAL_TRACE_SCRIPT,
     payload: {
       acquisitionNote,
       observedText,
-      base64Data,
+      digitalTraces,
+      leadTraces,
+      deviceTraces,
+      traces,
+      leadSignals,
+      leads,
+      sampleRateHz,
+      traceUnit,
     },
-    startupErrorMessage: "Unable to start the local ECG digitizer.",
-    exitErrorMessage: "Local ECG digitizer exited unexpectedly.",
-    parseErrorMessage: "Unable to parse the local ECG digitizer response.",
+    startupErrorMessage: "Unable to start the local digital ECG trace analyzer.",
+    exitErrorMessage: "Local digital ECG trace analyzer exited unexpectedly.",
+    parseErrorMessage: "Unable to parse the local digital ECG trace analyzer response.",
   }).then((parsed) => {
     if (!parsed?.analysis) {
-      throw new Error("Local ECG digitizer returned no analysis.");
+      throw new Error("Local digital ECG trace analyzer returned no analysis.");
     }
 
     return parsed.analysis;
-  });
-
-const rasterizePdfPage = ({ base64Data, pdfPage }) =>
-  runPythonJsonTool({
-    scriptPath: LOCAL_PDF_RASTERIZER_SCRIPT,
-    payload: {
-      base64Data,
-      pdfPage,
-    },
-    startupErrorMessage: "Unable to start the local ECG PDF rasterizer.",
-    exitErrorMessage: "Local ECG PDF rasterizer exited unexpectedly.",
-    parseErrorMessage: "Unable to parse the local ECG PDF rasterizer response.",
-  }).then((parsed) => {
-    if (!parsed?.base64Data) {
-      throw new Error("Local ECG PDF rasterizer returned no image data.");
-    }
-
-    return parsed;
   });
 
 ECGRouter.get("/", function (req, res) {
@@ -442,12 +480,11 @@ ECGRouter.get("/", function (req, res) {
     status: "ready",
     mode: "non-diagnostic",
     acceptedInputs: [
-      "multipart/form-data file upload under field name 'file'",
-      "base64 file data in JSON body",
-      "text-only ECG observations in JSON body",
+      "digital ECG traces in JSON body under digitalTraces, leadTraces, traces, or leads",
+      "optional metadata like sampleRateHz, traceUnit, acquisitionNote, and observedText",
     ],
-    supportedMimeTypes: [...SUPPORTED_FILE_TYPES],
-    method: LOCAL_METHOD,
+    supportedMimeTypes: [],
+    method: DIGITAL_TRACE_METHOD,
   });
 });
 
@@ -483,7 +520,7 @@ ECGRouter.get("/health", async function (req, res) {
   return res.status(httpStatus).json({
     status: toolchain.status,
     mode: "local-only",
-    method: LOCAL_METHOD,
+    method: DIGITAL_TRACE_METHOD,
     pythonBinary: PYTHON_BINARY,
     toolchain,
     remoteServiceFallback: usingRemoteEcgService(),
@@ -505,19 +542,26 @@ ECGRouter.post(
         fileName,
         base64Data,
         sourceType,
+        digitalTraces,
+        leadTraces,
+        deviceTraces,
+        traces,
+        leadSignals,
+        leads,
+        sampleRateHz,
+        traceUnit,
       } = extractAnalysisRequest(req);
 
-      if (!uploadedFile && !base64Data && !observedText) {
+      if (!uploadedFile && !base64Data && !observedText && sourceType !== "device") {
         return res.status(400).json({
           message:
-            "Provide an ECG file, base64 fileData, or observedText for analysis.",
+            "Provide device digital traces for analysis.",
         });
       }
 
-      if ((uploadedFile || base64Data) && !SUPPORTED_FILE_TYPES.has(mimeType)) {
+      if (sourceType !== "device") {
         return res.status(415).json({
-          message:
-            "Unsupported ECG file type. Use JPG, PNG, WEBP, HEIC, HEIF, or PDF.",
+          message: "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
         });
       }
 
@@ -533,6 +577,14 @@ ECGRouter.post(
               fileName,
               fileData: base64Data,
               pdfPage,
+              digitalTraces,
+              leadTraces,
+              deviceTraces,
+              traces,
+              leadSignals,
+              leads,
+              sampleRateHz,
+              traceUnit,
             },
           });
 
@@ -557,69 +609,31 @@ ECGRouter.post(
         }
       }
 
-      const toolchain = await checkLocalEcgEnvironment();
-      if (toolchain.status !== "healthy") {
-        return res.status(503).json({
-          message:
-            toolchain.error ||
-            (toolchain.missingModules?.length
-              ? `Local ECG toolchain is unavailable. Missing Python modules: ${toolchain.missingModules.join(", ")}.`
-              : "Local ECG toolchain is unavailable on this deployment."),
-          toolchain,
-        });
-      }
-
-      if (sourceType === "pdf") {
-        const rasterizedPage = await rasterizePdfPage({
-          base64Data,
-          pdfPage,
-        });
-
-        const analysis = await runLocalDigitizer({
-          acquisitionNote:
-            acquisitionNote ||
-            `PDF ECG page ${rasterizedPage.selectedPage} rasterized locally before digitization.`,
+      if (sourceType === "device") {
+        const analysis = await runLocalDigitalTraceAnalyzer({
+          acquisitionNote,
           observedText,
-          base64Data: rasterizedPage.base64Data,
+          digitalTraces,
+          leadTraces,
+          deviceTraces,
+          traces,
+          leadSignals,
+          leads,
+          sampleRateHz,
+          traceUnit,
         });
 
         return res.status(200).json({
           mode: "non-diagnostic",
           sourceType,
-          method: `${LOCAL_METHOD}_via_pdf_rasterization`,
+          method: DIGITAL_TRACE_METHOD,
           analysis,
-          pdfPage: rasterizedPage.selectedPage,
-          pdfPageCount: rasterizedPage.pageCount,
           serviceMode: "local-only",
         });
       }
 
-      if (sourceType === "text") {
-        return res.status(501).json({
-          message:
-            "Local ECG digitization currently needs an ECG image upload. Text-only local analysis is not implemented.",
-        });
-      }
-
-      if (!base64Data || !isImageMimeType(mimeType)) {
-        return res.status(400).json({
-          message:
-            "Local ECG digitization needs a supported ECG image upload: JPG, PNG, WEBP, HEIC, or HEIF.",
-        });
-      }
-
-      const analysis = await runLocalDigitizer({
-        acquisitionNote,
-        observedText,
-        base64Data,
-      });
-
-      return res.status(200).json({
-        mode: "non-diagnostic",
-        sourceType,
-        method: LOCAL_METHOD,
-        analysis,
-        serviceMode: "local-only",
+      return res.status(415).json({
+        message: "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
       });
     } catch (error) {
       return res.status(500).json({
@@ -657,6 +671,37 @@ ECGRouter.get("/jobs/:jobId", async function (req, res) {
 
   return res.status(501).json({
     message: "Local ECG job polling is not implemented.",
+  });
+});
+
+ECGRouter.post("/jobs/:jobId/cancel", async function (req, res) {
+  if (usingRemoteEcgService()) {
+    try {
+      const remoteJob = await callRemoteEcgService({
+        pathname: `/api/ecg/jobs/${encodeURIComponent(String(req.params.jobId || ""))}/cancel`,
+        method: "POST",
+        payload: {},
+      });
+      return res.status(200).json({
+        ...remoteJob,
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    } catch (error) {
+      return res.status(error?.status || 503).json({
+        ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+        message:
+          error?.payload?.message ||
+          error?.message ||
+          "Remote ECG service is unavailable.",
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    }
+  }
+
+  return res.status(501).json({
+    message: "Local ECG job cancellation is not implemented.",
   });
 });
 
