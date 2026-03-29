@@ -1,6 +1,7 @@
 //For user data
 import express from "express";
 import { execFileSync } from "child_process";
+import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import TestModel from "../models/Test.js";
@@ -66,6 +67,154 @@ const getUserAndFriendIds = (user) => {
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
+const CLOUDINARY_RING_VIDEO_UPLOAD_FOLDER = "sample1/noga-ring-videos";
+const CLOUDINARY_IMAGE_UPLOAD_FOLDER = "sample1/user-images";
+
+const sanitizeCloudinaryFolderSegment = (value, fallback = "user") => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return normalized || fallback;
+};
+
+const buildUserCloudinaryFolder = (baseFolder, userId) => {
+  const userSegment = sanitizeCloudinaryFolderSegment(
+    String(userId || ""),
+    "user",
+  );
+  return `${baseFolder}/${userSegment}`;
+};
+
+const buildUserRingVideoFolder = (userId) =>
+  buildUserCloudinaryFolder(CLOUDINARY_RING_VIDEO_UPLOAD_FOLDER, userId);
+
+const buildUserImageGalleryFolder = (userId) =>
+  buildUserCloudinaryFolder(CLOUDINARY_IMAGE_UPLOAD_FOLDER, userId);
+
+const ensureRingVideoFolderForUser = async (user) => {
+  if (!user?._id) {
+    return "";
+  }
+
+  const currentFolder = String(
+    user?.schoolPlanner?.ringVideo?.folder || "",
+  ).trim();
+  if (currentFolder) {
+    return currentFolder;
+  }
+
+  const folder = buildUserRingVideoFolder(user._id);
+
+  await UserModel.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        "schoolPlanner.ringVideo.folder": folder,
+      },
+    },
+  );
+
+  return folder;
+};
+
+const normalizeStoredGalleryImage = (image) => {
+  if (!image) {
+    return null;
+  }
+
+  const url = String(image?.url || image?.secure_url || "").trim();
+  const publicId = String(image?.publicId || image?.public_id || "").trim();
+  const resourceType =
+    String(image?.resourceType || image?.resource_type || "image")
+      .trim()
+      .toLowerCase() === "video"
+      ? "video"
+      : "image";
+
+  if (!url || !publicId) {
+    return null;
+  }
+
+  return {
+    url,
+    publicId,
+    assetId: String(image?.assetId || image?.asset_id || "").trim(),
+    folder: String(image?.folder || "").trim(),
+    resourceType,
+    mimeType: String(image?.mimeType || image?.mime_type || "").trim(),
+    width: Number(image?.width) || 0,
+    height: Number(image?.height) || 0,
+    format: String(image?.format || "").trim(),
+    bytes: Number(image?.bytes) || 0,
+    duration: Number(image?.duration) || 0,
+    createdAt: image?.createdAt ? new Date(image.createdAt) : new Date(),
+  };
+};
+
+const sortGalleryImages = (images = []) =>
+  images
+    .filter(Boolean)
+    .sort(
+      (firstImage, secondImage) =>
+        new Date(secondImage?.createdAt || 0).getTime() -
+        new Date(firstImage?.createdAt || 0).getTime(),
+    );
+
+const deleteCloudinaryAsset = async ({
+  cloudName = "",
+  apiKey = "",
+  apiSecret = "",
+  publicId = "",
+  resourceType = "image",
+}) => {
+  const normalizedPublicId = String(publicId || "").trim();
+
+  if (!cloudName || !apiKey || !apiSecret || !normalizedPublicId) {
+    return false;
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = buildCloudinarySignature({
+    paramsToSign: {
+      public_id: normalizedPublicId,
+      timestamp,
+    },
+    apiSecret,
+  });
+
+  const body = new URLSearchParams({
+    public_id: normalizedPublicId,
+    timestamp: String(timestamp),
+    api_key: apiKey,
+    signature,
+  });
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/destroy`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    },
+  );
+
+  if (!response.ok) {
+    return false;
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  return ["ok", "not found"].includes(
+    String(payload?.result || "")
+      .trim()
+      .toLowerCase(),
+  );
+};
 
 const getRequestIp = (req) => {
   const forwardedFor = req.headers["x-forwarded-for"];
@@ -87,7 +236,9 @@ const getCountryFromIp = (ipAddress) => {
     return "Unknown";
   }
 
-  const normalizedIp = String(ipAddress).replace(/^::ffff:/, "").trim();
+  const normalizedIp = String(ipAddress)
+    .replace(/^::ffff:/, "")
+    .trim();
 
   if (
     normalizedIp === "::1" ||
@@ -112,7 +263,7 @@ const getFrontendLastUpdated = () => {
       {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
-      }
+      },
     ).trim();
 
     if (!committedAt) {
@@ -123,6 +274,95 @@ const getFrontendLastUpdated = () => {
   } catch {
     return null;
   }
+};
+
+const getCloudinaryConfig = () => {
+  const envCloudName = String(process.env.CLOUDINARY_CLOUD_NAME || "").trim();
+  const envApiKey = String(process.env.CLOUDINARY_API_KEY || "").trim();
+  const envApiSecret = String(process.env.CLOUDINARY_API_SECRET || "").trim();
+  const cloudinaryUrl = String(process.env.CLOUDINARY_URL || "").trim();
+
+  let urlCloudName = "";
+  let urlApiKey = "";
+  let urlApiSecret = "";
+
+  if (cloudinaryUrl) {
+    try {
+      const parsedUrl = new URL(cloudinaryUrl);
+      if (parsedUrl.protocol === "cloudinary:") {
+        urlCloudName = String(parsedUrl.hostname || "").trim();
+        urlApiKey = decodeURIComponent(String(parsedUrl.username || "").trim());
+        urlApiSecret = decodeURIComponent(
+          String(parsedUrl.password || "").trim(),
+        );
+      }
+    } catch {
+      const normalizedCloudinaryUrl = cloudinaryUrl.replace(
+        /^cloudinary:\/\//i,
+        "",
+      );
+      const cloudinaryUrlMatch = normalizedCloudinaryUrl.match(
+        /^([^:]+):([^@]+)@(.+)$/,
+      );
+
+      if (cloudinaryUrlMatch) {
+        urlApiKey = decodeURIComponent(
+          String(cloudinaryUrlMatch[1] || "").trim(),
+        );
+        urlApiSecret = decodeURIComponent(
+          String(cloudinaryUrlMatch[2] || "").trim(),
+        );
+        urlCloudName = String(cloudinaryUrlMatch[3] || "").trim();
+      }
+    }
+  }
+
+  const cloudName = envCloudName || urlCloudName;
+  const apiKey = envApiKey || urlApiKey;
+  const apiSecret = envApiSecret || urlApiSecret;
+  const missing = [];
+
+  if (!cloudName) {
+    missing.push("CLOUDINARY_CLOUD_NAME");
+  }
+
+  if (!apiKey) {
+    missing.push("CLOUDINARY_API_KEY");
+  }
+
+  if (!apiSecret) {
+    missing.push("CLOUDINARY_API_SECRET");
+  }
+
+  return {
+    cloudName,
+    apiKey,
+    apiSecret,
+    missing,
+    isReady: Boolean(cloudName && apiKey && apiSecret),
+  };
+};
+
+const getPublicCloudinaryStatus = () => {
+  const cloudinaryConfig = getCloudinaryConfig();
+
+  return {
+    status: cloudinaryConfig.isReady ? "configured" : "missing",
+    missing: cloudinaryConfig.missing,
+  };
+};
+
+const buildCloudinarySignature = ({ paramsToSign = {}, apiSecret = "" }) => {
+  const serializedParams = Object.entries(paramsToSign)
+    .filter(([, value]) => String(value || "").trim() !== "")
+    .sort(([firstKey], [secondKey]) => firstKey.localeCompare(secondKey))
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join("&");
+
+  return crypto
+    .createHash("sha1")
+    .update(`${serializedParams}${apiSecret}`)
+    .digest("hex");
 };
 
 //Login API
@@ -151,7 +391,7 @@ UserRouter.post("/login", function (req, res, next) {
               },
               {
                 new: true,
-              }
+              },
             )
               .then((updatedUser) => {
                 emitUserRefresh(
@@ -161,7 +401,7 @@ UserRouter.post("/login", function (req, res, next) {
                   {
                     isConnected: true,
                     targetUserId: String(updatedUser._id),
-                  }
+                  },
                 );
                 const token = jwt.sign(
                   {
@@ -170,8 +410,8 @@ UserRouter.post("/login", function (req, res, next) {
                   },
                   process.env.JWT_KEY,
                   {
-                    expiresIn: "1h",
-                  }
+                    expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+                  },
                 );
                 res.status(201).json({
                   token: token,
@@ -224,7 +464,7 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const verificationCode = String(
-      Math.floor(100000 + Math.random() * 900000)
+      Math.floor(100000 + Math.random() * 900000),
     );
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -291,7 +531,7 @@ UserRouter.post("/signup/verify-code", async function (req, res, next) {
       });
     }
 
-    const createdUser = await UserModel.create({
+    const createdUser = new UserModel({
       "info.username": pendingSignup.username,
       "info.password": pendingSignup.passwordHash,
       "info.firstname": pendingSignup.firstname,
@@ -299,6 +539,14 @@ UserRouter.post("/signup/verify-code", async function (req, res, next) {
       "info.email": pendingSignup.email,
       "info.dob": pendingSignup.dob,
     });
+
+    createdUser.schoolPlanner = createdUser.schoolPlanner || {};
+    createdUser.schoolPlanner.ringVideo = {
+      ...(createdUser.schoolPlanner.ringVideo || {}),
+      folder: buildUserRingVideoFolder(createdUser._id),
+    };
+
+    await createdUser.save();
 
     await pendingSignup.deleteOne();
 
@@ -330,7 +578,7 @@ UserRouter.put("/connection/:id", function (req, res, next) {
 UserRouter.get("/update/:id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.id })
     .select(
-      "friends notifications chat posts terminology study_session login_record schoolPlanner study clinicalReality"
+      "info friends notifications chat posts terminology study_session login_record schoolPlanner study clinicalReality media status",
     )
     .populate({
       path: "friends",
@@ -344,7 +592,7 @@ UserRouter.get("/update/:id", function (req, res, next) {
       const ownPosts = Array.isArray(profile.posts) ? profile.posts : [];
       const friendPosts = Array.isArray(profile.friends)
         ? profile.friends.flatMap((friend) =>
-            Array.isArray(friend.posts) ? friend.posts : []
+            Array.isArray(friend.posts) ? friend.posts : [],
           )
         : [];
       const posts = [...ownPosts, ...friendPosts]
@@ -352,8 +600,8 @@ UserRouter.get("/update/:id", function (req, res, next) {
         .filter(
           (post, index, allPosts) =>
             allPosts.findIndex(
-              (candidate) => String(candidate?._id) === String(post?._id)
-            ) === index
+              (candidate) => String(candidate?._id) === String(post?._id),
+            ) === index,
         )
         .sort((firstPost, secondPost) => {
           const firstDate = new Date(firstPost?.date || 0).getTime();
@@ -361,29 +609,618 @@ UserRouter.get("/update/:id", function (req, res, next) {
           return secondDate - firstDate;
         });
 
-        res.status(200).json({
-          chat: Array.isArray(profile.chat?.conversation)
-            ? profile.chat.conversation
-            : [],
-          friends: profile.friends,
-          notifications: profile.notifications,
-          posts,
-          terminology: profile.terminology,
-          study_session: profile.study_session,
-          login_record: profile.login_record || [],
-          isOnline: profile.status.isConnected,
-          schoolPlanner: profile.schoolPlanner,
-          study: profile.study,
-          clinicalReality: profile.clinicalReality,
+      res.status(200).json({
+        info: profile.info,
+        chat: Array.isArray(profile.chat?.conversation)
+          ? profile.chat.conversation
+          : [],
+        friends: profile.friends,
+        notifications: profile.notifications,
+        posts,
+        terminology: profile.terminology,
+        study_session: profile.study_session,
+        login_record: profile.login_record || [],
+        isOnline: profile.status.isConnected,
+        schoolPlanner: profile.schoolPlanner,
+        study: profile.study,
+        clinicalReality: profile.clinicalReality,
+        media: profile.media || {
+          profilePicture: {
+            url: "",
+            publicId: "",
+            assetId: "",
+            updatedAt: null,
+          },
+          imageGallery: [],
+        },
       });
     })
     .catch(next);
 });
 
+UserRouter.put("/profile", checkAuth, async function (req, res, next) {
+  try {
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "info",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const nextFirstname = String(
+      req.body?.firstname ?? user.info.firstname ?? "",
+    ).trim();
+    const nextLastname = String(
+      req.body?.lastname ?? user.info.lastname ?? "",
+    ).trim();
+    const nextUsername = String(
+      req.body?.username ?? user.info.username ?? "",
+    ).trim();
+
+    if (!nextFirstname || !nextLastname || !nextUsername) {
+      return res.status(400).json({
+        message: "First name, last name, and username are required.",
+      });
+    }
+
+    if (nextUsername !== String(user.info.username || "").trim()) {
+      const existingUsernameUser = await UserModel.findOne({
+        "info.username": nextUsername,
+        _id: { $ne: user._id },
+      }).select("_id");
+
+      if (existingUsernameUser) {
+        return res.status(409).json({
+          message: "That username is already in use.",
+        });
+      }
+    }
+
+    const requestedAiProvider = String(
+      req.body?.aiProvider ?? user.info.aiProvider ?? "openai",
+    )
+      .trim()
+      .toLowerCase();
+
+    const nextAiProvider = ["openai", "gemini"].includes(requestedAiProvider)
+      ? requestedAiProvider
+      : "openai";
+
+    user.info.firstname = nextFirstname;
+    user.info.lastname = nextLastname;
+    user.info.username = nextUsername;
+    user.info.program = String(
+      req.body?.program ?? user.info.program ?? "",
+    ).trim();
+    user.info.university = String(
+      req.body?.university ?? user.info.university ?? "",
+    ).trim();
+    user.info.studyYear = String(
+      req.body?.studyYear ?? user.info.studyYear ?? "",
+    ).trim();
+    user.info.term = String(req.body?.term ?? user.info.term ?? "").trim();
+    user.info.aiProvider = nextAiProvider;
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Personal information updated.",
+      info: user.info,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+UserRouter.get(
+  "/schoolPlanner/ring-video",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.ringVideo",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const folder = await ensureRingVideoFolderForUser(user);
+
+      return res.status(200).json({
+        ringVideo: {
+          url: String(user?.schoolPlanner?.ringVideo?.url || "").trim(),
+          publicId: String(
+            user?.schoolPlanner?.ringVideo?.publicId || "",
+          ).trim(),
+          folder,
+          updatedAt: user?.schoolPlanner?.ringVideo?.updatedAt || null,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/schoolPlanner/ring-video/signature",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const cloudinaryConfig = getCloudinaryConfig();
+
+      if (!cloudinaryConfig.isReady) {
+        return res.status(503).json({
+          message: "Cloudinary is not configured on backend.",
+          missing: cloudinaryConfig.missing,
+        });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.ringVideo.folder",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const folder = await ensureRingVideoFolderForUser(user);
+
+      const publicId =
+        String(req.body?.publicId || "")
+          .trim()
+          .slice(0, 180)
+          .replace(/[^a-zA-Z0-9/_-]/g, "-") || `ring-${Date.now()}`;
+      const timestamp = Math.floor(Date.now() / 1000);
+      const paramsToSign = {
+        folder,
+        public_id: publicId,
+        timestamp,
+      };
+
+      const signature = buildCloudinarySignature({
+        paramsToSign,
+        apiSecret: cloudinaryConfig.apiSecret,
+      });
+
+      return res.status(200).json({
+        cloudName: cloudinaryConfig.cloudName,
+        apiKey: cloudinaryConfig.apiKey,
+        timestamp,
+        folder,
+        publicId,
+        signature,
+        uploadUrl: `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/video/upload`,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.put(
+  "/schoolPlanner/ring-video",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const videoUrl = String(req.body?.videoUrl || "").trim();
+      const publicId = String(req.body?.publicId || "").trim();
+      const folder = buildUserRingVideoFolder(req.authentication.userId);
+
+      if (!videoUrl) {
+        return res.status(400).json({
+          message: "videoUrl is required.",
+        });
+      }
+
+      const updatedUser = await UserModel.findByIdAndUpdate(
+        req.authentication.userId,
+        {
+          "schoolPlanner.ringVideo.url": videoUrl,
+          "schoolPlanner.ringVideo.publicId": publicId,
+          "schoolPlanner.ringVideo.folder": folder,
+          "schoolPlanner.ringVideo.updatedAt": new Date(),
+        },
+        {
+          new: true,
+        },
+      ).select("schoolPlanner.ringVideo");
+
+      if (!updatedUser) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      return res.status(200).json({
+        message: "Ring video saved.",
+        ringVideo: updatedUser.schoolPlanner?.ringVideo || {
+          url: "",
+          publicId: "",
+          folder,
+          updatedAt: null,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/schoolPlanner/ring-video/backfill-folders",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
+        return res.status(403).json({
+          message: "Not authorized.",
+        });
+      }
+
+      const usersMissingFolder = await UserModel.find({
+        $or: [
+          { "schoolPlanner.ringVideo.folder": { $exists: false } },
+          { "schoolPlanner.ringVideo.folder": null },
+          { "schoolPlanner.ringVideo.folder": "" },
+        ],
+      }).select("_id");
+
+      if (!usersMissingFolder.length) {
+        return res.status(200).json({
+          message: "No users needed Cloudinary folder backfill.",
+          updatedCount: 0,
+        });
+      }
+
+      const bulkOperations = usersMissingFolder.map((user) => ({
+        updateOne: {
+          filter: { _id: user._id },
+          update: {
+            $set: {
+              "schoolPlanner.ringVideo.folder": buildUserRingVideoFolder(
+                user._id,
+              ),
+            },
+          },
+        },
+      }));
+
+      const bulkResult = await UserModel.bulkWrite(bulkOperations, {
+        ordered: false,
+      });
+
+      return res.status(200).json({
+        message: "Cloudinary folders backfilled for existing users.",
+        updatedCount: Number(bulkResult?.modifiedCount || 0),
+        matchedCount: Number(bulkResult?.matchedCount || 0),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
+  try {
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "media",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const imageGallery = sortGalleryImages(
+      (Array.isArray(user?.media?.imageGallery) ? user.media.imageGallery : [])
+        .map(normalizeStoredGalleryImage)
+        .filter(Boolean),
+    );
+    const profilePicture = normalizeStoredGalleryImage(
+      user?.media?.profilePicture,
+    )
+      ? {
+          ...normalizeStoredGalleryImage(user.media.profilePicture),
+          updatedAt: user?.media?.profilePicture?.updatedAt || null,
+        }
+      : {
+          url: "",
+          publicId: "",
+          assetId: "",
+          updatedAt: null,
+        };
+
+    return res.status(200).json({
+      imageGallery,
+      profilePicture,
+      folder: buildUserImageGalleryFolder(req.authentication.userId),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post(
+  "/image-gallery/signature",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const cloudinaryConfig = getCloudinaryConfig();
+
+      if (!cloudinaryConfig.isReady) {
+        return res.status(503).json({
+          message: "Cloudinary is not configured on backend.",
+          missing: cloudinaryConfig.missing,
+        });
+      }
+
+      const publicId =
+        String(req.body?.publicId || "")
+          .trim()
+          .slice(0, 180)
+          .replace(/[^a-zA-Z0-9/_-]/g, "-") || `media-${Date.now()}`;
+      const requestedResourceType = String(req.body?.resourceType || "image")
+        .trim()
+        .toLowerCase();
+      const resourceType =
+        requestedResourceType === "video" ? "video" : "image";
+      const folder = buildUserImageGalleryFolder(req.authentication.userId);
+      const timestamp = Math.floor(Date.now() / 1000);
+      const paramsToSign = {
+        folder,
+        public_id: publicId,
+        timestamp,
+      };
+
+      const signature = buildCloudinarySignature({
+        paramsToSign,
+        apiSecret: cloudinaryConfig.apiSecret,
+      });
+
+      return res.status(200).json({
+        cloudName: cloudinaryConfig.cloudName,
+        apiKey: cloudinaryConfig.apiKey,
+        timestamp,
+        folder,
+        publicId,
+        resourceType,
+        signature,
+        uploadUrl: `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/${resourceType}/upload`,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
+  try {
+    const normalizedImage = normalizeStoredGalleryImage({
+      url: req.body?.url || req.body?.secureUrl,
+      publicId: req.body?.publicId,
+      assetId: req.body?.assetId,
+      folder: req.body?.folder,
+      resourceType: req.body?.resourceType,
+      mimeType: req.body?.mimeType,
+      width: req.body?.width,
+      height: req.body?.height,
+      format: req.body?.format,
+      bytes: req.body?.bytes,
+      duration: req.body?.duration,
+      createdAt: req.body?.createdAt || new Date(),
+    });
+
+    if (!normalizedImage) {
+      return res.status(400).json({
+        message: "A valid uploaded media file is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "media",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const existingImages = Array.isArray(user?.media?.imageGallery)
+      ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+      : [];
+    const dedupedImages = existingImages.filter(
+      (image) => image.publicId !== normalizedImage.publicId,
+    );
+    const nextImageGallery = sortGalleryImages([
+      normalizedImage,
+      ...dedupedImages,
+    ]);
+    const existingProfilePicture = normalizeStoredGalleryImage(
+      user?.media?.profilePicture,
+    );
+
+    user.media = user.media || {};
+    user.media.imageGallery = nextImageGallery;
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Media saved to gallery.",
+      imageGallery: nextImageGallery,
+      profilePicture: existingProfilePicture || {
+        url: "",
+        publicId: "",
+        assetId: "",
+        updatedAt: null,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.put(
+  "/image-gallery/profile-picture",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const selectedPublicId = String(req.body?.publicId || "").trim();
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "media",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const imageGallery = Array.isArray(user?.media?.imageGallery)
+        ? user.media.imageGallery
+            .map(normalizeStoredGalleryImage)
+            .filter(Boolean)
+        : [];
+      const selectedImage = imageGallery.find(
+        (image) => image.publicId === selectedPublicId,
+      );
+
+      if (!selectedImage) {
+        return res.status(404).json({
+          message: "Selected image was not found in your gallery.",
+        });
+      }
+
+      if (selectedImage.resourceType !== "image") {
+        return res.status(400).json({
+          message: "Only image items can be used as profile picture.",
+        });
+      }
+
+      user.media = user.media || {};
+      user.media.profilePicture = {
+        url: selectedImage.url,
+        publicId: selectedImage.publicId,
+        assetId: selectedImage.assetId,
+        updatedAt: new Date(),
+      };
+
+      await user.save();
+
+      return res.status(200).json({
+        message: "Profile picture updated.",
+        profilePicture: user.media.profilePicture,
+        imageGallery: sortGalleryImages(imageGallery),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
+  try {
+    const publicId = String(req.body?.publicId || "").trim();
+
+    if (!publicId) {
+      return res.status(400).json({
+        message: "publicId is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "media",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const imageGallery = Array.isArray(user?.media?.imageGallery)
+      ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+      : [];
+    const imageToDelete = imageGallery.find(
+      (image) => image.publicId === publicId,
+    );
+
+    if (!imageToDelete) {
+      return res.status(404).json({
+        message: "Image not found in gallery.",
+      });
+    }
+
+    const cloudinaryConfig = getCloudinaryConfig();
+    if (cloudinaryConfig.isReady) {
+      await deleteCloudinaryAsset({
+        cloudName: cloudinaryConfig.cloudName,
+        apiKey: cloudinaryConfig.apiKey,
+        apiSecret: cloudinaryConfig.apiSecret,
+        publicId: imageToDelete.publicId,
+        resourceType: imageToDelete.resourceType || "image",
+      });
+    }
+
+    const nextImageGallery = sortGalleryImages(
+      imageGallery.filter((image) => image.publicId !== publicId),
+    );
+    const currentProfilePublicId = String(
+      user?.media?.profilePicture?.publicId || "",
+    ).trim();
+
+    user.media = user.media || {};
+    user.media.imageGallery = nextImageGallery;
+    if (currentProfilePublicId === publicId) {
+      const fallbackImage =
+        nextImageGallery.find((image) => image.resourceType === "image") ||
+        null;
+      user.media.profilePicture = fallbackImage
+        ? {
+            url: fallbackImage.url,
+            publicId: fallbackImage.publicId,
+            assetId: fallbackImage.assetId,
+            updatedAt: new Date(),
+          }
+        : {
+            url: "",
+            publicId: "",
+            assetId: "",
+            updatedAt: null,
+          };
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Image deleted from gallery.",
+      imageGallery: nextImageGallery,
+      profilePicture: user.media.profilePicture || {
+        url: "",
+        publicId: "",
+        assetId: "",
+        updatedAt: null,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 UserRouter.get("/clinical-reality", checkAuth, async function (req, res, next) {
   try {
     const user = await UserModel.findById(req.authentication.userId).select(
-      "clinicalReality"
+      "clinicalReality",
     );
 
     if (!user) {
@@ -420,7 +1257,7 @@ UserRouter.get(
     } catch (error) {
       return next(error);
     }
-  }
+  },
 );
 
 UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
@@ -443,7 +1280,7 @@ UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
       },
       {
         new: true,
-      }
+      },
     ).select("clinicalReality");
 
     if (!updatedUser) {
@@ -479,7 +1316,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
     }
 
     const user = await UserModel.findById(req.authentication.userId).select(
-      "info.password"
+      "info.password",
     );
 
     if (!user) {
@@ -490,7 +1327,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     const passwordMatches = await bcrypt.compare(
       currentPassword,
-      user.info.password
+      user.info.password,
     );
 
     if (!passwordMatches) {
@@ -499,7 +1336,10 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
       });
     }
 
-    const isSamePassword = await bcrypt.compare(nextPassword, user.info.password);
+    const isSamePassword = await bcrypt.compare(
+      nextPassword,
+      user.info.password,
+    );
 
     if (isSamePassword) {
       return res.status(409).json({
@@ -520,15 +1360,18 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
 UserRouter.get("/app-last-updated", function (req, res) {
   const committedAt = getFrontendLastUpdated();
+  const cloudinary = getPublicCloudinaryStatus();
 
   if (!committedAt) {
     return res.status(200).json({
       committedAt: null,
+      cloudinary,
     });
   }
 
   return res.status(200).json({
     committedAt,
+    cloudinary,
   });
 });
 
@@ -559,7 +1402,9 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
     .select("info.firstname info.lastname info.username")
     .then((users) => {
       const array = [];
-      const searchTerm = String(req.params.name || "").trim().toLowerCase();
+      const searchTerm = String(req.params.name || "")
+        .trim()
+        .toLowerCase();
       users.forEach((user) => {
         const firstname = String(user?.info?.firstname || "").toLowerCase();
         const lastname = String(user?.info?.lastname || "").toLowerCase();
@@ -586,7 +1431,9 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
 // Public doctor profile with populated posts
 UserRouter.get("/profile/:username", function (req, res, next) {
   UserModel.findOne({ "info.username": req.params.username })
-    .select("info.username info.firstname info.lastname posts")
+    .select(
+      "info.username info.firstname info.lastname posts media.profilePicture",
+    )
     .populate("posts")
     .then((user) => {
       if (!user) {
@@ -599,6 +1446,7 @@ UserRouter.get("/profile/:username", function (req, res, next) {
         username: user.info.username,
         firstname: user.info.firstname,
         lastname: user.info.lastname,
+        profilePicture: String(user?.media?.profilePicture?.url || "").trim(),
         posts: Array.isArray(user.posts) ? user.posts : [],
       });
     })
@@ -642,18 +1490,8 @@ UserRouter.post("/visit-log", async function (req, res, next) {
       "info.username": VISIT_LOG_OWNER_USERNAME,
     }).select("_id");
 
-      if (io && visitLogOwner?._id) {
-        io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
-          visitLog: {
-            _id: String(visitLog._id),
-            ip: visitLog.ip,
-            country: visitLog.country || "Unknown",
-            visitedAt: visitLog.visitedAt,
-          },
-        });
-      }
-
-      return res.status(201).json({
+    if (io && visitLogOwner?._id) {
+      io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
         visitLog: {
           _id: String(visitLog._id),
           ip: visitLog.ip,
@@ -661,6 +1499,16 @@ UserRouter.post("/visit-log", async function (req, res, next) {
           visitedAt: visitLog.visitedAt,
         },
       });
+    }
+
+    return res.status(201).json({
+      visitLog: {
+        _id: String(visitLog._id),
+        ip: visitLog.ip,
+        country: visitLog.country || "Unknown",
+        visitedAt: visitLog.visitedAt,
+      },
+    });
   } catch (error) {
     return next(error);
   }
@@ -747,7 +1595,7 @@ UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
             emitUserRefresh(
               io,
               [req.params.my_id, req.params.friend_id],
-              "friends:updated"
+              "friends:updated",
             );
             res.status(201).json({
               message: "Request accepted. You're now friends!",
@@ -768,12 +1616,12 @@ UserRouter.delete(
       UserModel.findByIdAndUpdate(
         my_id,
         { $pull: { friends: friend_id } },
-        { new: true }
+        { new: true },
       ),
       UserModel.findByIdAndUpdate(
         friend_id,
         { $pull: { friends: my_id } },
-        { new: true }
+        { new: true },
       ),
     ])
       .then(([me, friend]) => {
@@ -789,7 +1637,7 @@ UserRouter.delete(
         });
       })
       .catch(next);
-  }
+  },
 );
 
 ///////Update Notification INFO USER
@@ -830,7 +1678,11 @@ UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
       });
     })
     .then((user) => {
-      emitUserRefresh(io, [req.params.me_id, req.params.friend_id], "notification:read");
+      emitUserRefresh(
+        io,
+        [req.params.me_id, req.params.friend_id],
+        "notification:read",
+      );
       res.status(200).json(user);
     })
     .catch(next);
@@ -853,13 +1705,13 @@ UserRouter.put(
 
       if (!notification) {
         notification = (user.notifications || []).find(
-          (entry) => String(entry?._id) === String(req.params.notificationId)
+          (entry) => String(entry?._id) === String(req.params.notificationId),
         );
       }
 
       if (!notification) {
         notification = (user.notifications || []).find(
-          (entry) => String(entry?.id) === String(req.params.notificationId)
+          (entry) => String(entry?.id) === String(req.params.notificationId),
         );
       }
 
@@ -882,7 +1734,7 @@ UserRouter.put(
     } catch (error) {
       return next(error);
     }
-  }
+  },
 );
 
 /////////////Update User isConnected status
@@ -979,7 +1831,7 @@ UserRouter.get(
                   .toLowerCase()
                   .includes(
                     req.params.keyword.toLowerCase() &&
-                      user.subject === req.params.subject
+                      user.subject === req.params.subject,
                   )
               ) {
                 array.push(user);
@@ -997,7 +1849,7 @@ UserRouter.get(
                   .toLowerCase()
                   .includes(
                     req.params.keyword.toLowerCase() &&
-                      user.category === req.params.category
+                      user.category === req.params.category,
                   )
               ) {
                 array.push(user);
@@ -1028,7 +1880,7 @@ UserRouter.get(
                   .includes(
                     req.params.keyword.toLowerCase() &&
                       user.subject === req.params.subject &&
-                      user.category === req.params.category
+                      user.category === req.params.category,
                   )
               ) {
                 array.push(user);
@@ -1045,7 +1897,7 @@ UserRouter.get(
         });
       })
       .catch(next);
-  }
+  },
 );
 //////////////Terminology post
 UserRouter.post("/newTerminology/:my_id", function (req, res, next) {
@@ -1159,7 +2011,7 @@ UserRouter.delete(
         }
       })
       .catch(next);
-  }
+  },
 );
 //////////////////////edit unit
 UserRouter.put(
@@ -1206,7 +2058,7 @@ UserRouter.put(
         }
       })
       .catch(next);
-  }
+  },
 );
 ///////////////EDIT propertyObject and propertyUnit////////////
 //////////////////////edit unit
@@ -1234,7 +2086,7 @@ UserRouter.put(
         }
       })
       .catch(next);
-  }
+  },
 );
 //////////////////////Add unit
 UserRouter.post("/addCustomize/:my_id/:type", function (req, res, next) {
@@ -1326,7 +2178,7 @@ UserRouter.delete(
         }
       })
       .catch(next);
-  }
+  },
 );
 //////////////////////delete unit
 UserRouter.put("/editMemory/:my_id/:memoryID/:type", function (req, res, next) {
@@ -1394,7 +2246,14 @@ UserRouter.post("/addCourse/:my_id", function (req, res, next) {
     })
     .then((result) => {
       if (result) {
-        res.status(201).json();
+        const createdCourse = Array.isArray(result?.schoolPlanner?.courses)
+          ? result.schoolPlanner.courses[
+              result.schoolPlanner.courses.length - 1
+            ] || null
+          : null;
+        res.status(201).json({
+          course: createdCourse,
+        });
       }
     })
     .catch(next);
@@ -1437,6 +2296,24 @@ UserRouter.delete("/deleteCourse/:my_id/:courseID", function (req, res, next) {
     })
     .catch(next);
 });
+
+UserRouter.delete("/deleteAllCourses/:my_id", function (req, res, next) {
+  UserModel.findOne({ _id: req.params.my_id })
+    .then((user) => {
+      if (!user?.schoolPlanner) {
+        return null;
+      }
+
+      user.schoolPlanner.courses = [];
+      return user.save();
+    })
+    .then((result) => {
+      if (result) {
+        res.status(201).json();
+      }
+    })
+    .catch(next);
+});
 //...............................................
 //..........DELETE LECTURE.....................
 UserRouter.delete(
@@ -1461,7 +2338,7 @@ UserRouter.delete(
         }
       })
       .catch(next);
-  }
+  },
 );
 //...............................................
 
@@ -1476,45 +2353,60 @@ UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
       if (courseIndex !== -1) {
         const previousCourse = user.schoolPlanner.courses[courseIndex];
         const previousCourseName = previousCourse.course_name;
-        const previousInstructors = Array.isArray(previousCourse.course_instructors)
+        const previousInstructors = Array.isArray(
+          previousCourse.course_instructors,
+        )
           ? previousCourse.course_instructors
           : [];
         const nextInstructors = Array.isArray(req.body.course_instructors)
           ? req.body.course_instructors
           : [];
+        const nextCoursePayload = {
+          ...req.body,
+          _id: previousCourse._id,
+        };
 
-        user.schoolPlanner.courses.splice(courseIndex, 1, req.body);
+        user.schoolPlanner.courses.splice(courseIndex, 1, nextCoursePayload);
 
-        user.schoolPlanner.lectures = user.schoolPlanner.lectures.map((lecture) => {
-          if (lecture.lecture_course !== previousCourseName) {
-            return lecture;
-          }
-
-          let nextLectureInstructor = lecture.lecture_instructor;
-
-          if (previousInstructors.includes(lecture.lecture_instructor)) {
-            if (nextInstructors.includes(lecture.lecture_instructor)) {
-              nextLectureInstructor = lecture.lecture_instructor;
-            } else if (nextInstructors.length > 0) {
-              nextLectureInstructor = nextInstructors[0];
-            } else {
-              nextLectureInstructor = "-";
+        user.schoolPlanner.lectures = user.schoolPlanner.lectures.map(
+          (lecture) => {
+            if (lecture.lecture_course !== previousCourseName) {
+              return lecture;
             }
-          }
 
-          return {
-            ...lecture.toObject(),
-            lecture_course: req.body.course_name,
-            lecture_instructor: nextLectureInstructor,
-          };
-        });
+            let nextLectureInstructor = lecture.lecture_instructor;
+
+            if (previousInstructors.includes(lecture.lecture_instructor)) {
+              if (nextInstructors.includes(lecture.lecture_instructor)) {
+                nextLectureInstructor = lecture.lecture_instructor;
+              } else if (nextInstructors.length > 0) {
+                nextLectureInstructor = nextInstructors[0];
+              } else {
+                nextLectureInstructor = "-";
+              }
+            }
+
+            return {
+              ...lecture.toObject(),
+              lecture_course: req.body.course_name,
+              lecture_instructor: nextLectureInstructor,
+            };
+          },
+        );
       }
 
       return user.save();
     })
     .then((result) => {
       if (result) {
-        res.status(201).json();
+        const updatedCourse = Array.isArray(result?.schoolPlanner?.courses)
+          ? result.schoolPlanner.courses.find(
+              (course) => String(course?._id) === String(req.params.courseID),
+            ) || null
+          : null;
+        res.status(201).json({
+          course: updatedCourse,
+        });
       }
     })
     .catch(next);
@@ -1562,7 +2454,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................setPageFinishLecture................
 UserRouter.put(
@@ -1579,12 +2471,12 @@ UserRouter.put(
             ].lecture_pagesFinished.indexOf(req.body.pageNum);
             if (index == -1) {
               user.schoolPlanner.lectures[i].lecture_pagesFinished.push(
-                req.body.pageNum
+                req.body.pageNum,
               );
             } else {
               user.schoolPlanner.lectures[i].lecture_pagesFinished.splice(
                 index,
-                1
+                1,
               );
             }
             user.schoolPlanner.lectures[i].lecture_progress =
@@ -1603,7 +2495,7 @@ UserRouter.put(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................HIDE UNCHECKED................
 UserRouter.put("/hideUncheckedLectures/:my_id", function (req, res, next) {
@@ -1612,19 +2504,7 @@ UserRouter.put("/hideUncheckedLectures/:my_id", function (req, res, next) {
       for (var i = 0; i < user.schoolPlanner.lectures.length; i++) {
         if (user.schoolPlanner.lectures[i].lecture_partOfPlan == false) {
           user.schoolPlanner.lectures.splice(i, 1, {
-            lecture_name: user.schoolPlanner.lectures[i].lecture_name,
-            lecture_course: user.schoolPlanner.lectures[i].lecture_course,
-            lecture_instructor:
-              user.schoolPlanner.lectures[i].lecture_instructor,
-            lecture_writer: user.schoolPlanner.lectures[i].lecture_writer,
-            lecture_date: user.schoolPlanner.lectures[i].lecture_date,
-            lecture_year: user.schoolPlanner.lectures[i].lecture_year,
-            lecture_term: user.schoolPlanner.lectures[i].lecture_term,
-            lecture_length: user.schoolPlanner.lectures[i].lecture_length,
-            lecture_progress: user.schoolPlanner.lectures[i].lecture_progress,
-            lecture_outlines: user.schoolPlanner.lectures[i].lecture_outlines,
-            lecture_partOfPlan:
-              user.schoolPlanner.lectures[i].lecture_partOfPlan,
+            ...user.schoolPlanner.lectures[i].toObject(),
             lecture_hidden: true,
           });
         }
@@ -1645,19 +2525,7 @@ UserRouter.put("/unhideUncheckedLectures/:my_id", function (req, res, next) {
       for (var i = 0; i < user.schoolPlanner.lectures.length; i++) {
         if (user.schoolPlanner.lectures[i].lecture_partOfPlan == false) {
           user.schoolPlanner.lectures.splice(i, 1, {
-            lecture_name: user.schoolPlanner.lectures[i].lecture_name,
-            lecture_course: user.schoolPlanner.lectures[i].lecture_course,
-            lecture_instructor:
-              user.schoolPlanner.lectures[i].lecture_instructor,
-            lecture_writer: user.schoolPlanner.lectures[i].lecture_writer,
-            lecture_date: user.schoolPlanner.lectures[i].lecture_date,
-            lecture_year: user.schoolPlanner.lectures[i].lecture_year,
-            lecture_term: user.schoolPlanner.lectures[i].lecture_term,
-            lecture_length: user.schoolPlanner.lectures[i].lecture_length,
-            lecture_progress: user.schoolPlanner.lectures[i].lecture_progress,
-            lecture_outlines: user.schoolPlanner.lectures[i].lecture_outlines,
-            lecture_partOfPlan:
-              user.schoolPlanner.lectures[i].lecture_partOfPlan,
+            ...user.schoolPlanner.lectures[i].toObject(),
             lecture_hidden: false,
           });
         }
@@ -1732,7 +2600,7 @@ UserRouter.post(
         for (i = 0; i < user.study.structure_keywords.length; i++) {
           if (user.study.structure_keywords[i]._id == req.params.keywordID) {
             user.study.structure_keywords[i].keyword_structureProperties.push(
-              req.body
+              req.body,
             );
             keyword = user.study.structure_keywords[i];
           }
@@ -1746,7 +2614,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................Add keywordPropertiesFunction................
 UserRouter.post(
@@ -1758,7 +2626,7 @@ UserRouter.post(
         for (i = 0; i < user.study.function_keywords.length; i++) {
           if (user.study.function_keywords[i]._id == req.params.keywordID) {
             user.study.function_keywords[i].keyword_functionProperties.push(
-              req.body
+              req.body,
             );
             keyword = user.study.function_keywords[i];
           }
@@ -1772,7 +2640,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................Edit keywordProperties................
 UserRouter.post(
@@ -1811,7 +2679,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................editKeywordStructureAfterChangingFunctionName................
 UserRouter.post(
@@ -1828,7 +2696,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................DELETE KEYWORD STRUCTURE................
 UserRouter.post(
@@ -1858,7 +2726,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 //................DELETE KEYWORD STRUCTURE PROPERTY................
 UserRouter.post(
@@ -1904,7 +2772,7 @@ UserRouter.post(
         res.status(201).json(keywordStructureProperty_object);
       })
       .catch(next);
-  }
+  },
 );
 
 //................EDIT KEYWORD STRUCTURE................
@@ -1939,7 +2807,7 @@ UserRouter.post(
         }
       })
       .catch(next);
-  }
+  },
 );
 
 //....................

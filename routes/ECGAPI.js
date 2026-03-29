@@ -14,9 +14,9 @@ const PYTHON_BINARY = process.env.PYTHON_BINARY || "python";
 const PYTHON_TOOL_TIMEOUT_MS = 45000;
 const ECG_SERVICE_TIMEOUT_MS = 600000;
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
-const ECG_PYTHON_SERVICE_URL = String(
-  process.env.ECG_PYTHON_SERVICE_URL || "",
-).trim().replace(/\/+$/, "");
+const ECG_PYTHON_SERVICE_URL = String(process.env.ECG_PYTHON_SERVICE_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -61,7 +61,12 @@ const hasDeviceTracePayload = (payload) =>
     return typeof value === "string" && value.trim().length > 0;
   });
 
-const inferSourceType = ({ mimeType, hasFile, observedText, hasDigitalTraces }) => {
+const inferSourceType = ({
+  mimeType,
+  hasFile,
+  observedText,
+  hasDigitalTraces,
+}) => {
   if (hasDigitalTraces) {
     return "device";
   }
@@ -77,6 +82,10 @@ const normalizeBase64 = (value) => String(value || "").replace(/\s/g, "");
 const LOCAL_DIGITAL_TRACE_SCRIPT = path.resolve(
   __dirname,
   "../scripts/ecg_digital_trace_analysis.py",
+);
+const LOCAL_PROFILE_OILY_PALETTE_SCRIPT = path.resolve(
+  __dirname,
+  "../scripts/profile_oily_palette.py",
 );
 let ecgHealthCache = {
   checkedAt: 0,
@@ -117,8 +126,11 @@ const extractAnalysisRequest = (req) => {
   const traces = parseJsonField(req.body?.traces);
   const leadSignals = parseJsonField(req.body?.leadSignals);
   const leads = parseJsonField(req.body?.leads);
-  const sampleRateHz = Number(req.body?.sampleRateHz || req.body?.samplingRateHz) || undefined;
-  const traceUnit = String(req.body?.traceUnit || req.body?.signalUnit || req.body?.unit || "").trim();
+  const sampleRateHz =
+    Number(req.body?.sampleRateHz || req.body?.samplingRateHz) || undefined;
+  const traceUnit = String(
+    req.body?.traceUnit || req.body?.signalUnit || req.body?.unit || "",
+  ).trim();
   const rawBase64 = normalizeBase64(req.body?.fileData || "");
   const mimeType = uploadedFile?.mimetype || jsonMimeType;
   const fileName = uploadedFile?.originalname || jsonFileName || "ecg-source";
@@ -193,7 +205,8 @@ const callRemoteEcgService = async ({ pathname, method = "GET", payload }) => {
 
     if (!response.ok) {
       const serviceError = new Error(
-        parsed?.message || `Remote ECG service responded with HTTP ${response.status}.`,
+        parsed?.message ||
+          `Remote ECG service responded with HTTP ${response.status}.`,
       );
       serviceError.status = response.status;
       serviceError.payload = parsed;
@@ -232,13 +245,9 @@ const runPythonJsonTool = ({
   parseErrorMessage,
 }) =>
   new Promise((resolve, reject) => {
-    const child = spawn(
-      PYTHON_BINARY,
-      [scriptPath],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(PYTHON_BINARY, [scriptPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     let stdout = "";
     let stderr = "";
@@ -250,7 +259,11 @@ const runPythonJsonTool = ({
 
       finished = true;
       child.kill("SIGKILL");
-      reject(new Error(`${exitErrorMessage} Timed out after ${PYTHON_TOOL_TIMEOUT_MS / 1000} seconds.`));
+      reject(
+        new Error(
+          `${exitErrorMessage} Timed out after ${PYTHON_TOOL_TIMEOUT_MS / 1000} seconds.`,
+        ),
+      );
     }, PYTHON_TOOL_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
@@ -282,11 +295,7 @@ const runPythonJsonTool = ({
       }
       finished = true;
       clearTimeout(timeoutId);
-      reject(
-        new Error(
-          error?.message || startupErrorMessage,
-        ),
-      );
+      reject(new Error(error?.message || startupErrorMessage));
     });
 
     child.on("close", (code) => {
@@ -296,13 +305,7 @@ const runPythonJsonTool = ({
       finished = true;
       clearTimeout(timeoutId);
       if (code !== 0) {
-        reject(
-          new Error(
-            stderr.trim() ||
-              stdout.trim() ||
-              exitErrorMessage,
-          ),
-        );
+        reject(new Error(stderr.trim() || stdout.trim() || exitErrorMessage));
         return;
       }
 
@@ -313,11 +316,7 @@ const runPythonJsonTool = ({
         }
         resolve(parsed);
       } catch (error) {
-        reject(
-          new Error(
-            error?.message || parseErrorMessage,
-          ),
-        );
+        reject(new Error(error?.message || parseErrorMessage));
       }
     });
 
@@ -383,7 +382,11 @@ const runPythonCommand = ({ args, timeoutMs = 12000 }) =>
       clearTimeout(timeoutId);
 
       if (code !== 0) {
-        reject(new Error(stderr.trim() || stdout.trim() || `Exited with code ${code}.`));
+        reject(
+          new Error(
+            stderr.trim() || stdout.trim() || `Exited with code ${code}.`,
+          ),
+        );
         return;
       }
 
@@ -410,7 +413,10 @@ const checkLocalEcgEnvironment = async () => {
     });
     const parsed = JSON.parse(result.stdout || "{}");
     const details = {
-      status: Array.isArray(parsed.missing) && parsed.missing.length === 0 ? "healthy" : "degraded",
+      status:
+        Array.isArray(parsed.missing) && parsed.missing.length === 0
+          ? "healthy"
+          : "degraded",
       python: "ok",
       missingModules: Array.isArray(parsed.missing) ? parsed.missing : [],
       engine: String(parsed.engine || DIGITAL_TRACE_METHOD),
@@ -463,9 +469,11 @@ const runLocalDigitalTraceAnalyzer = ({
       sampleRateHz,
       traceUnit,
     },
-    startupErrorMessage: "Unable to start the local digital ECG trace analyzer.",
+    startupErrorMessage:
+      "Unable to start the local digital ECG trace analyzer.",
     exitErrorMessage: "Local digital ECG trace analyzer exited unexpectedly.",
-    parseErrorMessage: "Unable to parse the local digital ECG trace analyzer response.",
+    parseErrorMessage:
+      "Unable to parse the local digital ECG trace analyzer response.",
   }).then((parsed) => {
     if (!parsed?.analysis) {
       throw new Error("Local digital ECG trace analyzer returned no analysis.");
@@ -473,6 +481,23 @@ const runLocalDigitalTraceAnalyzer = ({
 
     return parsed.analysis;
   });
+
+const runLocalProfileOilyPaletteGenerator = ({ imageUrl }) =>
+  runPythonJsonTool({
+    scriptPath: LOCAL_PROFILE_OILY_PALETTE_SCRIPT,
+    payload: {
+      imageUrl,
+    },
+    startupErrorMessage:
+      "Unable to start the local profile oily palette generator.",
+    exitErrorMessage:
+      "Local profile oily palette generator exited unexpectedly.",
+    parseErrorMessage:
+      "Unable to parse the local profile oily palette response.",
+  }).then((parsed) => ({
+    palette: Array.isArray(parsed?.palette) ? parsed.palette : [],
+    overlaySvgDataUrl: String(parsed?.overlaySvgDataUrl || "").trim(),
+  }));
 
 ECGRouter.get("/", function (req, res) {
   return res.status(200).json({
@@ -507,7 +532,10 @@ ECGRouter.get("/health", async function (req, res) {
           mode: "remote-python-service",
           method: LOCAL_METHOD,
           serviceUrl: ECG_PYTHON_SERVICE_URL,
-          message: error?.payload?.message || error?.message || "Remote ECG service is unavailable.",
+          message:
+            error?.payload?.message ||
+            error?.message ||
+            "Remote ECG service is unavailable.",
           toolchain: error?.payload?.toolchain || null,
         });
       }
@@ -526,6 +554,70 @@ ECGRouter.get("/health", async function (req, res) {
     remoteServiceFallback: usingRemoteEcgService(),
     remoteServiceUrl: usingRemoteEcgService() ? ECG_PYTHON_SERVICE_URL : null,
   });
+});
+
+ECGRouter.post("/profile-palette/oily", async function (req, res) {
+  const imageUrl = String(req.body?.imageUrl || "").trim();
+
+  if (!imageUrl) {
+    return res.status(400).json({
+      message: "imageUrl is required.",
+    });
+  }
+
+  if (usingRemoteEcgService()) {
+    try {
+      const remotePalette = await callRemoteEcgService({
+        pathname: "/palette/oily",
+        method: "POST",
+        payload: {
+          imageUrl,
+        },
+      });
+
+      return res.status(200).json({
+        palette: Array.isArray(remotePalette?.palette)
+          ? remotePalette.palette
+          : [],
+        overlaySvgDataUrl: String(
+          remotePalette?.overlaySvgDataUrl || "",
+        ).trim(),
+        serviceMode: "remote-python-service",
+        serviceUrl: ECG_PYTHON_SERVICE_URL,
+      });
+    } catch (error) {
+      if (!shouldFallbackToLocalEcg(error)) {
+        return res.status(error?.status || 503).json({
+          ...(error?.payload && typeof error.payload === "object"
+            ? error.payload
+            : {}),
+          message:
+            error?.payload?.message ||
+            error?.message ||
+            "Remote palette service is unavailable.",
+          serviceMode: "remote-python-service",
+          serviceUrl: ECG_PYTHON_SERVICE_URL,
+        });
+      }
+    }
+  }
+
+  try {
+    const generatedPalette = await runLocalProfileOilyPaletteGenerator({
+      imageUrl,
+    });
+
+    return res.status(200).json({
+      ...generatedPalette,
+      serviceMode: "local-only",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message:
+        error?.message ||
+        "Unable to generate oily palette from profile picture.",
+    });
+  }
 });
 
 ECGRouter.post(
@@ -552,16 +644,21 @@ ECGRouter.post(
         traceUnit,
       } = extractAnalysisRequest(req);
 
-      if (!uploadedFile && !base64Data && !observedText && sourceType !== "device") {
+      if (
+        !uploadedFile &&
+        !base64Data &&
+        !observedText &&
+        sourceType !== "device"
+      ) {
         return res.status(400).json({
-          message:
-            "Provide device digital traces for analysis.",
+          message: "Provide device digital traces for analysis.",
         });
       }
 
       if (sourceType !== "device") {
         return res.status(415).json({
-          message: "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
+          message:
+            "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
         });
       }
 
@@ -597,7 +694,9 @@ ECGRouter.post(
         } catch (error) {
           if (!shouldFallbackToLocalEcg(error)) {
             return res.status(error?.status || 503).json({
-              ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+              ...(error?.payload && typeof error.payload === "object"
+                ? error.payload
+                : {}),
               message:
                 error?.payload?.message ||
                 error?.message ||
@@ -633,16 +732,16 @@ ECGRouter.post(
       }
 
       return res.status(415).json({
-        message: "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
+        message:
+          "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead.",
       });
     } catch (error) {
       return res.status(500).json({
         message:
-          error?.message ||
-          "Unable to analyze the ECG source right now.",
+          error?.message || "Unable to analyze the ECG source right now.",
       });
     }
-  }
+  },
 );
 
 ECGRouter.get("/jobs/:jobId", async function (req, res) {
@@ -658,7 +757,9 @@ ECGRouter.get("/jobs/:jobId", async function (req, res) {
       });
     } catch (error) {
       return res.status(error?.status || 503).json({
-        ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+        ...(error?.payload && typeof error.payload === "object"
+          ? error.payload
+          : {}),
         message:
           error?.payload?.message ||
           error?.message ||
@@ -689,7 +790,9 @@ ECGRouter.post("/jobs/:jobId/cancel", async function (req, res) {
       });
     } catch (error) {
       return res.status(error?.status || 503).json({
-        ...(error?.payload && typeof error.payload === "object" ? error.payload : {}),
+        ...(error?.payload && typeof error.payload === "object"
+          ? error.payload
+          : {}),
         message:
           error?.payload?.message ||
           error?.message ||

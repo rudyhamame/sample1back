@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import cors from "cors";
 import express from "express";
 import http from "http";
+import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
 const app = express(); // initialie express
 const server = http.createServer(app);
@@ -16,13 +17,15 @@ import AtomAPI from "./routes/AtomAPI.js";
 import KeywordsAPI from "./routes/KeywordsAPI.js";
 import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import ECGAPI from "./routes/ECGAPI.js";
+import TelegramAPI, { startTelegramSyncWorker } from "./routes/TelegramAPI.js";
+import UserModel from "./models/Users.js";
 // const PostsAPI = require("./routes/PostsAPI");
 
 import "dotenv/config.js";
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "http://10.38.149.72:5173/",
+  "http://10.38.149.72:5173",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -93,14 +96,97 @@ app.locals.io = io;
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
 
-app.get("/api/health", function (req, res) {
+const getCloudinaryHealthConfig = () => {
+  const envCloudName = String(process.env.CLOUDINARY_CLOUD_NAME || "").trim();
+  const envApiKey = String(process.env.CLOUDINARY_API_KEY || "").trim();
+  const envApiSecret = String(process.env.CLOUDINARY_API_SECRET || "").trim();
+  const cloudinaryUrl = String(process.env.CLOUDINARY_URL || "").trim();
+
+  let urlCloudName = "";
+  let urlApiKey = "";
+  let urlApiSecret = "";
+
+  if (cloudinaryUrl) {
+    try {
+      const parsedUrl = new URL(cloudinaryUrl);
+      if (parsedUrl.protocol === "cloudinary:") {
+        urlCloudName = String(parsedUrl.hostname || "").trim();
+        urlApiKey = decodeURIComponent(String(parsedUrl.username || "").trim());
+        urlApiSecret = decodeURIComponent(
+          String(parsedUrl.password || "").trim(),
+        );
+      }
+    } catch {
+      const normalizedCloudinaryUrl = cloudinaryUrl.replace(
+        /^cloudinary:\/\//i,
+        "",
+      );
+      const cloudinaryUrlMatch = normalizedCloudinaryUrl.match(
+        /^([^:]+):([^@]+)@(.+)$/,
+      );
+
+      if (cloudinaryUrlMatch) {
+        urlApiKey = decodeURIComponent(
+          String(cloudinaryUrlMatch[1] || "").trim(),
+        );
+        urlApiSecret = decodeURIComponent(
+          String(cloudinaryUrlMatch[2] || "").trim(),
+        );
+        urlCloudName = String(cloudinaryUrlMatch[3] || "").trim();
+      }
+    }
+  }
+
+  const cloudName = envCloudName || urlCloudName;
+  const apiKey = envApiKey || urlApiKey;
+  const apiSecret = envApiSecret || urlApiSecret;
+
+  return {
+    isReady: Boolean(cloudName && apiKey && apiSecret),
+  };
+};
+
+app.get("/api/health", async function (req, res) {
   const dbReadyState = mongoose.connection?.readyState ?? 0;
   const dbHealthy = dbReadyState === 1;
+  const openAiConnected = Boolean(
+    String(process.env.OPENAI_API_KEY || "").trim(),
+  );
+  const geminiConnected = Boolean(
+    String(process.env.GEMINI_API_KEY || "").trim(),
+  );
+  const cloudinaryConnected = getCloudinaryHealthConfig().isReady;
+  let telegramConnected = false;
+
+  try {
+    const authorizationHeader = String(req.headers?.authorization || "").trim();
+    const token = authorizationHeader.startsWith("Bearer ")
+      ? authorizationHeader.slice(7).trim()
+      : "";
+
+    if (token && process.env.JWT_KEY) {
+      const decoded = jwt.verify(token, process.env.JWT_KEY);
+      const user = await UserModel.findById(decoded?.userId).select(
+        "telegramIntegration.apiIdEncrypted telegramIntegration.apiHashEncrypted telegramIntegration.stringSessionEncrypted",
+      );
+      telegramConnected = Boolean(
+        user?.telegramIntegration?.apiIdEncrypted &&
+        user?.telegramIntegration?.apiHashEncrypted &&
+        user?.telegramIntegration?.stringSessionEncrypted,
+      );
+    }
+  } catch {}
 
   return res.status(dbHealthy ? 200 : 503).json({
     status: dbHealthy ? "healthy" : "degraded",
     app: "ready",
     database: dbHealthy ? "connected" : "disconnected",
+    ai: {
+      openai: openAiConnected ? "connected" : "offline",
+      gemini: geminiConnected ? "connected" : "offline",
+      telegram: telegramConnected ? "connected" : "offline",
+      cloudinary: cloudinaryConnected ? "connected" : "offline",
+    },
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -225,6 +311,7 @@ app.use("/api/atom", AtomAPI);
 app.use("/api/keywords", KeywordsAPI);
 app.use("/api/enquiries", EnquiriesAPI);
 app.use("/api/ecg", ECGAPI);
+app.use("/api/telegram", TelegramAPI);
 
 // app.use("/api/posts", PostsAPI);
 
@@ -238,5 +325,6 @@ app.use(function (error, req, res, next) {
 });
 
 server.listen(process.env.PORT || 4000, function () {
+  startTelegramSyncWorker();
   console.log("now listening on port 4000");
 });

@@ -6,6 +6,20 @@ from pathlib import Path
 import wfdb
 
 EXPECTED_LEADS = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
+LEAD_ALIASES = {
+    "I": "I",
+    "II": "II",
+    "III": "III",
+    "AVR": "aVR",
+    "AVL": "aVL",
+    "AVF": "aVF",
+    "V1": "V1",
+    "V2": "V2",
+    "V3": "V3",
+    "V4": "V4",
+    "V5": "V5",
+    "V6": "V6",
+}
 
 
 def _parse_args():
@@ -82,11 +96,33 @@ def _normalize_record_path(record_path):
     return Path(path_str)
 
 
+def _canonical_lead_name(value):
+    return LEAD_ALIASES.get(str(value or "").strip().upper(), "")
+
+
+def _derive_augmented_limb_leads(digital_traces):
+    lead_i = digital_traces.get("I")
+    lead_ii = digital_traces.get("II")
+    if not lead_i or not lead_ii or len(lead_i) != len(lead_ii):
+        return
+
+    i_values = lead_i
+    ii_values = lead_ii
+    if "III" not in digital_traces:
+        digital_traces["III"] = [round(ii - i, 6) for i, ii in zip(i_values, ii_values)]
+    if "aVR" not in digital_traces:
+        digital_traces["aVR"] = [round((-(i + ii)) / 2.0, 6) for i, ii in zip(i_values, ii_values)]
+    if "aVL" not in digital_traces:
+        digital_traces["aVL"] = [round(i - (ii / 2.0), 6) for i, ii in zip(i_values, ii_values)]
+    if "aVF" not in digital_traces:
+        digital_traces["aVF"] = [round(ii - (i / 2.0), 6) for i, ii in zip(i_values, ii_values)]
+
+
 def _build_payload(record, metadata_row=None):
     signal = record.p_signal
     _require(signal is not None, "WFDB record does not contain p_signal data.")
 
-    lead_names = [str(name or "").strip() for name in (record.sig_name or [])]
+    lead_names = [_canonical_lead_name(name) for name in (record.sig_name or [])]
     _require(lead_names, "WFDB record does not contain lead names.")
 
     digital_traces = {}
@@ -95,6 +131,8 @@ def _build_payload(record, metadata_row=None):
             continue
         lead_index = lead_names.index(lead_name)
         digital_traces[lead_name] = [round(float(sample), 6) for sample in signal[:, lead_index].tolist()]
+
+    _derive_augmented_limb_leads(digital_traces)
 
     _require(digital_traces, "No standard 12-lead signals were found in the PTB-XL record.")
 

@@ -1,46 +1,30 @@
+#!/usr/bin/env python3
 import base64
 import io
+import json
 import random
+import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
-from flask import Flask, jsonify, request
-
 from PIL import Image
 
-try:
-    from service_tools.digital_trace_analysis import build_analysis as build_digital_trace_analysis
-except ModuleNotFoundError:
-    from .service_tools.digital_trace_analysis import build_analysis as build_digital_trace_analysis
 
-app = Flask(__name__)
-
-LOCAL_METHOD = "digital_trace_ingest"
-DIGITAL_TRACE_METHOD = "digital_trace_ingest"
-
-
-def build_toolchain_status():
-    return {
-        "status": "healthy",
-        "python": "ok",
-        "missingModules": [],
-    }
-
-
-def _clamp_channel(value):
+def clamp_channel(value):
     return max(0, min(255, int(round(value))))
 
 
-def _rgb_to_hex(rgb):
+def rgb_to_hex(rgb):
     return "#{:02x}{:02x}{:02x}".format(
-        _clamp_channel(rgb[0]),
-        _clamp_channel(rgb[1]),
-        _clamp_channel(rgb[2]),
+        clamp_channel(rgb[0]),
+        clamp_channel(rgb[1]),
+        clamp_channel(rgb[2]),
     )
 
 
-def _validate_image_url(raw_url):
-    parsed = urllib.parse.urlparse(str(raw_url or "").strip())
+def validate_image_url(value):
+    parsed = urllib.parse.urlparse(str(value or "").strip())
     if parsed.scheme not in {"http", "https"}:
         return ""
     if not parsed.netloc:
@@ -48,19 +32,19 @@ def _validate_image_url(raw_url):
     return parsed.geturl()
 
 
-def _fetch_image_bytes(image_url):
-    request_obj = urllib.request.Request(
+def fetch_image_bytes(image_url):
+    request = urllib.request.Request(
         image_url,
         headers={
             "User-Agent": "PhenoMedPalette/1.0",
             "Accept": "image/*",
         },
     )
-    with urllib.request.urlopen(request_obj, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         return response.read()
 
 
-def _extract_palette(image_bytes, color_count=6):
+def extract_palette(image_bytes, color_count=6):
     with Image.open(io.BytesIO(image_bytes)).convert("RGB") as image:
         reduced = image.resize((96, 96), Image.Resampling.LANCZOS)
         indexed = reduced.convert(
@@ -80,16 +64,17 @@ def _extract_palette(image_bytes, color_count=6):
         return palette
 
 
-def _build_oily_svg_data_url(palette, seed_value):
+def build_oily_svg(palette, seed_value):
     width = 720
     height = 360
     randomizer = random.Random(seed_value)
-    colors = [_rgb_to_hex(color) for color in palette]
+    colors = [rgb_to_hex(color) for color in palette]
     background_a = colors[0]
     background_b = colors[1 if len(colors) > 1 else 0]
 
     strokes = []
-    for _ in range(52):
+    stroke_count = 52
+    for _ in range(stroke_count):
         tone = colors[randomizer.randrange(0, len(colors))]
         cx = randomizer.uniform(0, width)
         cy = randomizer.uniform(0, height)
@@ -108,12 +93,12 @@ def _build_oily_svg_data_url(palette, seed_value):
         y1 = randomizer.uniform(0, height)
         x2 = x1 + randomizer.uniform(-54, 54)
         y2 = y1 + randomizer.uniform(-28, 28)
-        tone = colors[randomizer.randrange(0, len(colors))]
+        shade = colors[randomizer.randrange(0, len(colors))]
         alpha = randomizer.uniform(0.14, 0.34)
         width_px = randomizer.uniform(2.4, 6.8)
         texture.append(
             f'<path d="M {x1:.2f} {y1:.2f} Q {(x1 + x2) / 2:.2f} {(y1 + y2) / 2:.2f} {x2:.2f} {y2:.2f}" '
-            f'stroke="{tone}" stroke-opacity="{alpha:.3f}" stroke-width="{width_px:.2f}" fill="none" stroke-linecap="round" />'
+            f'stroke="{shade}" stroke-opacity="{alpha:.3f}" stroke-width="{width_px:.2f}" fill="none" stroke-linecap="round" />'
         )
 
     svg = (
@@ -130,73 +115,40 @@ def _build_oily_svg_data_url(palette, seed_value):
         '<rect width="100%" height="100%" filter="url(#grain)"/>'
         "</svg>"
     )
+
     encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
     return f"data:image/svg+xml;base64,{encoded}"
 
 
-@app.get("/health")
-def health():
-    toolchain = build_toolchain_status()
-    return (
-        jsonify(
-            {
-                "status": toolchain["status"],
-                "mode": "local-only",
-                "method": LOCAL_METHOD,
-                "toolchain": toolchain,
-            }
-        ),
-        200 if toolchain["status"] == "healthy" else 503,
-    )
+def main():
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        print(json.dumps({"ok": False, "error": "Invalid JSON payload."}))
+        return
 
-
-@app.post("/analyze")
-def analyze():
-    payload = request.get_json(silent=True) or {}
-    file_name = str(payload.get("fileName") or "").strip()
-    has_digital_traces = any(
-        payload.get(key) not in (None, "", [], {})
-        for key in ("digitalTraces", "leadTraces", "deviceTraces", "traces", "leadSignals", "leads")
-    )
-
-    if has_digital_traces:
-        try:
-            analysis = build_digital_trace_analysis(payload)
-            return jsonify(
-                {
-                    "mode": "non-diagnostic",
-                    "sourceType": "device",
-                    "method": DIGITAL_TRACE_METHOD,
-                    "analysis": analysis,
-                    "fileName": file_name,
-                }
-            )
-        except Exception as exc:
-            return jsonify({"message": str(exc)}), 400
-
-    return jsonify({"message": "Image, PDF, and text-only ECG submissions are no longer supported. Send device digital traces instead."}), 415
-
-
-@app.post("/palette/oily")
-def palette_oily():
-    payload = request.get_json(silent=True) or {}
-    image_url = _validate_image_url(payload.get("imageUrl"))
-
+    image_url = validate_image_url(payload.get("imageUrl"))
     if not image_url:
-        return jsonify({"message": "A valid imageUrl is required."}), 400
+        print(json.dumps(
+            {"ok": False, "error": "A valid http/https imageUrl is required."}))
+        return
 
     try:
-        image_bytes = _fetch_image_bytes(image_url)
-        palette = _extract_palette(image_bytes)
-        return jsonify(
-            {
-                "palette": [_rgb_to_hex(color) for color in palette],
-                "overlaySvgDataUrl": _build_oily_svg_data_url(palette, seed_value=image_url),
-            }
-        )
-    except Exception as exc:
-        return jsonify({"message": str(exc)}), 500
+        image_bytes = fetch_image_bytes(image_url)
+        palette = extract_palette(image_bytes)
+        overlay_svg_data_url = build_oily_svg(palette, seed_value=image_url)
+        response = {
+            "ok": True,
+            "palette": [rgb_to_hex(color) for color in palette],
+            "overlaySvgDataUrl": overlay_svg_data_url,
+        }
+        print(json.dumps(response))
+    except urllib.error.URLError as error:
+        print(json.dumps(
+            {"ok": False, "error": f"Failed to fetch image: {error.reason}"}))
+    except Exception as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    main()
