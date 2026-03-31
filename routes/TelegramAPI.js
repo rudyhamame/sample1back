@@ -672,6 +672,35 @@ const getUserTelegramConfig = (user) => {
   };
 };
 
+export const sendTelegramSavedMessageForUser = async ({ user, text }) => {
+  const noteText = String(text || "").trim();
+
+  if (!user || !noteText) {
+    return false;
+  }
+
+  const userConfig = getUserTelegramConfig(user);
+  let client = null;
+
+  try {
+    client = await ensureTelegramClient(userConfig);
+    await client.sendMessage("me", {
+      message: noteText,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch {
+        // ignore disconnect errors
+      }
+    }
+  }
+};
+
 const buildConfigStatusPayload = (user) => {
   const telegramIntegration = user?.telegramIntegration || {};
 

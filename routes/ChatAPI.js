@@ -2,19 +2,20 @@ import express from "express";
 import ChatModel from "../models/Chat.js";
 import UserModel from "../models/Users.js";
 import { emitUserRefresh } from "../helpers/realtime.js";
+import { sendTelegramSavedMessageForUser } from "./TelegramAPI.js";
 const ChatRouter = express.Router();
 
 const ensureChatDocument = async (userId) => {
   await ChatModel.findOneAndUpdate(
     { _id: userId },
     { $setOnInsert: { _id: userId, conversation: [] } },
-    { upsert: true, new: true }
+    { upsert: true, new: true },
   );
 
   await UserModel.findByIdAndUpdate(
     userId,
     { chat: userId },
-    { useFindAndModify: false }
+    { useFindAndModify: false },
   );
 
   return ChatModel.findOne({ _id: userId });
@@ -94,17 +95,24 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
       });
       return chatObject.save();
     }),
-    UserModel.findById(senderId).select("info.firstname info.lastname"),
-    UserModel.findById(friendId).select("notifications"),
+    UserModel.findById(senderId).select(
+      "info.firstname info.lastname info.username",
+    ),
+    UserModel.findById(friendId).select(
+      "notifications status.isConnected telegramIntegration info.firstname info.lastname info.username",
+    ),
   ])
-    .then(([, , senderUser, friendUser]) => {
+    .then(async ([, , senderUser, friendUser]) => {
       if (friendUser && senderUser) {
-        const senderName = `${senderUser.info?.firstname || ""} ${senderUser.info?.lastname || ""}`.trim() || "a contact";
+        const senderName =
+          `${senderUser.info?.firstname || ""} ${senderUser.info?.lastname || ""}`.trim() ||
+          senderUser.info?.username ||
+          "a contact";
         const existingNotification = (friendUser.notifications || []).find(
           (notification) =>
             String(notification?.id) === String(senderId) &&
             notification?.type === "chat_message" &&
-            notification?.status !== "read"
+            notification?.status !== "read",
         );
 
         if (existingNotification) {
@@ -122,7 +130,30 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
           });
         }
 
-        return friendUser.save();
+        await friendUser.save();
+
+        if (!friendUser.status?.isConnected) {
+          const senderUsername = String(senderUser.info?.username || "").trim();
+          const recipientLabel =
+            `${friendUser.info?.firstname || ""} ${friendUser.info?.lastname || ""}`.trim() ||
+            friendUser.info?.username ||
+            "you";
+          const messagePreview = String(message || "").trim();
+          const telegramAlert = [
+            `New PhenoMed message for ${recipientLabel}`,
+            `From: ${senderName}${senderUsername ? ` (@${senderUsername})` : ""}`,
+            "",
+            "Received while you were offline.",
+            "",
+            "Message:",
+            messagePreview || "[No text]",
+          ].join("\n");
+
+          await sendTelegramSavedMessageForUser({
+            user: friendUser,
+            text: telegramAlert,
+          });
+        }
       }
 
       return null;
