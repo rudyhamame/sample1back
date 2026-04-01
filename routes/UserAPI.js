@@ -641,7 +641,7 @@ UserRouter.get("/update/:id", function (req, res, next) {
 UserRouter.put("/profile", checkAuth, async function (req, res, next) {
   try {
     const user = await UserModel.findById(req.authentication.userId).select(
-      "info",
+      "info media",
     );
 
     if (!user) {
@@ -704,11 +704,105 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     user.info.term = String(req.body?.term ?? user.info.term ?? "").trim();
     user.info.aiProvider = nextAiProvider;
 
+    const requestedViewport = req.body?.profilePictureViewport;
+    if (requestedViewport && typeof requestedViewport === "object") {
+      const rawScale = Number(requestedViewport?.scale);
+      const rawOffsetX = Number(requestedViewport?.offsetX);
+      const rawOffsetY = Number(requestedViewport?.offsetY);
+
+      user.media = user.media || {};
+      user.media.profilePictureViewport = {
+        scale: Number.isFinite(rawScale)
+          ? Math.min(Math.max(rawScale, 1), 4)
+          : 1,
+        offsetX: Number.isFinite(rawOffsetX) ? rawOffsetX : 0,
+        offsetY: Number.isFinite(rawOffsetY) ? rawOffsetY : 0,
+        updatedAt: new Date(),
+      };
+    }
+
+    const requestedHomeDrawing = req.body?.homeDrawing;
+    if (requestedHomeDrawing && typeof requestedHomeDrawing === "object") {
+      const sanitizeDrawingPaths = (requestedPaths) =>
+        (Array.isArray(requestedPaths) ? requestedPaths : [])
+          .slice(0, 48)
+          .map((path) => {
+            const paletteId = String(path?.paletteId || "aurora").trim() || "aurora";
+            const points = Array.isArray(path?.points)
+              ? path.points
+                  .map((point) => ({
+                    x: Number(point?.x),
+                    y: Number(point?.y),
+                  }))
+                  .filter(
+                    (point) =>
+                      Number.isFinite(point.x) && Number.isFinite(point.y),
+                  )
+                  .slice(0, 2500)
+              : [];
+
+            return {
+              paletteId,
+              points,
+            };
+          })
+          .filter((path) => path.points.length >= 2);
+
+      const sanitizeTextItems = (requestedItems) =>
+        (Array.isArray(requestedItems) ? requestedItems : [])
+          .slice(0, 80)
+          .map((item, index) => ({
+            id:
+              String(item?.id || "").trim() ||
+              `home-text-${Date.now()}-${index}`,
+            paletteId: String(item?.paletteId || "aurora").trim() || "aurora",
+            text: String(item?.text || "").trim().slice(0, 140),
+            x: Number(item?.x),
+            y: Number(item?.y),
+          }))
+          .filter(
+            (item) =>
+              item.text && Number.isFinite(item.x) && Number.isFinite(item.y),
+          );
+
+      const legacyAppliedPaths =
+        !Array.isArray(requestedHomeDrawing?.appliedPaths) &&
+        Array.isArray(requestedHomeDrawing?.paths)
+          ? requestedHomeDrawing.paths
+          : [];
+
+      user.media = user.media || {};
+      user.media.homeDrawing = {
+        draftPaths: sanitizeDrawingPaths(requestedHomeDrawing?.draftPaths),
+        appliedPaths: sanitizeDrawingPaths(
+          Array.isArray(requestedHomeDrawing?.appliedPaths)
+            ? requestedHomeDrawing.appliedPaths
+            : legacyAppliedPaths,
+        ),
+        textItems: sanitizeTextItems(requestedHomeDrawing?.textItems),
+        updatedAt: new Date(),
+      };
+    }
+
     await user.save();
 
     return res.status(200).json({
       message: "Personal information updated.",
       info: user.info,
+      media: {
+        profilePictureViewport: user?.media?.profilePictureViewport || {
+          scale: 1,
+          offsetX: 0,
+          offsetY: 0,
+          updatedAt: null,
+        },
+        homeDrawing: user?.media?.homeDrawing || {
+          draftPaths: [],
+          appliedPaths: [],
+          textItems: [],
+          updatedAt: null,
+        },
+      },
     });
   } catch (error) {
     next(error);

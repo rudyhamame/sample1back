@@ -104,6 +104,46 @@ const UserSchema = new Schema({
       assetId: { type: String, default: "" },
       updatedAt: { type: Date, default: null },
     },
+    profilePictureViewport: {
+      scale: { type: Number, default: 1 },
+      offsetX: { type: Number, default: 0 },
+      offsetY: { type: Number, default: 0 },
+      updatedAt: { type: Date, default: null },
+    },
+    homeDrawing: {
+      draftPaths: [
+        {
+          paletteId: { type: String, default: "aurora" },
+          points: [
+            {
+              x: { type: Number, default: 0 },
+              y: { type: Number, default: 0 },
+            },
+          ],
+        },
+      ],
+      appliedPaths: [
+        {
+          paletteId: { type: String, default: "aurora" },
+          points: [
+            {
+              x: { type: Number, default: 0 },
+              y: { type: Number, default: 0 },
+            },
+          ],
+        },
+      ],
+      textItems: [
+        {
+          id: { type: String, default: "" },
+          paletteId: { type: String, default: "aurora" },
+          text: { type: String, default: "" },
+          x: { type: Number, default: 0 },
+          y: { type: Number, default: 0 },
+        },
+      ],
+      updatedAt: { type: Date, default: null },
+    },
     imageGallery: [
       {
         url: { type: String, default: "" },
