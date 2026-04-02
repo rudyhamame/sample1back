@@ -6,7 +6,7 @@ const ChatSchema = new Schema({
     {
       _id: { type: Schema.Types.ObjectId, required: true },
       message: { type: String, required: true },
-      date: { type: Date, default: new Date() },
+      date: { type: Date, default: Date.now },
       status: { type: String, default: "sent" },
       from: { type: String, required: true },
     },

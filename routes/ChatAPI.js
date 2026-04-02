@@ -75,12 +75,14 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
   const friendId = req.params.friendID;
   const { message } = req.body;
   const io = req.app.locals.io;
+  const sentAt = new Date();
 
   Promise.all([
     ensureChatDocument(senderId).then((chatObject) => {
       chatObject.conversation.push({
         _id: friendId,
         message,
+        date: sentAt,
         from: "me",
         status: "received",
       });
@@ -90,6 +92,7 @@ ChatRouter.post("/sendMessage/:friendID/:my_id", function (req, res, next) {
       chatObject.conversation.push({
         _id: senderId,
         message,
+        date: sentAt,
         from: "them",
         status: "received",
       });
