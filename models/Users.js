@@ -114,6 +114,9 @@ const UserSchema = new Schema({
       draftPaths: [
         {
           paletteId: { type: String, default: "aurora" },
+          stroke: { type: String, default: "" },
+          glow: { type: String, default: "" },
+          bulb: { type: String, default: "" },
           points: [
             {
               x: { type: Number, default: 0 },
@@ -125,6 +128,9 @@ const UserSchema = new Schema({
       appliedPaths: [
         {
           paletteId: { type: String, default: "aurora" },
+          stroke: { type: String, default: "" },
+          glow: { type: String, default: "" },
+          bulb: { type: String, default: "" },
           points: [
             {
               x: { type: Number, default: 0 },

@@ -95,6 +95,7 @@ app.locals.io = io;
 
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
+const getUserRoom = (userId) => `user:${userId}`;
 
 const getCloudinaryHealthConfig = () => {
   const envCloudName = String(process.env.CLOUDINARY_CLOUD_NAME || "").trim();
@@ -243,7 +244,7 @@ io.on("connection", (socket) => {
     }
 
     socket.data.userId = userId;
-    socket.join(`user:${userId}`);
+    socket.join(getUserRoom(userId));
   });
 
   socket.on("user:chat-status", ({ userId, friendId, isChatting }) => {
@@ -277,6 +278,86 @@ io.on("connection", (socket) => {
     emitTypingPresenceForPair({
       userId: String(userId),
       friendId: String(friendId),
+    });
+  });
+
+  socket.on("call:offer", ({ toUserId, offer, callType, metadata }) => {
+    const fromUserId = String(socket.data.userId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+
+    if (!fromUserId || !targetUserId || !offer) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:offer", {
+      fromUserId,
+      toUserId: targetUserId,
+      callType: callType === "video" ? "video" : "audio",
+      offer,
+      metadata:
+        metadata && typeof metadata === "object"
+          ? metadata
+          : {},
+    });
+  });
+
+  socket.on("call:answer", ({ toUserId, answer }) => {
+    const fromUserId = String(socket.data.userId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+
+    if (!fromUserId || !targetUserId || !answer) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:answer", {
+      fromUserId,
+      toUserId: targetUserId,
+      answer,
+    });
+  });
+
+  socket.on("call:ice-candidate", ({ toUserId, candidate }) => {
+    const fromUserId = String(socket.data.userId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+
+    if (!fromUserId || !targetUserId || !candidate) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:ice-candidate", {
+      fromUserId,
+      toUserId: targetUserId,
+      candidate,
+    });
+  });
+
+  socket.on("call:reject", ({ toUserId, reason }) => {
+    const fromUserId = String(socket.data.userId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+
+    if (!fromUserId || !targetUserId) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:reject", {
+      fromUserId,
+      toUserId: targetUserId,
+      reason: String(reason || "rejected").trim() || "rejected",
+    });
+  });
+
+  socket.on("call:end", ({ toUserId, reason }) => {
+    const fromUserId = String(socket.data.userId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+
+    if (!fromUserId || !targetUserId) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:end", {
+      fromUserId,
+      toUserId: targetUserId,
+      reason: String(reason || "ended").trim() || "ended",
     });
   });
 

@@ -2369,6 +2369,74 @@ const findOwnedStoredPdfMessage = async ({
   }).lean();
 };
 
+const isMissingStoredPdfFileError = (error) => {
+  const errorCode = String(error?.code || "").trim().toUpperCase();
+  return errorCode === "ENOENT" || errorCode === "ENOTDIR";
+};
+
+const downloadStoredPdfFromTelegram = async ({
+  user,
+  groupReference,
+  messageId,
+}) => {
+  if (!user) {
+    const error = new Error("User not found.");
+    error.status = 404;
+    throw error;
+  }
+
+  const userConfig = getUserTelegramConfig(user);
+  let client = null;
+
+  try {
+    client = await ensureTelegramClient(userConfig);
+    const entity = await resolveTelegramGroupEntity(client, groupReference);
+    const telegramMessages = await client.getMessages(entity, {
+      ids: [Number(messageId)],
+    });
+    const telegramMessage = Array.isArray(telegramMessages)
+      ? telegramMessages[0] || null
+      : telegramMessages || null;
+
+    if (!telegramMessage) {
+      const error = new Error("Stored PDF message was not found on Telegram.");
+      error.status = 404;
+      throw error;
+    }
+
+    const payload = buildMessagePayload(telegramMessage);
+
+    if (!payload?.attachmentIsPdf) {
+      const error = new Error("Telegram message does not contain a PDF.");
+      error.status = 400;
+      throw error;
+    }
+
+    const downloadedMedia = await client.downloadMedia(telegramMessage, {});
+
+    if (!downloadedMedia) {
+      const error = new Error("Unable to download PDF from Telegram.");
+      error.status = 502;
+      throw error;
+    }
+
+    return {
+      buffer: Buffer.isBuffer(downloadedMedia)
+        ? downloadedMedia
+        : Buffer.from(downloadedMedia),
+      payload,
+    };
+  } finally {
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch {
+        // ignore disconnect errors
+      }
+    }
+  }
+};
+
 const listJoinedTelegramGroupsForUser = async (user) => {
   if (!user) {
     return [];
@@ -3187,33 +3255,59 @@ TelegramRouter.get(
         messageId,
       });
 
-      if (!messageRecord?.attachmentStoredPath) {
-        return res.status(404).json({
-          message: "Stored PDF file was not found.",
-        });
+      const storedPath = String(messageRecord?.attachmentStoredPath || "").trim();
+
+      if (storedPath) {
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          buildContentDispositionHeader(
+            "inline",
+            messageRecord?.attachmentFileName,
+            "telegram.pdf",
+          ),
+        );
+        res.setHeader("Cache-Control", "private, max-age=300");
+
+        const resolvedPath = path.resolve(storedPath);
+
+        if (!resolvedPath.startsWith(TELEGRAM_PDF_STORAGE_ROOT)) {
+          return res.status(400).json({
+            message: "Stored PDF path is invalid.",
+          });
+        }
+
+        try {
+          await fs.access(resolvedPath);
+          return res.sendFile(resolvedPath);
+        } catch (error) {
+          if (!isMissingStoredPdfFileError(error)) {
+            throw error;
+          }
+        }
       }
 
-      const resolvedPath = path.resolve(messageRecord.attachmentStoredPath);
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "telegramIntegration",
+      );
+      const telegramPdf = await downloadStoredPdfFromTelegram({
+        user,
+        groupReference,
+        messageId,
+      });
 
-      if (!resolvedPath.startsWith(TELEGRAM_PDF_STORAGE_ROOT)) {
-        return res.status(400).json({
-          message: "Stored PDF path is invalid.",
-        });
-      }
-
-      await fs.access(resolvedPath);
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
         buildContentDispositionHeader(
           "inline",
-          messageRecord.attachmentFileName,
+          messageRecord?.attachmentFileName || telegramPdf?.payload?.attachmentFileName,
           "telegram.pdf",
         ),
       );
       res.setHeader("Cache-Control", "private, max-age=300");
 
-      return res.sendFile(resolvedPath);
+      return res.send(telegramPdf.buffer);
     } catch (error) {
       next(error);
     }
@@ -3293,33 +3387,59 @@ TelegramRouter.get(
         messageId,
       });
 
-      if (!messageRecord?.attachmentStoredPath) {
-        return res.status(404).json({
-          message: "Stored PDF file was not found.",
-        });
+      const storedPath = String(messageRecord?.attachmentStoredPath || "").trim();
+
+      if (storedPath) {
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          buildContentDispositionHeader(
+            "attachment",
+            messageRecord?.attachmentFileName,
+            "telegram.pdf",
+          ),
+        );
+        res.setHeader("Cache-Control", "private, max-age=300");
+
+        const resolvedPath = path.resolve(storedPath);
+
+        if (!resolvedPath.startsWith(TELEGRAM_PDF_STORAGE_ROOT)) {
+          return res.status(400).json({
+            message: "Stored PDF path is invalid.",
+          });
+        }
+
+        try {
+          await fs.access(resolvedPath);
+          return res.sendFile(resolvedPath);
+        } catch (error) {
+          if (!isMissingStoredPdfFileError(error)) {
+            throw error;
+          }
+        }
       }
 
-      const resolvedPath = path.resolve(messageRecord.attachmentStoredPath);
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "telegramIntegration",
+      );
+      const telegramPdf = await downloadStoredPdfFromTelegram({
+        user,
+        groupReference,
+        messageId,
+      });
 
-      if (!resolvedPath.startsWith(TELEGRAM_PDF_STORAGE_ROOT)) {
-        return res.status(400).json({
-          message: "Stored PDF path is invalid.",
-        });
-      }
-
-      await fs.access(resolvedPath);
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
         buildContentDispositionHeader(
           "attachment",
-          messageRecord.attachmentFileName,
+          messageRecord?.attachmentFileName || telegramPdf?.payload?.attachmentFileName,
           "telegram.pdf",
         ),
       );
       res.setHeader("Cache-Control", "private, max-age=300");
 
-      return res.sendFile(resolvedPath);
+      return res.send(telegramPdf.buffer);
     } catch (error) {
       next(error);
     }

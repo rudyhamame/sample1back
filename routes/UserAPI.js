@@ -2,6 +2,7 @@
 import express from "express";
 import { execFileSync } from "child_process";
 import crypto from "crypto";
+import { v2 as cloudinary } from "cloudinary";
 import path from "path";
 import { fileURLToPath } from "url";
 import TestModel from "../models/Test.js";
@@ -95,6 +96,90 @@ const buildUserRingVideoFolder = (userId) =>
 const buildUserImageGalleryFolder = (userId) =>
   buildUserCloudinaryFolder(CLOUDINARY_IMAGE_UPLOAD_FOLDER, userId);
 
+const toBase64 = (value) => Buffer.from(String(value || ""), "utf8").toString("base64");
+
+const buildTurnRestCredentials = (userId) => {
+  const turnSecret = String(
+    process.env.WEBRTC_TURN_SECRET || process.env.TURN_SECRET || "",
+  ).trim();
+
+  if (!turnSecret) {
+    return null;
+  }
+
+  const ttlSeconds = Math.max(
+    60,
+    Number.parseInt(
+      String(process.env.WEBRTC_TURN_TTL_SECONDS || "86400").trim(),
+      10,
+    ) || 86400,
+  );
+  const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const usernameSuffix =
+    String(userId || "").trim() ||
+    String(process.env.WEBRTC_TURN_REST_USER || "phenomed").trim() ||
+    "phenomed";
+  const username = `${expiresAt}:${usernameSuffix}`;
+  const credential = crypto
+    .createHmac("sha1", turnSecret)
+    .update(username)
+    .digest("base64");
+
+  return {
+    username,
+    credential,
+    ttlSeconds,
+    expiresAt,
+  };
+};
+
+const getRtcIceServers = (userId = "") => {
+  const iceServers = [
+    {
+      urls: [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+      ],
+    },
+  ];
+
+  const turnUrls = String(
+    process.env.WEBRTC_TURN_URLS ||
+      process.env.TURN_URLS ||
+      process.env.TURN_URL ||
+      "",
+  )
+    .split(",")
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  const turnUsername = String(
+    process.env.WEBRTC_TURN_USERNAME || process.env.TURN_USERNAME || "",
+  ).trim();
+  const turnCredential = String(
+    process.env.WEBRTC_TURN_PASSWORD ||
+      process.env.WEBRTC_TURN_CREDENTIAL ||
+      process.env.TURN_PASSWORD ||
+      "",
+  ).trim();
+  const turnRestCredentials = buildTurnRestCredentials(userId);
+
+  if (turnUrls.length && turnRestCredentials) {
+    iceServers.push({
+      urls: turnUrls,
+      username: turnRestCredentials.username,
+      credential: turnRestCredentials.credential,
+    });
+  } else if (turnUrls.length && turnUsername && turnCredential) {
+    iceServers.push({
+      urls: turnUrls,
+      username: turnUsername,
+      credential: turnCredential,
+    });
+  }
+
+  return iceServers;
+};
+
 const ensureRingVideoFolderForUser = async (user) => {
   if (!user?._id) {
     return "";
@@ -128,12 +213,17 @@ const normalizeStoredGalleryImage = (image) => {
 
   const url = String(image?.url || image?.secure_url || "").trim();
   const publicId = String(image?.publicId || image?.public_id || "").trim();
+  const normalizedResourceType = String(
+    image?.resourceType || image?.resource_type || "image",
+  )
+    .trim()
+    .toLowerCase();
   const resourceType =
-    String(image?.resourceType || image?.resource_type || "image")
-      .trim()
-      .toLowerCase() === "video"
+    normalizedResourceType === "video"
       ? "video"
-      : "image";
+      : normalizedResourceType === "raw"
+        ? "raw"
+        : "image";
 
   if (!url || !publicId) {
     return null;
@@ -153,6 +243,39 @@ const normalizeStoredGalleryImage = (image) => {
     duration: Number(image?.duration) || 0,
     createdAt: image?.createdAt ? new Date(image.createdAt) : new Date(),
   };
+};
+
+const extractCloudinaryDeliveryTypeFromUrl = (value) => {
+  const url = String(value || "").trim();
+
+  if (!url) {
+    return "upload";
+  }
+
+  const match = url.match(/\/(?:image|video|raw)\/([^/]+)\//i);
+  const deliveryType = String(match?.[1] || "").trim().toLowerCase();
+
+  return deliveryType || "upload";
+};
+
+const extractCloudinaryFormat = (image) => {
+  const explicitFormat = String(image?.format || "").trim().toLowerCase();
+
+  if (explicitFormat) {
+    return explicitFormat;
+  }
+
+  const mimeType = String(image?.mimeType || "").trim().toLowerCase();
+
+  if (mimeType === "application/pdf") {
+    return "pdf";
+  }
+
+  const url = String(image?.url || "").trim();
+  const fileName = url.split("/").pop() || "";
+  const extensionMatch = fileName.match(/\.([a-z0-9]+)(?:[?#].*)?$/i);
+
+  return String(extensionMatch?.[1] || "").trim().toLowerCase() || "pdf";
 };
 
 const sortGalleryImages = (images = []) =>
@@ -728,6 +851,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           .slice(0, 48)
           .map((path) => {
             const paletteId = String(path?.paletteId || "aurora").trim() || "aurora";
+            const stroke = String(path?.stroke || "").trim();
+            const glow = String(path?.glow || "").trim();
+            const bulb = String(path?.bulb || "").trim();
             const points = Array.isArray(path?.points)
               ? path.points
                   .map((point) => ({
@@ -743,6 +869,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
 
             return {
               paletteId,
+              stroke,
+              glow,
+              bulb,
               points,
             };
           })
@@ -1044,6 +1173,113 @@ UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
   }
 });
 
+UserRouter.get("/rtc/config", checkAuth, async function (req, res, next) {
+  try {
+    const iceServers = getRtcIceServers(req.authentication.userId);
+    const turnRestCredentials = buildTurnRestCredentials(
+      req.authentication.userId,
+    );
+
+    return res.status(200).json({
+      iceServers,
+      ttlSeconds: turnRestCredentials?.ttlSeconds || null,
+      expiresAt: turnRestCredentials?.expiresAt || null,
+      authMode: turnRestCredentials ? "shared-secret" : "static",
+      turnEnabled: iceServers.some((entry) =>
+        Array.isArray(entry?.urls)
+          ? entry.urls.some((url) => String(url || "").startsWith("turn:"))
+          : String(entry?.urls || "").startsWith("turn:"),
+      ),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.get(
+  "/image-gallery/private-download",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const cloudinaryConfig = getCloudinaryConfig();
+
+      if (!cloudinaryConfig.isReady) {
+        return res.status(503).json({
+          message: "Cloudinary is not configured on backend.",
+          missing: cloudinaryConfig.missing,
+        });
+      }
+
+      const requestedPublicId = String(req.query?.publicId || "").trim();
+      const requestedUrl = String(req.query?.url || "").trim();
+
+      if (!requestedPublicId && !requestedUrl) {
+        return res.status(400).json({
+          message: "publicId or url is required.",
+        });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "media",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const imageGallery = Array.isArray(user?.media?.imageGallery)
+        ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+        : [];
+
+      const selectedImage = imageGallery.find((image) => {
+        if (requestedPublicId && image.publicId === requestedPublicId) {
+          return true;
+        }
+
+        if (requestedUrl && image.url === requestedUrl) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (!selectedImage) {
+        return res.status(404).json({
+          message: "Requested media file was not found in your gallery.",
+        });
+      }
+
+      cloudinary.config({
+        cloud_name: cloudinaryConfig.cloudName,
+        api_key: cloudinaryConfig.apiKey,
+        api_secret: cloudinaryConfig.apiSecret,
+        secure: true,
+      });
+
+      const fileUrl = cloudinary.utils.private_download_url(
+        selectedImage.publicId,
+        extractCloudinaryFormat(selectedImage),
+        {
+          resource_type: selectedImage.resourceType || "raw",
+          type: extractCloudinaryDeliveryTypeFromUrl(selectedImage.url),
+          expires_at: Math.floor(Date.now() / 1000) + 60 * 10,
+          attachment: false,
+        },
+      );
+
+      return res.status(200).json({
+        url: fileUrl,
+        publicId: selectedImage.publicId,
+        resourceType: selectedImage.resourceType || "raw",
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 UserRouter.post(
   "/image-gallery/signature",
   checkAuth,
@@ -1067,7 +1303,11 @@ UserRouter.post(
         .trim()
         .toLowerCase();
       const resourceType =
-        requestedResourceType === "video" ? "video" : "image";
+        requestedResourceType === "video"
+          ? "video"
+          : requestedResourceType === "raw"
+            ? "raw"
+            : "image";
       const folder = buildUserImageGalleryFolder(req.authentication.userId);
       const timestamp = Math.floor(Date.now() / 1000);
       const paramsToSign = {
