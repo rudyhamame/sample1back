@@ -29,6 +29,27 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+const isPrivateDevelopmentHost = (hostname) => {
+  const normalizedHostname = String(hostname || "").trim().toLowerCase();
+
+  if (!normalizedHostname) {
+    return false;
+  }
+
+  if (
+    normalizedHostname === "localhost" ||
+    normalizedHostname === "127.0.0.1"
+  ) {
+    return true;
+  }
+
+  return (
+    /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalizedHostname) ||
+    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(normalizedHostname) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(normalizedHostname)
+  );
+};
+
 const corsOptions = {
   origin(origin, callback) {
     if (isAllowedOrigin(origin)) {
@@ -53,7 +74,14 @@ const isAllowedOrigin = (origin) => {
   }
 
   try {
-    const hostname = new URL(origin).hostname;
+    const parsedOrigin = new URL(origin);
+    const hostname = parsedOrigin.hostname;
+    const port = String(parsedOrigin.port || "").trim();
+
+    if (port === "5173" && isPrivateDevelopmentHost(hostname)) {
+      return true;
+    }
+
     return (
       hostname.endsWith(".vercel.app") ||
       hostname.endsWith(".trycloudflare.com")
