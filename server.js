@@ -19,6 +19,7 @@ import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import ECGAPI from "./routes/ECGAPI.js";
 import TelegramAPI, { startTelegramSyncWorker } from "./routes/TelegramAPI.js";
 import UserModel from "./models/Users.js";
+import ChatModel from "./models/Chat.js";
 // const PostsAPI = require("./routes/PostsAPI");
 
 import "dotenv/config.js";
@@ -307,6 +308,58 @@ io.on("connection", (socket) => {
       userId: String(userId),
       friendId: String(friendId),
     });
+  });
+
+  socket.on("user:message-read", async ({ userId, friendId }) => {
+    const readerUserId = String(userId || socket.data.userId || "").trim();
+    const senderUserId = String(friendId || "").trim();
+
+    if (!readerUserId || !senderUserId) {
+      return;
+    }
+
+    try {
+      await ChatModel.updateOne(
+        { _id: senderUserId },
+        {
+          $set: {
+            "conversation.$[message].status": "read",
+          },
+        },
+        {
+          arrayFilters: [
+            {
+              "message._id": readerUserId,
+              "message.from": "me",
+              "message.status": { $ne: "read" },
+            },
+          ],
+        },
+      );
+
+      await UserModel.updateOne(
+        { _id: readerUserId },
+        {
+          $set: {
+            "notifications.$[notification].status": "read",
+          },
+        },
+        {
+          arrayFilters: [
+            {
+              "notification.type": "chat_message",
+              "notification.id": senderUserId,
+            },
+          ],
+        },
+      );
+
+      emitUserRefresh(io, [readerUserId, senderUserId], "chat:read", {
+        friendId: senderUserId,
+      });
+    } catch (error) {
+      console.error("Failed to mark messages as read", error);
+    }
   });
 
   socket.on("call:offer", ({ toUserId, offer, callType, metadata }) => {
