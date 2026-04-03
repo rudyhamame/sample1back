@@ -133,6 +133,20 @@ const buildTurnRestCredentials = (userId) => {
   };
 };
 
+const maskTurnCredential = (value) => {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length <= 8) {
+    return `${normalized.slice(0, 2)}***`;
+  }
+
+  return `${normalized.slice(0, 6)}***${normalized.slice(-4)}`;
+};
+
 const isPlaceholderTurnUrl = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
 
@@ -1276,6 +1290,30 @@ UserRouter.get("/rtc/config", checkAuth, async function (req, res, next) {
     const turnRestCredentials = buildTurnRestCredentials(
       req.authentication.userId,
     );
+    const turnUrls = iceServers.flatMap((entry) =>
+      Array.isArray(entry?.urls) ? entry.urls : [entry?.urls],
+    );
+
+    console.info("[rtc-config]", {
+      userId: String(req.authentication.userId || "").trim(),
+      authMode: turnRestCredentials ? "shared-secret" : "static",
+      turnEnabled: turnUrls.some((url) =>
+        String(url || "").startsWith("turn:") ||
+        String(url || "").startsWith("turns:"),
+      ),
+      turnUrls: turnUrls.filter((url) => {
+        const normalizedUrl = String(url || "").trim();
+        return (
+          normalizedUrl.startsWith("turn:") || normalizedUrl.startsWith("turns:")
+        );
+      }),
+      username: turnRestCredentials?.username || "",
+      credentialPreview: maskTurnCredential(
+        turnRestCredentials?.credential || "",
+      ),
+      ttlSeconds: turnRestCredentials?.ttlSeconds || null,
+      expiresAt: turnRestCredentials?.expiresAt || null,
+    });
 
     return res.status(200).json({
       iceServers,
