@@ -148,6 +148,86 @@ const isPlaceholderTurnUrl = (value) => {
   );
 };
 
+const expandTurnUrls = (rawUrls) => {
+  const inputUrls = Array.isArray(rawUrls) ? rawUrls : [rawUrls];
+  const expandedUrls = [];
+  const seenUrls = new Set();
+
+  inputUrls.forEach((rawEntry) => {
+    const normalizedEntry = String(rawEntry || "").trim();
+
+    if (!normalizedEntry || isPlaceholderTurnUrl(normalizedEntry)) {
+      return;
+    }
+
+    const addUrl = (value) => {
+      const nextValue = String(value || "").trim();
+
+      if (!nextValue || seenUrls.has(nextValue)) {
+        return;
+      }
+
+      seenUrls.add(nextValue);
+      expandedUrls.push(nextValue);
+    };
+
+    const turnUriMatch = normalizedEntry.match(/^(turns?):([^?]+)(\?.*)?$/i);
+
+    if (!turnUriMatch) {
+      addUrl(normalizedEntry);
+      return;
+    }
+
+    const protocol = String(turnUriMatch[1] || "").toLowerCase();
+    const baseTarget = String(turnUriMatch[2] || "").trim();
+    const search = String(turnUriMatch[3] || "").trim();
+    const portMatch = baseTarget.match(/:(\d+)$/);
+    const port = portMatch ? String(portMatch[1] || "").trim() : "";
+
+    if (!baseTarget) {
+      addUrl(normalizedEntry);
+      return;
+    }
+
+    const hasTransportParam = /(?:\?|&)transport=/i.test(search);
+
+    if (protocol === "turn" && port === "5349") {
+      addUrl(`turns:${baseTarget}${search}`);
+
+      if (!hasTransportParam) {
+        addUrl(`turns:${baseTarget}?transport=tcp`);
+      }
+
+      return;
+    }
+
+    if (protocol === "turns") {
+      addUrl(`turns:${baseTarget}${search}`);
+
+      if (!hasTransportParam) {
+        addUrl(`turns:${baseTarget}?transport=tcp`);
+      }
+
+      return;
+    }
+
+    if (protocol === "turn") {
+      addUrl(`turn:${baseTarget}${search}`);
+
+      if (!hasTransportParam) {
+        addUrl(`turn:${baseTarget}?transport=udp`);
+        addUrl(`turn:${baseTarget}?transport=tcp`);
+      }
+
+      return;
+    }
+
+    addUrl(normalizedEntry);
+  });
+
+  return expandedUrls;
+};
+
 const getRtcIceServers = (userId = "") => {
   const iceServers = [
     {
@@ -167,7 +247,7 @@ const getRtcIceServers = (userId = "") => {
     .split(",")
     .map((entry) => String(entry || "").trim())
     .filter(Boolean)
-    .filter((entry) => !isPlaceholderTurnUrl(entry));
+    .flatMap((entry) => expandTurnUrls(entry));
   const turnUsername = String(
     process.env.WEBRTC_TURN_USERNAME || process.env.TURN_USERNAME || "",
   ).trim();
