@@ -272,8 +272,50 @@ io.on("connection", (socket) => {
       return;
     }
 
-    socket.data.userId = userId;
-    socket.join(getUserRoom(userId));
+    const normalizedUserId = String(userId).trim();
+
+    socket.data.userId = normalizedUserId;
+    socket.join(getUserRoom(normalizedUserId));
+
+    const activeFriendId = activeChatPartnersByUser.get(normalizedUserId);
+    if (activeFriendId) {
+      emitChatPresenceForPair({
+        userId: normalizedUserId,
+        friendId: activeFriendId,
+      });
+    }
+
+    const activeTypingFriendId = activeTypingPartnersByUser.get(normalizedUserId);
+    if (activeTypingFriendId) {
+      emitTypingPresenceForPair({
+        userId: normalizedUserId,
+        friendId: activeTypingFriendId,
+      });
+    }
+
+    activeChatPartnersByUser.forEach((partnerId, activeUserId) => {
+      if (
+        String(activeUserId) !== normalizedUserId &&
+        String(partnerId) === normalizedUserId
+      ) {
+        emitChatPresenceForPair({
+          userId: normalizedUserId,
+          friendId: String(activeUserId),
+        });
+      }
+    });
+
+    activeTypingPartnersByUser.forEach((partnerId, activeUserId) => {
+      if (
+        String(activeUserId) !== normalizedUserId &&
+        String(partnerId) === normalizedUserId
+      ) {
+        emitTypingPresenceForPair({
+          userId: normalizedUserId,
+          friendId: String(activeUserId),
+        });
+      }
+    });
   });
 
   socket.on("user:chat-status", ({ userId, friendId, isChatting }) => {
