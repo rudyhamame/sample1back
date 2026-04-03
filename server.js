@@ -125,6 +125,8 @@ app.locals.io = io;
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
 const getUserRoom = (userId) => `user:${userId}`;
+const USER_STALE_OFFLINE_AFTER_MS = 90 * 1000;
+const USER_STALE_CHECK_INTERVAL_MS = 30 * 1000;
 
 const getCloudinaryHealthConfig = () => {
   const envCloudName = String(process.env.CLOUDINARY_CLOUD_NAME || "").trim();
@@ -532,3 +534,41 @@ server.listen(process.env.PORT || 4000, function () {
   startTelegramSyncWorker();
   console.log("now listening on port 4000");
 });
+
+setInterval(async () => {
+  try {
+    const staleThreshold = new Date(Date.now() - USER_STALE_OFFLINE_AFTER_MS);
+    const staleUsers = await UserModel.find({
+      "status.isConnected": true,
+      "status.lastSeenAt": { $lt: staleThreshold },
+    }).select("_id friends login_record status");
+
+    for (const staleUser of staleUsers) {
+      staleUser.status.isConnected = false;
+      staleUser.status.lastSeenAt = new Date();
+
+      if (Array.isArray(staleUser.login_record)) {
+        for (let i = staleUser.login_record.length - 1; i >= 0; i -= 1) {
+          if (!staleUser.login_record[i].loggedOutAt) {
+            staleUser.login_record[i].loggedOutAt = new Date();
+            break;
+          }
+        }
+      }
+
+      await staleUser.save();
+
+      emitUserRefresh(
+        io,
+        [String(staleUser._id), ...(staleUser.friends || []).map((friend) => String(friend))],
+        "connection:changed",
+        {
+          isConnected: false,
+          targetUserId: String(staleUser._id),
+        },
+      );
+    }
+  } catch (error) {
+    console.error("Failed to reconcile stale online users", error);
+  }
+}, USER_STALE_CHECK_INTERVAL_MS);

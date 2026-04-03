@@ -223,6 +223,7 @@ const UserSchema = new Schema({
   },
   status: {
     isConnected: { type: Boolean, default: false },
+    lastSeenAt: { type: Date, default: null },
   },
   notifications: [
     {

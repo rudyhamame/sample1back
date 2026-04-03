@@ -600,6 +600,7 @@ UserRouter.post("/login", function (req, res, next) {
               {
                 $set: {
                   "status.isConnected": true,
+                  "status.lastSeenAt": new Date(),
                 },
                 $push: {
                   login_record: {
@@ -2358,6 +2359,7 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
       }
 
       user.status.isConnected = req.body.isConnected;
+      user.status.lastSeenAt = new Date();
 
       if (!req.body.isConnected && Array.isArray(user.login_record)) {
         for (let i = user.login_record.length - 1; i >= 0; i -= 1) {
@@ -2380,6 +2382,34 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
         targetUserId: String(req.params.id),
       });
       res.status(201).json(user);
+    })
+    .catch(next);
+});
+
+UserRouter.put("/heartbeat/:id", function (req, res, next) {
+  UserModel.findByIdAndUpdate(
+    req.params.id,
+    {
+      $set: {
+        "status.isConnected": true,
+        "status.lastSeenAt": new Date(),
+      },
+    },
+    {
+      new: true,
+    },
+  )
+    .then((user) => {
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        userId: String(user._id),
+      });
     })
     .catch(next);
 });
