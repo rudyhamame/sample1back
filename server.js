@@ -399,7 +399,9 @@ io.on("connection", (socket) => {
       );
 
       emitUserRefresh(io, [readerUserId, senderUserId], "chat:read", {
-        friendId: senderUserId,
+        friendId: readerUserId,
+        readerUserId,
+        senderUserId,
       });
     } catch (error) {
       console.error("Failed to mark messages as read", error);
