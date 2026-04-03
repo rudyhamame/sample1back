@@ -133,6 +133,21 @@ const buildTurnRestCredentials = (userId) => {
   };
 };
 
+const isPlaceholderTurnUrl = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized) {
+    return true;
+  }
+
+  return (
+    normalized.includes("your-domain.com") ||
+    normalized.includes("example.com") ||
+    normalized.includes("localhost") ||
+    normalized.includes("127.0.0.1")
+  );
+};
+
 const getRtcIceServers = (userId = "") => {
   const iceServers = [
     {
@@ -151,7 +166,8 @@ const getRtcIceServers = (userId = "") => {
   )
     .split(",")
     .map((entry) => String(entry || "").trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((entry) => !isPlaceholderTurnUrl(entry));
   const turnUsername = String(
     process.env.WEBRTC_TURN_USERNAME || process.env.TURN_USERNAME || "",
   ).trim();
