@@ -263,7 +263,9 @@ const UserSchema = new Schema({
   telegramIntegration: {
     pageUrl: { type: String, default: "" },
     groupReference: { type: String, default: "" },
+    syncMode: { type: String, default: "live" },
     historyStartDate: { type: Date, default: null },
+    historyEndDate: { type: Date, default: null },
     syncEnabled: { type: Boolean, default: false },
     historyImportedAt: { type: Date, default: null },
     lastSyncedAt: { type: Date, default: null },

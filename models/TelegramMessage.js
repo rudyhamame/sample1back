@@ -116,6 +116,23 @@ const TelegramMessageSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    isPinned: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    pinnedAt: {
+      type: Date,
+      default: null,
+    },
+    aiConceptSummary: {
+      type: String,
+      default: "",
+    },
+    aiConceptSummaryUpdatedAt: {
+      type: Date,
+      default: null,
+    },
     storedAt: {
       type: Date,
       default: Date.now,
