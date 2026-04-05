@@ -1,0 +1,18 @@
+eturnal:
+  secret: "CHANGE_ME_SHARED_SECRET"
+  realm: "YOUR_TURN_HOST_OR_PUBLIC_IP"
+  relay_ipv4_addr: "YOUR_PUBLIC_IPV4"
+  relay_min_port: 49160
+  relay_max_port: 49200
+  listen:
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: udp
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: tcp
+    - ip: "0.0.0.0"
+      port: 5349
+      transport: tls
+  modules:
+    mod_log_stun: {}

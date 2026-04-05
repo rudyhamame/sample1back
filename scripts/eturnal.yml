@@ -1,0 +1,18 @@
+eturnal:
+  secret: "8b2ab6fb014f4761b5f3e827fc6c7cd9feb32c08708a484f9191654d3738876f"
+  realm: "46.58.138.141"
+  relay_ipv4_addr: "46.58.138.141"
+  relay_min_port: 49160
+  relay_max_port: 49200
+  listen:
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: udp
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: tcp
+    - ip: "0.0.0.0"
+      port: 5349
+      transport: tls
+  modules:
+    mod_log_stun: {}
