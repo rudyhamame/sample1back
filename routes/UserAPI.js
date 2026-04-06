@@ -13,6 +13,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import "dotenv/config.js";
 import checkAuth from "../check-auth.js";
+import { AccessToken } from "livekit-server-sdk";
 import PostsModel from "../models/Posts.js";
 import SignupVerificationModel from "../models/SignupVerification.js";
 import VisitLogModel from "../models/VisitLog.js";
@@ -288,6 +289,51 @@ const getRtcIceServers = (userId = "") => {
   }
 
   return iceServers;
+};
+
+const getLiveKitServerConfig = () => {
+  const url = String(process.env.LIVEKIT_URL || "").trim();
+  const apiKey = String(process.env.LIVEKIT_API_KEY || "").trim();
+  const apiSecret = String(process.env.LIVEKIT_API_SECRET || "").trim();
+
+  return {
+    url,
+    apiKey,
+    apiSecret,
+    isReady: Boolean(url && apiKey && apiSecret),
+  };
+};
+
+const createLiveKitToken = async ({
+  identity,
+  name,
+  roomName,
+  metadata = {},
+}) => {
+  const liveKitConfig = getLiveKitServerConfig();
+
+  if (!liveKitConfig.isReady) {
+    return null;
+  }
+
+  const token = new AccessToken(liveKitConfig.apiKey, liveKitConfig.apiSecret, {
+    identity,
+    name,
+    metadata: JSON.stringify(metadata),
+    ttl: "2h",
+  });
+
+  token.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canPublish: true,
+    canSubscribe: true,
+  });
+
+  return {
+    token: await token.toJwt(),
+    url: liveKitConfig.url,
+  };
 };
 
 const ensureRingVideoFolderForUser = async (user) => {
@@ -1325,6 +1371,71 @@ UserRouter.get("/rtc/config", checkAuth, async function (req, res, next) {
           ? entry.urls.some((url) => String(url || "").startsWith("turn:"))
           : String(entry?.urls || "").startsWith("turn:"),
       ),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post("/livekit/token", checkAuth, async function (req, res, next) {
+  try {
+    const roomName = String(req.body?.roomName || "").trim();
+    const callType = req.body?.callType === "video" ? "video" : "audio";
+
+    if (!roomName) {
+      return res.status(400).json({
+        message: "roomName is required.",
+      });
+    }
+
+    const liveKitConfig = getLiveKitServerConfig();
+
+    if (!liveKitConfig.isReady) {
+      return res.status(503).json({
+        message: "LiveKit is not configured on backend.",
+        missing: ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"].filter(
+          (key) => !String(process.env[key] || "").trim(),
+        ),
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "info.firstname info.lastname info.username",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const firstname = String(user?.info?.firstname || "").trim();
+    const lastname = String(user?.info?.lastname || "").trim();
+    const username = String(user?.info?.username || "").trim();
+    const displayName =
+      `${firstname} ${lastname}`.trim() ||
+      username ||
+      `user-${String(req.authentication.userId || "").trim()}`;
+
+    const identity = String(req.authentication.userId || "").trim();
+    const tokenPayload = await createLiveKitToken({
+      identity,
+      name: displayName,
+      roomName,
+      metadata: {
+        userId: identity,
+        displayName,
+        callType,
+      },
+    });
+
+    return res.status(200).json({
+      roomName,
+      url: tokenPayload.url,
+      token: tokenPayload.token,
+      identity,
+      displayName,
+      callType,
     });
   } catch (error) {
     return next(error);
