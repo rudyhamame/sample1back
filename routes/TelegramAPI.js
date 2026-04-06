@@ -1395,6 +1395,54 @@ const buildCourseSuggestionAiContextEntries = (contextEntries = []) =>
     }))
     .slice(0, TELEGRAM_COURSE_SUGGESTION_AI_CONTEXT_LIMIT);
 
+const buildInstructorSuggestionContextEntries = (messages = []) =>
+  (Array.isArray(messages) ? messages : [])
+    .map((message) => {
+      const scoreResult = scoreMessageForCourseSuggestion(message);
+      const rawContent = [
+        String(message?.attachmentTextExtracted || "").trim(),
+        String(message?.attachmentFileName || "").trim(),
+        String(message?.text || "").trim(),
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const normalizedContent = normalizeSearchText(rawContent);
+      const hasInstructorSignal =
+        normalizedContent.includes("doctor") ||
+        normalizedContent.includes("dr ") ||
+        normalizedContent.includes(" dr") ||
+        normalizedContent.includes("professor") ||
+        normalizedContent.includes("instructor") ||
+        normalizedContent.includes("lecturer") ||
+        normalizedContent.includes("دكتور") ||
+        normalizedContent.includes("الدكتور") ||
+        normalizedContent.includes("الأستاذ") ||
+        normalizedContent.includes("استاذ") ||
+        normalizedContent.includes("المدرس");
+
+      return {
+        messageId: Number(message?.id || 0),
+        date: message?.date || null,
+        sender: String(message?.sender || "").trim(),
+        attachmentFileName: String(message?.attachmentFileName || "").trim(),
+        matchedKeys: scoreResult.matchedKeys,
+        score: Number(scoreResult.score || 0) + (hasInstructorSignal ? 8 : 0),
+        snippet: buildMessageSnippet(message),
+      };
+    })
+    .filter(
+      (entry) =>
+        entry.messageId &&
+        entry.snippet &&
+        (entry.score > 0 || Boolean(entry.attachmentFileName)),
+    )
+    .sort(
+      (firstEntry, secondEntry) =>
+        Number(secondEntry.score || 0) - Number(firstEntry.score || 0) ||
+        Number(secondEntry.date || 0) - Number(firstEntry.date || 0),
+    )
+    .slice(0, 32);
+
 const parseJsonObjectFromText = (value) => {
   const rawText = String(value || "").trim();
 
@@ -2187,6 +2235,354 @@ const removeTelegramCourseSuggestionFeedbackByScope = ({
         Number(sourceMessageId !== null ? sourceMessageId : 0)
     );
   });
+};
+
+const buildLectureSuggestionDuplicateKey = (lecture = {}) =>
+  [
+    normalizeSearchText(lecture?.lecturePayload?.lecture_name || lecture?.lectureName),
+    normalizeSearchText(lecture?.lecturePayload?.lecture_course || ""),
+  ]
+    .filter(Boolean)
+    .join("|");
+
+const buildPersistedTelegramLectureSuggestionsRecord = ({
+  groupReference = "",
+  groupTitle = "",
+  suggestions = [],
+  analyzedMessagesCount = 0,
+}) => ({
+  groupReference: String(groupReference || "").trim(),
+  groupTitle: String(groupTitle || "").trim(),
+  savedAt: new Date(),
+  analyzedMessagesCount: Math.max(0, Number(analyzedMessagesCount || 0)),
+  suggestions: (Array.isArray(suggestions) ? suggestions : [])
+    .filter((lecture) => Boolean(String(lecture?.lectureName || "").trim()))
+    .map((lecture) => ({
+      suggestionKey:
+        String(lecture?.suggestionKey || "").trim() ||
+        buildLectureSuggestionDuplicateKey(lecture),
+      duplicateKey: buildLectureSuggestionDuplicateKey(lecture),
+      lectureName: String(lecture?.lectureName || "").trim(),
+      lecturePayload: lecture?.lecturePayload || {},
+      confidence: Math.max(0, Math.min(100, Number(lecture?.confidence || 0))),
+      reasons: Array.isArray(lecture?.reasons) ? lecture.reasons : [],
+      sourceMessageIds: Array.isArray(lecture?.sourceMessageIds)
+        ? lecture.sourceMessageIds
+        : [],
+    })),
+});
+
+const upsertTelegramLectureSuggestionsRecord = ({
+  user,
+  groupReference = "",
+  groupTitle = "",
+  suggestions = [],
+  analyzedMessagesCount = 0,
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  if (!Array.isArray(user.schoolPlanner.telegramLectureSuggestions)) {
+    user.schoolPlanner.telegramLectureSuggestions = [];
+  }
+
+  const record = buildPersistedTelegramLectureSuggestionsRecord({
+    groupReference,
+    groupTitle,
+    suggestions,
+    analyzedMessagesCount,
+  });
+  const recordIndex = user.schoolPlanner.telegramLectureSuggestions.findIndex(
+    (entry) =>
+      String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+  );
+
+  if (recordIndex === -1) {
+    user.schoolPlanner.telegramLectureSuggestions.push(record);
+  } else {
+    user.schoolPlanner.telegramLectureSuggestions.splice(recordIndex, 1, record);
+  }
+
+  return record;
+};
+
+const getSavedTelegramLectureSuggestionsRecord = (user, groupReference = "") =>
+  (Array.isArray(user?.schoolPlanner?.telegramLectureSuggestions)
+    ? user.schoolPlanner.telegramLectureSuggestions
+    : []
+  ).find(
+    (entry) =>
+      String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+  ) || null;
+
+const removeTelegramLectureSuggestionFromSavedRecord = ({
+  user,
+  groupReference = "",
+  suggestion = {},
+}) => {
+  const savedRecord = getSavedTelegramLectureSuggestionsRecord(user, groupReference);
+
+  if (!savedRecord || !Array.isArray(savedRecord?.suggestions)) {
+    return null;
+  }
+
+  const suggestionKey = String(suggestion?.suggestionKey || "").trim();
+  const duplicateKey =
+    String(suggestion?.duplicateKey || "").trim() ||
+    buildLectureSuggestionDuplicateKey(suggestion);
+
+  savedRecord.suggestions = savedRecord.suggestions.filter((entry) => {
+    const entrySuggestionKey = String(entry?.suggestionKey || "").trim();
+    const entryDuplicateKey =
+      String(entry?.duplicateKey || "").trim() ||
+      buildLectureSuggestionDuplicateKey(entry);
+
+    if (suggestionKey && entrySuggestionKey === suggestionKey) {
+      return false;
+    }
+
+    if (duplicateKey && entryDuplicateKey === duplicateKey) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return savedRecord;
+};
+
+const saveTelegramLectureSuggestionFeedback = ({
+  user,
+  groupReference = "",
+  groupTitle = "",
+  decision = "",
+  suggestion = {},
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  if (!Array.isArray(user.schoolPlanner.telegramLectureSuggestionFeedback)) {
+    user.schoolPlanner.telegramLectureSuggestionFeedback = [];
+  }
+
+  user.schoolPlanner.telegramLectureSuggestionFeedback.unshift({
+    groupReference: String(groupReference || "").trim(),
+    groupTitle: String(groupTitle || "").trim(),
+    decision: String(decision || "").trim(),
+    savedAt: new Date(),
+    suggestionKey:
+      String(suggestion?.suggestionKey || "").trim() ||
+      buildLectureSuggestionDuplicateKey(suggestion),
+    duplicateKey: buildLectureSuggestionDuplicateKey(suggestion),
+    lectureName: String(suggestion?.lectureName || "").trim(),
+    lecturePayload: suggestion?.lecturePayload || {},
+    confidence: Math.max(0, Math.min(100, Number(suggestion?.confidence || 0))),
+    reasons: Array.isArray(suggestion?.reasons) ? suggestion.reasons : [],
+    sourceMessageIds: Array.isArray(suggestion?.sourceMessageIds)
+      ? suggestion.sourceMessageIds
+      : [],
+  });
+
+  user.schoolPlanner.telegramLectureSuggestionFeedback =
+    user.schoolPlanner.telegramLectureSuggestionFeedback.slice(0, 120);
+};
+
+const removeTelegramLectureSuggestionFeedbackByScope = ({
+  user,
+  groupReference = "",
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  user.schoolPlanner.telegramLectureSuggestionFeedback = (
+    Array.isArray(user?.schoolPlanner?.telegramLectureSuggestionFeedback)
+      ? user.schoolPlanner.telegramLectureSuggestionFeedback
+      : []
+  ).filter(
+    (entry) =>
+      String(entry?.groupReference || "").trim() !== String(groupReference || "").trim(),
+  );
+};
+
+const buildInstructorSuggestionDuplicateKey = (entry = {}) =>
+  [
+    normalizeSearchText(entry?.name),
+    normalizeSearchText(entry?.role),
+  ]
+    .filter(Boolean)
+    .join("|");
+
+const buildPersistedTelegramInstructorSuggestionsRecord = ({
+  groupReference = "",
+  groupTitle = "",
+  suggestions = [],
+  analyzedMessagesCount = 0,
+}) => ({
+  groupReference: String(groupReference || "").trim(),
+  groupTitle: String(groupTitle || "").trim(),
+  savedAt: new Date(),
+  analyzedMessagesCount: Math.max(0, Number(analyzedMessagesCount || 0)),
+  suggestions: (Array.isArray(suggestions) ? suggestions : [])
+    .filter((entry) => Boolean(String(entry?.name || "").trim()))
+    .map((entry) => ({
+      suggestionKey:
+        String(entry?.suggestionKey || "").trim() ||
+        buildInstructorSuggestionDuplicateKey(entry),
+      duplicateKey: buildInstructorSuggestionDuplicateKey(entry),
+      name: String(entry?.name || "").trim(),
+      role: String(entry?.role || "").trim(),
+      courses: (Array.isArray(entry?.courses) ? entry.courses : [])
+        .map((course) => String(course || "").trim())
+        .filter(Boolean),
+      personality: String(entry?.personality || "").trim(),
+      confidence: Math.max(0, Math.min(100, Number(entry?.confidence || 0))),
+      reasons: Array.isArray(entry?.reasons) ? entry.reasons : [],
+      sourceMessageIds: Array.isArray(entry?.sourceMessageIds)
+        ? entry.sourceMessageIds
+        : [],
+    })),
+});
+
+const upsertTelegramInstructorSuggestionsRecord = ({
+  user,
+  groupReference = "",
+  groupTitle = "",
+  suggestions = [],
+  analyzedMessagesCount = 0,
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  if (!Array.isArray(user.schoolPlanner.telegramInstructorSuggestions)) {
+    user.schoolPlanner.telegramInstructorSuggestions = [];
+  }
+
+  const record = buildPersistedTelegramInstructorSuggestionsRecord({
+    groupReference,
+    groupTitle,
+    suggestions,
+    analyzedMessagesCount,
+  });
+  const recordIndex = user.schoolPlanner.telegramInstructorSuggestions.findIndex(
+    (entry) =>
+      String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+  );
+
+  if (recordIndex === -1) {
+    user.schoolPlanner.telegramInstructorSuggestions.push(record);
+  } else {
+    user.schoolPlanner.telegramInstructorSuggestions.splice(recordIndex, 1, record);
+  }
+
+  return record;
+};
+
+const getSavedTelegramInstructorSuggestionsRecord = (user, groupReference = "") =>
+  (Array.isArray(user?.schoolPlanner?.telegramInstructorSuggestions)
+    ? user.schoolPlanner.telegramInstructorSuggestions
+    : []
+  ).find(
+    (entry) =>
+      String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+  ) || null;
+
+const removeTelegramInstructorSuggestionFromSavedRecord = ({
+  user,
+  groupReference = "",
+  suggestion = {},
+}) => {
+  const savedRecord = getSavedTelegramInstructorSuggestionsRecord(user, groupReference);
+
+  if (!savedRecord || !Array.isArray(savedRecord?.suggestions)) {
+    return null;
+  }
+
+  const suggestionKey = String(suggestion?.suggestionKey || "").trim();
+  const duplicateKey =
+    String(suggestion?.duplicateKey || "").trim() ||
+    buildInstructorSuggestionDuplicateKey(suggestion);
+
+  savedRecord.suggestions = savedRecord.suggestions.filter((entry) => {
+    const entrySuggestionKey = String(entry?.suggestionKey || "").trim();
+    const entryDuplicateKey =
+      String(entry?.duplicateKey || "").trim() ||
+      buildInstructorSuggestionDuplicateKey(entry);
+
+    if (suggestionKey && entrySuggestionKey === suggestionKey) {
+      return false;
+    }
+
+    if (duplicateKey && entryDuplicateKey === duplicateKey) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return savedRecord;
+};
+
+const saveTelegramInstructorSuggestionFeedback = ({
+  user,
+  groupReference = "",
+  groupTitle = "",
+  decision = "",
+  suggestion = {},
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  if (!Array.isArray(user.schoolPlanner.telegramInstructorSuggestionFeedback)) {
+    user.schoolPlanner.telegramInstructorSuggestionFeedback = [];
+  }
+
+  user.schoolPlanner.telegramInstructorSuggestionFeedback.unshift({
+    groupReference: String(groupReference || "").trim(),
+    groupTitle: String(groupTitle || "").trim(),
+    decision: String(decision || "").trim(),
+    savedAt: new Date(),
+    suggestionKey:
+      String(suggestion?.suggestionKey || "").trim() ||
+      buildInstructorSuggestionDuplicateKey(suggestion),
+    duplicateKey: buildInstructorSuggestionDuplicateKey(suggestion),
+    name: String(suggestion?.name || "").trim(),
+    role: String(suggestion?.role || "").trim(),
+    courses: (Array.isArray(suggestion?.courses) ? suggestion.courses : [])
+      .map((course) => String(course || "").trim())
+      .filter(Boolean),
+    personality: String(suggestion?.personality || "").trim(),
+    confidence: Math.max(0, Math.min(100, Number(suggestion?.confidence || 0))),
+    reasons: Array.isArray(suggestion?.reasons) ? suggestion.reasons : [],
+    sourceMessageIds: Array.isArray(suggestion?.sourceMessageIds)
+      ? suggestion.sourceMessageIds
+      : [],
+  });
+
+  user.schoolPlanner.telegramInstructorSuggestionFeedback =
+    user.schoolPlanner.telegramInstructorSuggestionFeedback.slice(0, 120);
+};
+
+const removeTelegramInstructorSuggestionFeedbackByScope = ({
+  user,
+  groupReference = "",
+}) => {
+  if (!user?.schoolPlanner) {
+    user.schoolPlanner = {};
+  }
+
+  user.schoolPlanner.telegramInstructorSuggestionFeedback = (
+    Array.isArray(user?.schoolPlanner?.telegramInstructorSuggestionFeedback)
+      ? user.schoolPlanner.telegramInstructorSuggestionFeedback
+      : []
+  ).filter(
+    (entry) =>
+      String(entry?.groupReference || "").trim() !== String(groupReference || "").trim(),
+  );
 };
 
 const parseQueryDateValue = (value, mode = "start") => {
@@ -3329,10 +3725,21 @@ TelegramRouter.get("/groups", checkAuth, async (req, res, next) => {
       });
     }
 
-    const groups = await listJoinedTelegramGroupsForUser(user);
+    let groups = [];
+    let warning = "";
+
+    try {
+      groups = await listJoinedTelegramGroupsForUser(user);
+    } catch (error) {
+      groups = await listStoredTelegramGroupsForUser(user);
+      warning = String(
+        error?.message || "Unable to load live Telegram groups.",
+      ).trim();
+    }
 
     return res.status(200).json({
       groups,
+      warning,
     });
   } catch (error) {
     next(error);
@@ -4877,7 +5284,7 @@ TelegramRouter.post(
 
       const openAiClient = getOpenAIClient();
       const user = await UserModel.findById(req.authentication.userId).select(
-        "schoolPlanner.courses info.username info.program info.university info.studyYear info.term info.aiProvider",
+        "schoolPlanner.courses schoolPlanner.telegramLectureSuggestions info.username info.program info.university info.studyYear info.term info.aiProvider",
       );
 
       if (!user) {
@@ -4971,7 +5378,17 @@ Return this JSON shape:
 {
   "lectures": [
     {
-      "lectureName": "",
+      "lecturePayload": {
+        "lecture_name": "",
+        "lecture_course": "",
+        "lecture_instructor": "",
+        "lecture_writer": "",
+        "lecture_date": "",
+        "lecture_length": "",
+        "lecture_progress": "",
+        "lecture_partOfPlan": true,
+        "lecture_hidden": false
+      },
       "confidence": 0,
       "reasons": [],
       "sourceMessageIds": []
@@ -5026,7 +5443,35 @@ Return this JSON shape:
       const parsed = parseJsonObjectFromText(response.output_text || "");
       const lectures = (Array.isArray(parsed?.lectures) ? parsed.lectures : [])
         .map((lecture) => ({
-          lectureName: String(lecture?.lectureName || "").trim(),
+          lectureName: String(
+            lecture?.lecturePayload?.lecture_name || lecture?.lectureName || "",
+          ).trim(),
+          lecturePayload: {
+            lecture_name: String(
+              lecture?.lecturePayload?.lecture_name || lecture?.lectureName || "",
+            ).trim(),
+            lecture_course: String(
+              lecture?.lecturePayload?.lecture_course || courseName,
+            ).trim(),
+            lecture_instructor: String(
+              lecture?.lecturePayload?.lecture_instructor || "",
+            ).trim(),
+            lecture_writer: String(
+              lecture?.lecturePayload?.lecture_writer || "",
+            ).trim(),
+            lecture_date: String(
+              lecture?.lecturePayload?.lecture_date || "",
+            ).trim(),
+            lecture_length: String(
+              lecture?.lecturePayload?.lecture_length || "",
+            ).trim(),
+            lecture_progress: String(
+              lecture?.lecturePayload?.lecture_progress || "",
+            ).trim(),
+            lecture_partOfPlan:
+              lecture?.lecturePayload?.lecture_partOfPlan !== false,
+            lecture_hidden: Boolean(lecture?.lecturePayload?.lecture_hidden),
+          },
           confidence: Math.max(
             0,
             Math.min(100, Number(lecture?.confidence || 0)),
@@ -5038,11 +5483,646 @@ Return this JSON shape:
         }))
         .filter((lecture) => Boolean(lecture.lectureName));
 
+      const lectureScopeGroupReference =
+        requestedGroupReferences.length === 1
+          ? String(requestedGroupReferences[0] || "").trim()
+          : TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE;
+
+      upsertTelegramLectureSuggestionsRecord({
+        user,
+        groupReference: lectureScopeGroupReference,
+        groupTitle:
+          requestedGroupReferences.length === 1
+            ? String(
+                (
+                  Array.isArray(availableGroupReferences)
+                    ? availableGroupReferences
+                    : []
+                ).find(
+                  (entry) =>
+                    String(entry || "").trim() === lectureScopeGroupReference,
+                ) || lectureScopeGroupReference,
+              ).trim()
+            : "All stored groups",
+        suggestions: lectures,
+        analyzedMessagesCount: contextEntries.length,
+      });
+      await user.save();
+
       return res.status(200).json({
         lectures,
         analyzedMessagesCount: contextEntries.length,
         aiProvider,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.post(
+  "/ai/instructor-suggestions",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const selectedDependencyKeys = Array.isArray(req.body?.selectedDependencyKeys)
+        ? req.body.selectedDependencyKeys
+        : [];
+      const extraDependencies = Array.isArray(req.body?.extraDependencies)
+        ? req.body.extraDependencies
+        : [];
+      const outputLanguage = normalizeTelegramOutputLanguage(
+        req.body?.language,
+      );
+      const requestedGroupReferences = (Array.isArray(req.body?.groupReferences)
+        ? req.body.groupReferences
+        : []
+      )
+        .map((value) => normalizeGroupReference(value))
+        .filter(Boolean);
+
+      const openAiClient = getOpenAIClient();
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramInstructorSuggestions info.username info.program info.university info.studyYear info.term info.aiProvider",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const availableGroupReferences = await getAvailableStoredGroupReferencesForUser(
+        req.authentication.userId,
+      );
+      const groupReferences =
+        requestedGroupReferences.length > 0
+          ? requestedGroupReferences
+          : availableGroupReferences;
+
+      if (groupReferences.length === 0) {
+        return res.status(400).json({
+          message: "Choose at least one stored group first.",
+        });
+      }
+
+      const importantMessages = await TelegramMessageModel.find({
+        ownerUserId: req.authentication.userId,
+        isPinned: true,
+      })
+        .sort({ pinnedAt: -1, dateMs: -1 })
+        .limit(8)
+        .lean();
+
+      const { filteredMessages } = await queryStoredTelegramMessages({
+        ownerUserId: req.authentication.userId,
+        groupReference: "",
+        groupReferences,
+        limit: 280,
+        searchQuery: "",
+        startDateMs: null,
+        endDateMs: null,
+        pdfOnly: false,
+      });
+
+      const contextEntries = buildInstructorSuggestionContextEntries(
+        filteredMessages,
+      );
+
+      if (contextEntries.length === 0) {
+        return res.status(404).json({
+          message: "No stored Telegram evidence matched instructor names.",
+        });
+      }
+
+      const aiProvider = getPreferredTelegramAiProvider(user, openAiClient);
+
+      if (!aiProvider) {
+        return res.status(503).json({
+          message:
+            "AI instructor predictions are unavailable because no AI provider key is configured.",
+          code: "TELEGRAM_AI_PROVIDER_UNAVAILABLE",
+        });
+      }
+
+      const dependencySections = buildTelegramDependencySections({
+        user,
+        selectedDependencyKeys,
+        extraDependencies,
+        importantMessages,
+      });
+
+      const aiInstructions = `You predict instructor names for the user's university from stored Telegram messages.
+Return JSON only.
+Use the user's academic profile as a strict filter, especially university, program, and study year.
+Return only real person names that are likely professors, doctors, lecturers, or instructors from the user's university context.
+Do not invent names.
+Do not return course names, department names, or generic titles without a real person name.
+Avoid duplicates and prefer fewer high-confidence names.
+${buildTelegramAiLanguageInstruction(outputLanguage)}
+Return this JSON shape:
+{
+  "instructors": [
+    {
+      "name": "",
+      "role": "",
+      "courses": [],
+      "personality": "",
+      "confidence": 0,
+      "reasons": [],
+      "sourceMessageIds": []
+    }
+  ]
+}`;
+
+      const aiInput = JSON.stringify({
+        user: {
+          username: user?.info?.username || "",
+          program: user?.info?.program || "",
+          university: user?.info?.university || "",
+          studyYear: user?.info?.studyYear || "",
+          term: user?.info?.term || "",
+        },
+        groupReferences,
+        dependencyContext: dependencySections,
+        messageCandidates: contextEntries,
+      });
+
+      let response = null;
+
+      try {
+        response = await runWithTimeout(
+          aiProvider === "gemini"
+            ? createGeminiResponse({
+                model: TELEGRAM_GEMINI_MODEL,
+                instructions: aiInstructions,
+                input: aiInput,
+              })
+            : openAiClient.responses.create({
+                model: TELEGRAM_COURSE_SUGGESTION_MODEL,
+                instructions: aiInstructions,
+                input: aiInput,
+              }),
+          TELEGRAM_AI_REQUEST_TIMEOUT_MS,
+          "AI request timed out while generating instructor predictions.",
+        );
+      } catch (error) {
+        const errorMessage =
+          error?.message || "Unable to complete the AI request.";
+        const isTimeout = /timed out/i.test(errorMessage);
+        return res.status(isTimeout ? 504 : 502).json({
+          message: errorMessage,
+          code: isTimeout
+            ? "TELEGRAM_AI_REQUEST_TIMEOUT"
+            : "TELEGRAM_AI_REQUEST_FAILED",
+          aiProvider,
+        });
+      }
+
+      const parsed = parseJsonObjectFromText(response.output_text || "");
+      const instructors = (Array.isArray(parsed?.instructors)
+        ? parsed.instructors
+        : []
+      )
+        .map((entry) => ({
+          name: String(entry?.name || "").trim(),
+          role: String(entry?.role || "").trim(),
+          courses: (Array.isArray(entry?.courses) ? entry.courses : [])
+            .map((course) => String(course || "").trim())
+            .filter(Boolean),
+          personality: String(entry?.personality || "").trim(),
+          confidence: Math.max(0, Math.min(100, Number(entry?.confidence || 0))),
+          reasons: Array.isArray(entry?.reasons) ? entry.reasons : [],
+          sourceMessageIds: Array.isArray(entry?.sourceMessageIds)
+            ? entry.sourceMessageIds
+            : [],
+        }))
+        .filter((entry) => Boolean(entry.name));
+
+      const instructorScopeGroupReference =
+        requestedGroupReferences.length === 1
+          ? String(requestedGroupReferences[0] || "").trim()
+          : TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE;
+
+      upsertTelegramInstructorSuggestionsRecord({
+        user,
+        groupReference: instructorScopeGroupReference,
+        groupTitle:
+          requestedGroupReferences.length === 1
+            ? String(instructorScopeGroupReference).trim()
+            : "All stored groups",
+        suggestions: instructors,
+        analyzedMessagesCount: contextEntries.length,
+      });
+      await user.save();
+
+      return res.status(200).json({
+        instructors,
+        analyzedMessagesCount: contextEntries.length,
+        aiProvider,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.get("/ai/lecture-suggestions", checkAuth, async (req, res, next) => {
+  try {
+    const allGroups = String(req.query?.allGroups || "").trim() === "true";
+    const groupReference = allGroups
+      ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+      : normalizeGroupReference(req.query?.groupReference);
+
+    if (!groupReference) {
+      return res.status(400).json({
+        message: "Stored conversation reference is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "schoolPlanner.telegramLectureSuggestions",
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const savedRecord = getSavedTelegramLectureSuggestionsRecord(user, groupReference);
+
+    return res.status(200).json({
+      lectures: Array.isArray(savedRecord?.suggestions) ? savedRecord.suggestions : [],
+      analyzedMessagesCount: Number(savedRecord?.analyzedMessagesCount || 0),
+      savedAt: savedRecord?.savedAt || null,
+      groupTitle: String(savedRecord?.groupTitle || "").trim(),
+      aiProvider: "saved",
+      allGroups,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+TelegramRouter.get(
+  "/ai/lecture-suggestions/rejected",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = String(req.query?.allGroups || "").trim() === "true";
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.query?.groupReference);
+
+      if (!groupReference) {
+        return res.status(400).json({
+          message: "Stored conversation reference is required.",
+        });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramLectureSuggestionFeedback",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const lectures = (
+        Array.isArray(user?.schoolPlanner?.telegramLectureSuggestionFeedback)
+          ? user.schoolPlanner.telegramLectureSuggestionFeedback
+          : []
+      ).filter(
+        (entry) =>
+          String(entry?.decision || "").trim().toLowerCase() === "rejected" &&
+          String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+      );
+
+      return res.status(200).json({
+        lectures,
+        count: lectures.length,
+        aiProvider: "rejected_feedback",
+        allGroups,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.delete("/ai/lecture-suggestions", checkAuth, async (req, res, next) => {
+  try {
+    const allGroups = String(req.query?.allGroups || "").trim() === "true";
+    const groupReference = allGroups
+      ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+      : normalizeGroupReference(req.query?.groupReference);
+
+    if (!groupReference) {
+      return res.status(400).json({
+        message: "Stored conversation reference is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "schoolPlanner.telegramLectureSuggestions",
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    user.schoolPlanner.telegramLectureSuggestions = (
+      Array.isArray(user?.schoolPlanner?.telegramLectureSuggestions)
+        ? user.schoolPlanner.telegramLectureSuggestions
+        : []
+    ).filter(
+      (entry) =>
+        String(entry?.groupReference || "").trim() !== String(groupReference || "").trim(),
+    );
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Saved lecture suggestions cleared.",
+      allGroups,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+TelegramRouter.delete(
+  "/ai/lecture-suggestions/rejected",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = String(req.query?.allGroups || "").trim() === "true";
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.query?.groupReference);
+
+      if (!groupReference) {
+        return res.status(400).json({
+          message: "Stored conversation reference is required.",
+        });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramLectureSuggestionFeedback",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      removeTelegramLectureSuggestionFeedbackByScope({ user, groupReference });
+      await user.save();
+
+      return res.status(200).json({
+        message: "Rejected lecture suggestions cleared.",
+        allGroups,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.post(
+  "/ai/lecture-suggestions/feedback",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = Boolean(req.body?.allGroups);
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.body?.groupReference);
+      const decision = String(req.body?.decision || "").trim().toLowerCase();
+      const suggestion = req.body?.suggestion || {};
+
+      if (!groupReference) {
+        return res.status(400).json({ message: "Stored conversation reference is required." });
+      }
+
+      if (!["accepted", "rejected"].includes(decision)) {
+        return res.status(400).json({ message: "Suggestion feedback decision is invalid." });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramLectureSuggestionFeedback schoolPlanner.telegramLectureSuggestions",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      saveTelegramLectureSuggestionFeedback({
+        user,
+        groupReference,
+        groupTitle: allGroups ? "All stored groups" : String(req.body?.groupTitle || "").trim(),
+        decision,
+        suggestion,
+      });
+      removeTelegramLectureSuggestionFromSavedRecord({ user, groupReference, suggestion });
+      await user.save();
+
+      return res.status(200).json({ message: "Lecture suggestion feedback saved.", allGroups });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.get("/ai/instructor-suggestions", checkAuth, async (req, res, next) => {
+  try {
+    const allGroups = String(req.query?.allGroups || "").trim() === "true";
+    const groupReference = allGroups
+      ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+      : normalizeGroupReference(req.query?.groupReference);
+
+    if (!groupReference) {
+      return res.status(400).json({ message: "Stored conversation reference is required." });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "schoolPlanner.telegramInstructorSuggestions",
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const savedRecord = getSavedTelegramInstructorSuggestionsRecord(user, groupReference);
+
+    return res.status(200).json({
+      instructors: Array.isArray(savedRecord?.suggestions) ? savedRecord.suggestions : [],
+      analyzedMessagesCount: Number(savedRecord?.analyzedMessagesCount || 0),
+      savedAt: savedRecord?.savedAt || null,
+      groupTitle: String(savedRecord?.groupTitle || "").trim(),
+      aiProvider: "saved",
+      allGroups,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+TelegramRouter.get(
+  "/ai/instructor-suggestions/rejected",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = String(req.query?.allGroups || "").trim() === "true";
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.query?.groupReference);
+
+      if (!groupReference) {
+        return res.status(400).json({ message: "Stored conversation reference is required." });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramInstructorSuggestionFeedback",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const instructors = (
+        Array.isArray(user?.schoolPlanner?.telegramInstructorSuggestionFeedback)
+          ? user.schoolPlanner.telegramInstructorSuggestionFeedback
+          : []
+      ).filter(
+        (entry) =>
+          String(entry?.decision || "").trim().toLowerCase() === "rejected" &&
+          String(entry?.groupReference || "").trim() === String(groupReference || "").trim(),
+      );
+
+      return res.status(200).json({
+        instructors,
+        count: instructors.length,
+        aiProvider: "rejected_feedback",
+        allGroups,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.delete("/ai/instructor-suggestions", checkAuth, async (req, res, next) => {
+  try {
+    const allGroups = String(req.query?.allGroups || "").trim() === "true";
+    const groupReference = allGroups
+      ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+      : normalizeGroupReference(req.query?.groupReference);
+
+    if (!groupReference) {
+      return res.status(400).json({ message: "Stored conversation reference is required." });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "schoolPlanner.telegramInstructorSuggestions",
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    user.schoolPlanner.telegramInstructorSuggestions = (
+      Array.isArray(user?.schoolPlanner?.telegramInstructorSuggestions)
+        ? user.schoolPlanner.telegramInstructorSuggestions
+        : []
+    ).filter(
+      (entry) =>
+        String(entry?.groupReference || "").trim() !== String(groupReference || "").trim(),
+    );
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Saved instructor suggestions cleared.",
+      allGroups,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+TelegramRouter.delete(
+  "/ai/instructor-suggestions/rejected",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = String(req.query?.allGroups || "").trim() === "true";
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.query?.groupReference);
+
+      if (!groupReference) {
+        return res.status(400).json({ message: "Stored conversation reference is required." });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramInstructorSuggestionFeedback",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      removeTelegramInstructorSuggestionFeedbackByScope({ user, groupReference });
+      await user.save();
+
+      return res.status(200).json({
+        message: "Rejected instructor suggestions cleared.",
+        allGroups,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.post(
+  "/ai/instructor-suggestions/feedback",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const allGroups = Boolean(req.body?.allGroups);
+      const groupReference = allGroups
+        ? TELEGRAM_COURSE_SUGGESTION_ALL_GROUPS_SCOPE
+        : normalizeGroupReference(req.body?.groupReference);
+      const decision = String(req.body?.decision || "").trim().toLowerCase();
+      const suggestion = req.body?.suggestion || {};
+
+      if (!groupReference) {
+        return res.status(400).json({ message: "Stored conversation reference is required." });
+      }
+
+      if (!["accepted", "rejected"].includes(decision)) {
+        return res.status(400).json({ message: "Suggestion feedback decision is invalid." });
+      }
+
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "schoolPlanner.telegramInstructorSuggestionFeedback schoolPlanner.telegramInstructorSuggestions",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      saveTelegramInstructorSuggestionFeedback({
+        user,
+        groupReference,
+        groupTitle: allGroups ? "All stored groups" : String(req.body?.groupTitle || "").trim(),
+        decision,
+        suggestion,
+      });
+      removeTelegramInstructorSuggestionFromSavedRecord({ user, groupReference, suggestion });
+      await user.save();
+
+      return res.status(200).json({ message: "Instructor suggestion feedback saved.", allGroups });
     } catch (error) {
       next(error);
     }

@@ -96,6 +96,10 @@ const UserSchema = new Schema({
         coursePayload: {},
       },
     ],
+    telegramLectureSuggestions: [{}],
+    telegramLectureSuggestionFeedback: [{}],
+    telegramInstructorSuggestions: [{}],
+    telegramInstructorSuggestionFeedback: [{}],
   },
   media: {
     profilePicture: {
