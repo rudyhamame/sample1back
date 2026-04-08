@@ -188,6 +188,7 @@ const UserSchema = new Schema({
           memberCount: { type: Number, default: 0 },
           description: { type: String, default: "" },
           messageCount: { type: Number, default: 0 },
+          pageUrl: { type: String, default: "" },
         },
         content: [
           {
