@@ -22,7 +22,7 @@ import UserModel from "./models/Users.js";
 import ChatModel from "./models/Chat.js";
 // const PostsAPI = require("./routes/PostsAPI");
 
-import "dotenv/config.js";
+import "dotenv/config";
 
 const allowedOrigins = [
   "http://localhost:5173",

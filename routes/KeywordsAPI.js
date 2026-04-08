@@ -3,7 +3,7 @@ import express from "express";
 import KeywordsModel from "../models/Keywords.js";
 const KeywordsRouter = express.Router();
 import UserModel from "../models/Users.js";
-import "dotenv/config.js";
+import "dotenv/config";
 //..............CREATE KEYWORDS
 KeywordsRouter.post("/createKeyword", function (req, res, next) {
   KeywordsModel.create(req.body)

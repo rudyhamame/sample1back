@@ -11,7 +11,7 @@ import ChatModel from "../models/Chat.js";
 const UserRouter = express.Router();
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import "dotenv/config.js";
+import "dotenv/config";
 import checkAuth from "../check-auth.js";
 import { AccessToken } from "livekit-server-sdk";
 import PostsModel from "../models/Posts.js";

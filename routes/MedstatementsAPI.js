@@ -3,7 +3,7 @@ import express from "express";
 import MedstatementsModel from "../models/Medstatements.js";
 const MedstatementsRouter = express.Router();
 import UserModel from "../models/Users.js";
-import "dotenv/config.js";
+import "dotenv/config";
 //..............CREATE LECTURE
 MedstatementsRouter.post("/createMedstatements", function (req, res, next) {
   MedstatementsModel.create(req.body)
