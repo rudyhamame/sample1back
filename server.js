@@ -12,15 +12,10 @@ const server = http.createServer(app);
 /////////////////////////////////////////////////////////////
 import UserAPI from "./routes/UserAPI.js";
 import ChatAPI from "./routes/ChatAPI.js";
-import PostsAPI from "./routes/PostsAPI.js";
-import AtomAPI from "./routes/AtomAPI.js";
-import KeywordsAPI from "./routes/KeywordsAPI.js";
 import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import ECGAPI from "./routes/ECGAPI.js";
 import TelegramAPI, { startTelegramSyncWorker } from "./routes/TelegramAPI.js";
 import UserModel from "./models/Users.js";
-import ChatModel from "./models/Chat.js";
-// const PostsAPI = require("./routes/PostsAPI");
 
 import "dotenv/config";
 
@@ -31,7 +26,9 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 const isPrivateDevelopmentHost = (hostname) => {
-  const normalizedHostname = String(hostname || "").trim().toLowerCase();
+  const normalizedHostname = String(hostname || "")
+    .trim()
+    .toLowerCase();
 
   if (!normalizedHostname) {
     return false;
@@ -92,7 +89,9 @@ const isAllowedOrigin = (origin) => {
   }
 };
 //////////////////////////connect to mongoDB///////////////////////////////
-mongoose.connect(process.env.DB_CONNECTION);
+mongoose.connect(process.env.DB_CONNECTION, {
+  dbName: String(process.env.DB_NAME || "phenomed").trim(),
+});
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", function () {
@@ -184,6 +183,7 @@ app.get("/api/health", async function (req, res) {
   const openAiConnected = Boolean(
     String(process.env.OPENAI_API_KEY || "").trim(),
   );
+  const groqConnected = Boolean(String(process.env.GROQ_API_KEY || "").trim());
   const geminiConnected = Boolean(
     String(process.env.GEMINI_API_KEY || "").trim(),
   );
@@ -199,12 +199,12 @@ app.get("/api/health", async function (req, res) {
     if (token && process.env.JWT_KEY) {
       const decoded = jwt.verify(token, process.env.JWT_KEY);
       const user = await UserModel.findById(decoded?.userId).select(
-        "telegramIntegration.apiIdEncrypted telegramIntegration.apiHashEncrypted telegramIntegration.stringSessionEncrypted",
+        "telegram.status.apiIdEncrypted telegram.status.apiHashEncrypted telegram.status.stringSessionEncrypted",
       );
       telegramConnected = Boolean(
-        user?.telegramIntegration?.apiIdEncrypted &&
-        user?.telegramIntegration?.apiHashEncrypted &&
-        user?.telegramIntegration?.stringSessionEncrypted,
+        user?.telegram.status?.apiIdEncrypted &&
+        user?.telegram.status?.apiHashEncrypted &&
+        user?.telegram.status?.stringSessionEncrypted,
       );
     }
   } catch {}
@@ -215,6 +215,7 @@ app.get("/api/health", async function (req, res) {
     database: dbHealthy ? "connected" : "disconnected",
     ai: {
       openai: openAiConnected ? "connected" : "offline",
+      groq: groqConnected ? "connected" : "offline",
       gemini: geminiConnected ? "connected" : "offline",
       telegram: telegramConnected ? "connected" : "offline",
       cloudinary: cloudinaryConnected ? "connected" : "offline",
@@ -287,7 +288,8 @@ io.on("connection", (socket) => {
       });
     }
 
-    const activeTypingFriendId = activeTypingPartnersByUser.get(normalizedUserId);
+    const activeTypingFriendId =
+      activeTypingPartnersByUser.get(normalizedUserId);
     if (activeTypingFriendId) {
       emitTypingPresenceForPair({
         userId: normalizedUserId,
@@ -363,11 +365,11 @@ io.on("connection", (socket) => {
     }
 
     try {
-      await ChatModel.updateOne(
+      await UserModel.updateOne(
         { _id: senderUserId },
         {
           $set: {
-            "conversation.$[message].status": "read",
+            "chat.$[message].status": "read",
           },
         },
         {
@@ -421,10 +423,7 @@ io.on("connection", (socket) => {
       toUserId: targetUserId,
       callType: callType === "video" ? "video" : "audio",
       offer,
-      metadata:
-        metadata && typeof metadata === "object"
-          ? metadata
-          : {},
+      metadata: metadata && typeof metadata === "object" ? metadata : {},
     });
   });
 
@@ -514,9 +513,6 @@ io.on("connection", (socket) => {
 //initialize routes
 app.use("/api/user", UserAPI);
 app.use("/api/chat", ChatAPI);
-app.use("/api/posts", PostsAPI);
-app.use("/api/atom", AtomAPI);
-app.use("/api/keywords", KeywordsAPI);
 app.use("/api/enquiries", EnquiriesAPI);
 app.use("/api/ecg", ECGAPI);
 app.use("/api/telegram", TelegramAPI);
@@ -541,13 +537,13 @@ setInterval(async () => {
   try {
     const staleThreshold = new Date(Date.now() - USER_STALE_OFFLINE_AFTER_MS);
     const staleUsers = await UserModel.find({
-      "status.isConnected": true,
-      "status.lastSeenAt": { $lt: staleThreshold },
+      "identity.status.isLoggedIn": true,
+      "identity.status.lastSeenAt": { $lt: staleThreshold },
     }).select("_id friends login_record status");
 
     for (const staleUser of staleUsers) {
-      staleUser.status.isConnected = false;
-      staleUser.status.lastSeenAt = new Date();
+      staleUser.identity.status.isLoggedIn = false;
+      staleUser.identity.status.lastSeenAt = new Date();
 
       if (Array.isArray(staleUser.login_record)) {
         for (let i = staleUser.login_record.length - 1; i >= 0; i -= 1) {
@@ -562,7 +558,10 @@ setInterval(async () => {
 
       emitUserRefresh(
         io,
-        [String(staleUser._id), ...(staleUser.friends || []).map((friend) => String(friend))],
+        [
+          String(staleUser._id),
+          ...(staleUser.friends || []).map((friend) => String(friend)),
+        ],
         "connection:changed",
         {
           isConnected: false,

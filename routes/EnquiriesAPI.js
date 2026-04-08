@@ -4,7 +4,16 @@ import UserModel from "../models/Users.js";
 
 const EnquiriesRouter = express.Router();
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
+const DEFAULT_GROQ_MODEL =
+  process.env.GROQ_MODEL ||
+  process.env.OPENAI_MODEL ||
+  process.env.OPENAI_OFFICIAL_MODEL ||
+  "llama-3.3-70b-versatile";
+const DEFAULT_OPENAI_MODEL =
+  process.env.OPENAI_OFFICIAL_MODEL ||
+  process.env.OPENAI_MODEL ||
+  process.env.GROQ_MODEL ||
+  "gpt-5-mini";
 const DEFAULT_INSTRUCTIONS =
   "You are a helpful assistant for MCTOSH. Answer website enquiries clearly, professionally, and concisely. If a question is missing details, say what information is needed.";
 const DEFAULT_GREETING_INSTRUCTIONS =
@@ -28,13 +37,35 @@ const resolveEnquiryMessage = (body) =>
   normalizeTextField(body?.question) ||
   normalizeTextField(body?.text);
 
-const getOpenAIClient = () => {
-  if (!process.env.OPENAI_API_KEY) {
+const getGroqClient = () => {
+  const apiKey = String(process.env.GROQ_API_KEY || "").trim();
+
+  if (!apiKey) {
     return null;
   }
 
+  const baseURL = String(process.env.GROQ_BASE_URL || "").trim();
+
   return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+  });
+};
+
+const getOpenAIClient = () => {
+  const apiKey = String(
+    process.env.OPENAI_API_KEY || process.env.OPENAI_OFFICIAL_API_KEY || "",
+  ).trim();
+
+  if (!apiKey) {
+    return null;
+  }
+
+  const baseURL = String(process.env.OPENAI_BASE_URL || "").trim();
+
+  return new OpenAI({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
   });
 };
 
@@ -43,10 +74,16 @@ const getGeminiApiKey = () => String(process.env.GEMINI_API_KEY || "").trim();
 const getPreferredAiProvider = (userPreferredProvider = "") => {
   const preferredProvider = String(
     userPreferredProvider || process.env.APP_AI_PROVIDER || "",
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
 
-  if (["gemini", "openai"].includes(preferredProvider)) {
+  if (["gemini", "openai", "groq"].includes(preferredProvider)) {
     return preferredProvider;
+  }
+
+  if (getGroqClient()) {
+    return "groq";
   }
 
   if (getGeminiApiKey()) {
@@ -114,7 +151,7 @@ const createGeminiResponse = async ({
 
 const createOpenAiResponse = async ({
   client,
-  model = DEFAULT_MODEL,
+  model = DEFAULT_OPENAI_MODEL,
   instructions = "",
   input = "",
 }) => {
@@ -131,8 +168,31 @@ const createOpenAiResponse = async ({
   return String(response?.output_text || "").trim();
 };
 
-const buildProviderAttemptOrder = (preferredProvider, openAiClient) => {
+const getOpenAiCompatibleClient = (provider, groqClient, openAiClient) => {
+  if (provider === "groq") {
+    return groqClient;
+  }
+
+  if (provider === "openai") {
+    return openAiClient;
+  }
+
+  return null;
+};
+
+const getOpenAiCompatibleModel = (provider) =>
+  provider === "groq" ? DEFAULT_GROQ_MODEL : DEFAULT_OPENAI_MODEL;
+
+const buildProviderAttemptOrder = (
+  preferredProvider,
+  groqClient,
+  openAiClient,
+) => {
   const availableProviders = [];
+
+  if (preferredProvider === "groq" && groqClient) {
+    availableProviders.push("groq");
+  }
 
   if (preferredProvider === "gemini" && getGeminiApiKey()) {
     availableProviders.push("gemini");
@@ -140,6 +200,10 @@ const buildProviderAttemptOrder = (preferredProvider, openAiClient) => {
 
   if (preferredProvider === "openai" && openAiClient) {
     availableProviders.push("openai");
+  }
+
+  if (groqClient && !availableProviders.includes("groq")) {
+    availableProviders.push("groq");
   }
 
   if (openAiClient && !availableProviders.includes("openai")) {
@@ -209,9 +273,11 @@ EnquiriesRouter.post("/", async function (req, res) {
   const instructions =
     normalizeTextField(req.body?.instructions) || DEFAULT_INSTRUCTIONS;
   const preferredProvider = getPreferredAiProvider(req.body?.aiProvider);
+  const groqClient = getGroqClient();
   const openAiClient = getOpenAIClient();
   const providerAttemptOrder = buildProviderAttemptOrder(
     preferredProvider,
+    groqClient,
     openAiClient,
   );
 
@@ -228,7 +294,9 @@ EnquiriesRouter.post("/", async function (req, res) {
     });
   }
 
-  const prompt = context ? `Context:\n${context}\n\nEnquiry:\n${message}` : message;
+  const prompt = context
+    ? `Context:\n${context}\n\nEnquiry:\n${message}`
+    : message;
 
   try {
     const providerErrors = [];
@@ -244,8 +312,12 @@ EnquiriesRouter.post("/", async function (req, res) {
                 input: prompt,
               })
             : await createOpenAiResponse({
-                client: openAiClient,
-                model: DEFAULT_MODEL,
+                client: getOpenAiCompatibleClient(
+                  candidateProvider,
+                  groqClient,
+                  openAiClient,
+                ),
+                model: getOpenAiCompatibleModel(candidateProvider),
                 instructions,
                 input: prompt,
               });
@@ -272,7 +344,7 @@ EnquiriesRouter.post("/", async function (req, res) {
       model:
         provider === "gemini"
           ? process.env.GEMINI_MODEL || "gemini-2.5-flash"
-          : DEFAULT_MODEL,
+          : getOpenAiCompatibleModel(provider),
       provider,
       reply,
     });
@@ -297,10 +369,10 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
 
   try {
     const user = await UserModel.findOne(
-      userId ? { _id: userId } : { "info.username": username }
+      userId ? { _id: userId } : { "identity.atSignup.username": username },
     )
       .select(
-        "info.username info.firstname info.lastname info.aiProvider friends notifications posts terminology study_session schoolPlanner study.structure_keywords study.function_keywords"
+        "identity.atSignup.username identity.personal.firstname identity.personal.lastname AI.settings.aiProvider friends notifications posts terminology study_session schoolPlanner study.structure_keywords study.function_keywords",
       )
       .lean();
 
@@ -313,11 +385,13 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
     summary = buildUserSummary(user);
 
     const preferredProvider = getPreferredAiProvider(user?.info?.aiProvider);
+    const groqClient = getGroqClient();
     const openAiClient = getOpenAIClient();
 
     if (
       preferredProvider === "openai" &&
       !openAiClient &&
+      !groqClient &&
       !getGeminiApiKey()
     ) {
       return res.status(200).json({
@@ -340,23 +414,31 @@ Database summary:
 - Structure keywords: ${summary.counts.structureKeywords}
 - Function keywords: ${summary.counts.functionKeywords}`;
     provider =
-      preferredProvider === "gemini" && getGeminiApiKey()
-        ? "gemini"
-        : openAiClient
-          ? "openai"
-          : getGeminiApiKey()
-            ? "gemini"
-            : "fallback";
+      preferredProvider === "groq" && groqClient
+        ? "groq"
+        : preferredProvider === "gemini" && getGeminiApiKey()
+          ? "gemini"
+          : openAiClient
+            ? "openai"
+            : groqClient
+              ? "groq"
+              : getGeminiApiKey()
+                ? "gemini"
+                : "fallback";
     const reply =
       provider === "gemini"
         ? await createGeminiResponse({
             instructions: DEFAULT_GREETING_INSTRUCTIONS,
             input: greetingInput,
           })
-        : provider === "openai"
+        : provider === "openai" || provider === "groq"
           ? (
-              await openAiClient.responses.create({
-                model: DEFAULT_MODEL,
+              await getOpenAiCompatibleClient(
+                provider,
+                groqClient,
+                openAiClient,
+              ).responses.create({
+                model: getOpenAiCompatibleModel(provider),
                 instructions: DEFAULT_GREETING_INSTRUCTIONS,
                 input: greetingInput,
               })
@@ -378,7 +460,7 @@ Database summary:
             lectures: 0,
             terminology: 0,
           },
-        }
+        },
       ),
       source: "fallback",
     });

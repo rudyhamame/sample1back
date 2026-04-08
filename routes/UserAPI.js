@@ -5,17 +5,13 @@ import crypto from "crypto";
 import { v2 as cloudinary } from "cloudinary";
 import path from "path";
 import { fileURLToPath } from "url";
-import TestModel from "../models/Test.js";
 import UserModel from "../models/Users.js";
-import ChatModel from "../models/Chat.js";
 const UserRouter = express.Router();
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import checkAuth from "../check-auth.js";
 import { AccessToken } from "livekit-server-sdk";
-import PostsModel from "../models/Posts.js";
-import SignupVerificationModel from "../models/SignupVerification.js";
 import VisitLogModel from "../models/VisitLog.js";
 import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
@@ -26,10 +22,10 @@ const FRONTEND_REPO_PATH = path.resolve(__dirname, "../../sample1front");
 
 const recalculateCourseLectureTotals = (user) => {
   const lectures = Array.isArray(user.schoolPlanner?.lectures)
-    ? user.schoolPlanner.lectures
+    ? user.memory.lectures
     : [];
 
-  user.schoolPlanner.courses = user.schoolPlanner.courses.map((course) => {
+  user.memory.courses = user.memory.courses.map((course) => {
     let courseLength = 0;
     let courseProgress = 0;
 
@@ -97,7 +93,8 @@ const buildUserRingVideoFolder = (userId) =>
 const buildUserImageGalleryFolder = (userId) =>
   buildUserCloudinaryFolder(CLOUDINARY_IMAGE_UPLOAD_FOLDER, userId);
 
-const toBase64 = (value) => Buffer.from(String(value || ""), "utf8").toString("base64");
+const toBase64 = (value) =>
+  Buffer.from(String(value || ""), "utf8").toString("base64");
 
 const buildTurnRestCredentials = (userId) => {
   const turnSecret = String(
@@ -149,7 +146,9 @@ const maskTurnCredential = (value) => {
 };
 
 const isPlaceholderTurnUrl = (value) => {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
 
   if (!normalized) {
     return true;
@@ -246,10 +245,7 @@ const expandTurnUrls = (rawUrls) => {
 const getRtcIceServers = (userId = "") => {
   const iceServers = [
     {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-      ],
+      urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
     },
   ];
 
@@ -354,7 +350,7 @@ const ensureRingVideoFolderForUser = async (user) => {
     { _id: user._id },
     {
       $set: {
-        "schoolPlanner.ringVideo.folder": folder,
+        "identity.personal.gallery.videos.0.folder": folder,
       },
     },
   );
@@ -409,19 +405,25 @@ const extractCloudinaryDeliveryTypeFromUrl = (value) => {
   }
 
   const match = url.match(/\/(?:image|video|raw)\/([^/]+)\//i);
-  const deliveryType = String(match?.[1] || "").trim().toLowerCase();
+  const deliveryType = String(match?.[1] || "")
+    .trim()
+    .toLowerCase();
 
   return deliveryType || "upload";
 };
 
 const extractCloudinaryFormat = (image) => {
-  const explicitFormat = String(image?.format || "").trim().toLowerCase();
+  const explicitFormat = String(image?.format || "")
+    .trim()
+    .toLowerCase();
 
   if (explicitFormat) {
     return explicitFormat;
   }
 
-  const mimeType = String(image?.mimeType || "").trim().toLowerCase();
+  const mimeType = String(image?.mimeType || "")
+    .trim()
+    .toLowerCase();
 
   if (mimeType === "application/pdf") {
     return "pdf";
@@ -431,7 +433,11 @@ const extractCloudinaryFormat = (image) => {
   const fileName = url.split("/").pop() || "";
   const extensionMatch = fileName.match(/\.([a-z0-9]+)(?:[?#].*)?$/i);
 
-  return String(extensionMatch?.[1] || "").trim().toLowerCase() || "pdf";
+  return (
+    String(extensionMatch?.[1] || "")
+      .trim()
+      .toLowerCase() || "pdf"
+  );
 };
 
 const sortGalleryImages = (images = []) =>
@@ -648,63 +654,67 @@ const buildCloudinarySignature = ({ paramsToSign = {}, apiSecret = "" }) => {
 UserRouter.post("/login", function (req, res, next) {
   const io = req.app.locals.io;
   UserModel.findOne({
-    "info.username": req.body.username,
+    "identity.atSignup.username": req.body.username,
   })
     .exec()
     .then((user) => {
       if (user) {
-        bcrypt.compare(req.body.password, user.info.password, (err, result) => {
-          if (result) {
-            UserModel.findByIdAndUpdate(
-              user._id,
-              {
-                $set: {
-                  "status.isConnected": true,
-                  "status.lastSeenAt": new Date(),
-                },
-                $push: {
-                  login_record: {
-                    $each: [{ loggedInAt: new Date(), loggedOutAt: null }],
-                    $slice: -100,
+        bcrypt.compare(
+          req.body.password,
+          user.identity.atSignup.password,
+          (err, result) => {
+            if (result) {
+              UserModel.findByIdAndUpdate(
+                user._id,
+                {
+                  $set: {
+                    "identity.status.isLoggedIn": true,
+                    "identity.status.lastSeenAt": new Date(),
+                  },
+                  $push: {
+                    login_record: {
+                      $each: [{ loggedInAt: new Date(), loggedOutAt: null }],
+                      $slice: -100,
+                    },
                   },
                 },
-              },
-              {
-                new: true,
-              },
-            )
-              .then((updatedUser) => {
-                emitUserRefresh(
-                  io,
-                  getUserAndFriendIds(updatedUser),
-                  "connection:changed",
-                  {
-                    isConnected: true,
-                    targetUserId: String(updatedUser._id),
-                  },
-                );
-                const token = jwt.sign(
-                  {
-                    username: updatedUser.info.username,
-                    userId: updatedUser._id,
-                  },
-                  process.env.JWT_KEY,
-                  {
-                    expiresIn: process.env.JWT_EXPIRES_IN || "30d",
-                  },
-                );
-                res.status(201).json({
-                  token: token,
-                  user: updatedUser,
-                });
-              })
-              .catch(next);
-          } else {
-            res.status(401).json({
-              message: "Authorized failed",
-            });
-          }
-        });
+                {
+                  new: true,
+                },
+              )
+                .then((updatedUser) => {
+                  emitUserRefresh(
+                    io,
+                    getUserAndFriendIds(updatedUser),
+                    "connection:changed",
+                    {
+                      isConnected: true,
+                      targetUserId: String(updatedUser._id),
+                    },
+                  );
+                  const token = jwt.sign(
+                    {
+                      username: updatedUser.identity.atSignup.username,
+                      userId: updatedUser._id,
+                    },
+                    process.env.JWT_KEY,
+                    {
+                      expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+                    },
+                  );
+                  res.status(201).json({
+                    token: token,
+                    user: updatedUser,
+                  });
+                })
+                .catch(next);
+            } else {
+              res.status(401).json({
+                message: "Authorized failed",
+              });
+            }
+          },
+        );
       } else {
         res.status(401).json({
           message: "Authorized failed",
@@ -714,20 +724,20 @@ UserRouter.post("/login", function (req, res, next) {
     .catch(next);
 });
 
-// Request signup verification code by email
-UserRouter.post("/signup/request-code", async function (req, res, next) {
+// Direct signup (verification code flow removed)
+UserRouter.post("/signup", async function (req, res, next) {
   try {
     const { username, password, firstname, lastname, email, dob } = req.body;
 
-    if (!username || !password || !firstname || !lastname || !email) {
+    if (!username || !password || !firstname || !lastname || !email || !dob) {
       return res.status(400).json({
         message: "Please provide all required signup information.",
       });
     }
 
     const [existingUsernameUser, existingEmailUser] = await Promise.all([
-      UserModel.findOne({ "info.username": username }),
-      UserModel.findOne({ "info.email": email }),
+      UserModel.findOne({ "identity.atSignup.username": username }),
+      UserModel.findOne({ "identity.personal.email_address": email }),
     ]);
 
     if (existingUsernameUser) {
@@ -743,96 +753,26 @@ UserRouter.post("/signup/request-code", async function (req, res, next) {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const verificationCode = String(
-      Math.floor(100000 + Math.random() * 900000),
-    );
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-    await SignupVerificationModel.deleteMany({
-      $or: [{ username }, { email }],
-    });
-
-    await SignupVerificationModel.create({
-      username,
-      email,
-      firstname,
-      lastname,
-      dob,
-      passwordHash,
-      verificationCode,
-      expiresAt,
-    });
-
-    return res.status(200).json({
-      message: "Verification code generated successfully.",
-      verificationCode,
-    });
-  } catch (error) {
-    const message = String(error?.message || "");
-
-    return res.status(500).json({
-      message: `Signup request failed: ${message || "Unknown server error."}`,
-    });
-  }
-});
-
-// Complete signup after verification
-UserRouter.post("/signup/verify-code", async function (req, res, next) {
-  try {
-    const { username, email, verificationCode } = req.body;
-
-    if (!username || !email || !verificationCode) {
-      return res.status(400).json({
-        message: "Username, email, and verification code are required.",
-      });
-    }
-
-    const pendingSignup = await SignupVerificationModel.findOne({
-      username,
-      email,
-    });
-
-    if (!pendingSignup) {
-      return res.status(404).json({
-        message: "No pending signup was found for this account.",
-      });
-    }
-
-    if (pendingSignup.expiresAt.getTime() < Date.now()) {
-      await pendingSignup.deleteOne();
-      return res.status(410).json({
-        message: "Verification code expired. Please request a new one.",
-      });
-    }
-
-    if (pendingSignup.verificationCode !== String(verificationCode).trim()) {
-      return res.status(401).json({
-        message: "Verification code is not correct.",
-      });
-    }
 
     const createdUser = new UserModel({
-      "info.username": pendingSignup.username,
-      "info.password": pendingSignup.passwordHash,
-      "info.firstname": pendingSignup.firstname,
-      "info.lastname": pendingSignup.lastname,
-      "info.email": pendingSignup.email,
-      "info.dob": pendingSignup.dob,
+      "identity.atSignup.username": String(username || "").trim(),
+      "identity.atSignup.password": passwordHash,
+      "identity.personal.firstname": String(firstname || "").trim(),
+      "identity.personal.lastname": String(lastname || "").trim(),
+      "identity.personal.email_address": String(email || "").trim(),
+      "identity.personal.dob": new Date(dob),
     });
 
-    createdUser.schoolPlanner = createdUser.schoolPlanner || {};
-    createdUser.schoolPlanner.ringVideo = {
-      ...(createdUser.schoolPlanner.ringVideo || {}),
+    createdUser.identity.personal.gallery.videos[0] = {
+      ...(createdUser.identity.personal.gallery.videos[0] || {}),
       folder: buildUserRingVideoFolder(createdUser._id),
     };
 
     await createdUser.save();
 
-    await pendingSignup.deleteOne();
-
     return res.status(201).json({
       userID: createdUser._id,
-      message: "Signup completed successfully.",
+      message: "You have successfully signed up!",
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -858,7 +798,7 @@ UserRouter.put("/connection/:id", function (req, res, next) {
 UserRouter.get("/update/:id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.id })
     .select(
-      "info friends notifications chat posts terminology study_session login_record schoolPlanner study clinicalReality media status",
+      "identity friends notifications chat posts terminology study_session login_record memory study clinicalReality media",
     )
     .populate({
       path: "friends",
@@ -866,7 +806,6 @@ UserRouter.get("/update/:id", function (req, res, next) {
         path: "posts",
       },
     })
-    .populate("chat")
     .populate("posts")
     .then((profile) => {
       const ownPosts = Array.isArray(profile.posts) ? profile.posts : [];
@@ -890,18 +829,16 @@ UserRouter.get("/update/:id", function (req, res, next) {
         });
 
       res.status(200).json({
-        info: profile.info,
-        chat: Array.isArray(profile.chat?.conversation)
-          ? profile.chat.conversation
-          : [],
+        identity: profile.identity,
+        chat: Array.isArray(profile.chat) ? profile.chat : [],
         friends: profile.friends,
         notifications: profile.notifications,
         posts,
         terminology: profile.terminology,
         study_session: profile.study_session,
         login_record: profile.login_record || [],
-        isOnline: profile.status.isConnected,
-        schoolPlanner: profile.schoolPlanner,
+        isOnline: profile.identity.status.isLoggedIn,
+        memory: profile.memory,
         study: profile.study,
         clinicalReality: profile.clinicalReality,
         media: profile.media || {
@@ -931,13 +868,13 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
 
     const nextFirstname = String(
-      req.body?.firstname ?? user.info.firstname ?? "",
+      req.body?.firstname ?? user.identity.personal.firstname ?? "",
     ).trim();
     const nextLastname = String(
-      req.body?.lastname ?? user.info.lastname ?? "",
+      req.body?.lastname ?? user.identity.personal.lastname ?? "",
     ).trim();
     const nextUsername = String(
-      req.body?.username ?? user.info.username ?? "",
+      req.body?.username ?? user.identity.atSignup.username ?? "",
     ).trim();
 
     if (!nextFirstname || !nextLastname || !nextUsername) {
@@ -946,9 +883,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       });
     }
 
-    if (nextUsername !== String(user.info.username || "").trim()) {
+    if (nextUsername !== String(user.identity.atSignup.username || "").trim()) {
       const existingUsernameUser = await UserModel.findOne({
-        "info.username": nextUsername,
+        "identity.atSignup.username": nextUsername,
         _id: { $ne: user._id },
       }).select("_id");
 
@@ -960,29 +897,33 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
 
     const requestedAiProvider = String(
-      req.body?.aiProvider ?? user.info.aiProvider ?? "openai",
+      req.body?.aiProvider ?? user.AI.settings.aiProvider ?? "openai",
     )
       .trim()
       .toLowerCase();
 
-    const nextAiProvider = ["openai", "gemini"].includes(requestedAiProvider)
+    const nextAiProvider = ["openai", "groq", "gemini"].includes(
+      requestedAiProvider,
+    )
       ? requestedAiProvider
       : "openai";
 
-    user.info.firstname = nextFirstname;
-    user.info.lastname = nextLastname;
-    user.info.username = nextUsername;
-    user.info.program = String(
-      req.body?.program ?? user.info.program ?? "",
+    user.identity.personal.firstname = nextFirstname;
+    user.identity.personal.lastname = nextLastname;
+    user.identity.atSignup.username = nextUsername;
+    user.identity.personal.program = String(
+      req.body?.program ?? user.identity.personal.program ?? "",
     ).trim();
-    user.info.university = String(
-      req.body?.university ?? user.info.university ?? "",
+    user.identity.personal.university = String(
+      req.body?.university ?? user.identity.personal.university ?? "",
     ).trim();
-    user.info.studyYear = String(
-      req.body?.studyYear ?? user.info.studyYear ?? "",
+    user.identity.personal.studyYear = String(
+      req.body?.studyYear ?? user.identity.personal.studyYear ?? "",
     ).trim();
-    user.info.term = String(req.body?.term ?? user.info.term ?? "").trim();
-    user.info.aiProvider = nextAiProvider;
+    user.identity.personal.term = String(
+      req.body?.term ?? user.identity.personal.term ?? "",
+    ).trim();
+    user.AI.settings.aiProvider = nextAiProvider;
 
     const requestedViewport = req.body?.profilePictureViewport;
     if (requestedViewport && typeof requestedViewport === "object") {
@@ -991,7 +932,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       const rawOffsetY = Number(requestedViewport?.offsetY);
 
       user.media = user.media || {};
-      user.media.profilePictureViewport = {
+      user.identity.personal.profilePicture.profilePictureViewport = {
         scale: Number.isFinite(rawScale)
           ? Math.min(Math.max(rawScale, 1), 4)
           : 1,
@@ -1007,7 +948,8 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
         (Array.isArray(requestedPaths) ? requestedPaths : [])
           .slice(0, 48)
           .map((path) => {
-            const paletteId = String(path?.paletteId || "aurora").trim() || "aurora";
+            const paletteId =
+              String(path?.paletteId || "aurora").trim() || "aurora";
             const stroke = String(path?.stroke || "").trim();
             const glow = String(path?.glow || "").trim();
             const bulb = String(path?.bulb || "").trim();
@@ -1042,7 +984,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
               String(item?.id || "").trim() ||
               `home-text-${Date.now()}-${index}`,
             paletteId: String(item?.paletteId || "aurora").trim() || "aurora",
-            text: String(item?.text || "").trim().slice(0, 140),
+            text: String(item?.text || "")
+              .trim()
+              .slice(0, 140),
             x: Number(item?.x),
             y: Number(item?.y),
           }))
@@ -1058,7 +1002,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           : [];
 
       user.media = user.media || {};
-      user.media.homeDrawing = {
+      user.identity.personal.gallery.homeDrawing = {
         draftPaths: sanitizeDrawingPaths(requestedHomeDrawing?.draftPaths),
         appliedPaths: sanitizeDrawingPaths(
           Array.isArray(requestedHomeDrawing?.appliedPaths)
@@ -1101,7 +1045,7 @@ UserRouter.get(
   async function (req, res, next) {
     try {
       const user = await UserModel.findById(req.authentication.userId).select(
-        "schoolPlanner.ringVideo",
+        "identity.personal.gallery.videos[0]",
       );
 
       if (!user) {
@@ -1143,7 +1087,7 @@ UserRouter.post(
       }
 
       const user = await UserModel.findById(req.authentication.userId).select(
-        "schoolPlanner.ringVideo.folder",
+        "identity.personal.gallery.videos.0.folder",
       );
 
       if (!user) {
@@ -1204,15 +1148,15 @@ UserRouter.put(
       const updatedUser = await UserModel.findByIdAndUpdate(
         req.authentication.userId,
         {
-          "schoolPlanner.ringVideo.url": videoUrl,
-          "schoolPlanner.ringVideo.publicId": publicId,
-          "schoolPlanner.ringVideo.folder": folder,
-          "schoolPlanner.ringVideo.updatedAt": new Date(),
+          "identity.personal.gallery.videos[0].url": videoUrl,
+          "identity.personal.gallery.videos[0].publicId": publicId,
+          "identity.personal.gallery.videos.0.folder": folder,
+          "identity.personal.gallery.videos.0.updatedAt": new Date(),
         },
         {
           new: true,
         },
-      ).select("schoolPlanner.ringVideo");
+      ).select("identity.personal.gallery.videos[0]");
 
       if (!updatedUser) {
         return res.status(404).json({
@@ -1248,9 +1192,9 @@ UserRouter.post(
 
       const usersMissingFolder = await UserModel.find({
         $or: [
-          { "schoolPlanner.ringVideo.folder": { $exists: false } },
-          { "schoolPlanner.ringVideo.folder": null },
-          { "schoolPlanner.ringVideo.folder": "" },
+          { "identity.personal.gallery.videos.0.folder": { $exists: false } },
+          { "identity.personal.gallery.videos.0.folder": null },
+          { "identity.personal.gallery.videos.0.folder": "" },
         ],
       }).select("_id");
 
@@ -1266,9 +1210,8 @@ UserRouter.post(
           filter: { _id: user._id },
           update: {
             $set: {
-              "schoolPlanner.ringVideo.folder": buildUserRingVideoFolder(
-                user._id,
-              ),
+              "identity.personal.gallery.videos.0.folder":
+                buildUserRingVideoFolder(user._id),
             },
           },
         },
@@ -1291,9 +1234,7 @@ UserRouter.post(
 
 UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
   try {
-    const user = await UserModel.findById(req.authentication.userId).select(
-      "media",
-    );
+    const user = await UserModel.findById(req.authentication.userId);
 
     if (!user) {
       return res.status(404).json({
@@ -1302,16 +1243,21 @@ UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
     }
 
     const imageGallery = sortGalleryImages(
-      (Array.isArray(user?.media?.imageGallery) ? user.media.imageGallery : [])
+      (Array.isArray(user?.identity?.personal?.gallery?.images)
+        ? user.identity.personal.gallery.images
+        : [])
         .map(normalizeStoredGalleryImage)
         .filter(Boolean),
     );
     const profilePicture = normalizeStoredGalleryImage(
-      user?.media?.profilePicture,
+      user?.identity?.personal?.profilePicture?.picture,
     )
       ? {
-          ...normalizeStoredGalleryImage(user.media.profilePicture),
-          updatedAt: user?.media?.profilePicture?.updatedAt || null,
+          ...normalizeStoredGalleryImage(
+            user.identity.personal.profilePicture.picture,
+          ),
+          updatedAt:
+            user?.identity?.personal?.profilePicture?.picture?.updatedAt || null,
         }
       : {
           url: "",
@@ -1343,14 +1289,16 @@ UserRouter.get("/rtc/config", checkAuth, async function (req, res, next) {
     console.info("[rtc-config]", {
       userId: String(req.authentication.userId || "").trim(),
       authMode: turnRestCredentials ? "shared-secret" : "static",
-      turnEnabled: turnUrls.some((url) =>
-        String(url || "").startsWith("turn:") ||
-        String(url || "").startsWith("turns:"),
+      turnEnabled: turnUrls.some(
+        (url) =>
+          String(url || "").startsWith("turn:") ||
+          String(url || "").startsWith("turns:"),
       ),
       turnUrls: turnUrls.filter((url) => {
         const normalizedUrl = String(url || "").trim();
         return (
-          normalizedUrl.startsWith("turn:") || normalizedUrl.startsWith("turns:")
+          normalizedUrl.startsWith("turn:") ||
+          normalizedUrl.startsWith("turns:")
         );
       }),
       username: turnRestCredentials?.username || "",
@@ -1393,14 +1341,16 @@ UserRouter.post("/livekit/token", checkAuth, async function (req, res, next) {
     if (!liveKitConfig.isReady) {
       return res.status(503).json({
         message: "LiveKit is not configured on backend.",
-        missing: ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"].filter(
-          (key) => !String(process.env[key] || "").trim(),
-        ),
+        missing: [
+          "LIVEKIT_URL",
+          "LIVEKIT_API_KEY",
+          "LIVEKIT_API_SECRET",
+        ].filter((key) => !String(process.env[key] || "").trim()),
       });
     }
 
     const user = await UserModel.findById(req.authentication.userId).select(
-      "info.firstname info.lastname info.username",
+      "identity.personal.firstname identity.personal.lastname identity.atSignup.username",
     );
 
     if (!user) {
@@ -1465,9 +1415,7 @@ UserRouter.get(
         });
       }
 
-      const user = await UserModel.findById(req.authentication.userId).select(
-        "media",
-      );
+      const user = await UserModel.findById(req.authentication.userId);
 
       if (!user) {
         return res.status(404).json({
@@ -1475,8 +1423,10 @@ UserRouter.get(
         });
       }
 
-      const imageGallery = Array.isArray(user?.media?.imageGallery)
-        ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+      const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
+        ? user.identity.personal.gallery.images
+            .map(normalizeStoredGalleryImage)
+            .filter(Boolean)
         : [];
 
       const selectedImage = imageGallery.find((image) => {
@@ -1606,9 +1556,7 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const user = await UserModel.findById(req.authentication.userId).select(
-      "media",
-    );
+    const user = await UserModel.findById(req.authentication.userId);
 
     if (!user) {
       return res.status(404).json({
@@ -1616,8 +1564,10 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const existingImages = Array.isArray(user?.media?.imageGallery)
-      ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+    const existingImages = Array.isArray(user?.identity?.personal?.gallery?.images)
+      ? user.identity.personal.gallery.images
+          .map(normalizeStoredGalleryImage)
+          .filter(Boolean)
       : [];
     const dedupedImages = existingImages.filter(
       (image) => image.publicId !== normalizedImage.publicId,
@@ -1627,11 +1577,13 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       ...dedupedImages,
     ]);
     const existingProfilePicture = normalizeStoredGalleryImage(
-      user?.media?.profilePicture,
+      user?.identity?.personal?.profilePicture?.picture,
     );
 
-    user.media = user.media || {};
-    user.media.imageGallery = nextImageGallery;
+    user.identity = user.identity || {};
+    user.identity.personal = user.identity.personal || {};
+    user.identity.personal.gallery = user.identity.personal.gallery || {};
+    user.identity.personal.gallery.images = nextImageGallery;
 
     await user.save();
 
@@ -1656,9 +1608,7 @@ UserRouter.put(
   async function (req, res, next) {
     try {
       const selectedPublicId = String(req.body?.publicId || "").trim();
-      const user = await UserModel.findById(req.authentication.userId).select(
-        "media",
-      );
+      const user = await UserModel.findById(req.authentication.userId);
 
       if (!user) {
         return res.status(404).json({
@@ -1666,8 +1616,8 @@ UserRouter.put(
         });
       }
 
-      const imageGallery = Array.isArray(user?.media?.imageGallery)
-        ? user.media.imageGallery
+      const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
+        ? user.identity.personal.gallery.images
             .map(normalizeStoredGalleryImage)
             .filter(Boolean)
         : [];
@@ -1687,8 +1637,11 @@ UserRouter.put(
         });
       }
 
-      user.media = user.media || {};
-      user.media.profilePicture = {
+      user.identity = user.identity || {};
+      user.identity.personal = user.identity.personal || {};
+      user.identity.personal.profilePicture =
+        user.identity.personal.profilePicture || {};
+      user.identity.personal.profilePicture.picture = {
         url: selectedImage.url,
         publicId: selectedImage.publicId,
         assetId: selectedImage.assetId,
@@ -1699,7 +1652,7 @@ UserRouter.put(
 
       return res.status(200).json({
         message: "Profile picture updated.",
-        profilePicture: user.media.profilePicture,
+        profilePicture: user.identity.personal.profilePicture.picture,
         imageGallery: sortGalleryImages(imageGallery),
       });
     } catch (error) {
@@ -1718,9 +1671,7 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const user = await UserModel.findById(req.authentication.userId).select(
-      "media",
-    );
+    const user = await UserModel.findById(req.authentication.userId);
 
     if (!user) {
       return res.status(404).json({
@@ -1728,8 +1679,10 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const imageGallery = Array.isArray(user?.media?.imageGallery)
-      ? user.media.imageGallery.map(normalizeStoredGalleryImage).filter(Boolean)
+    const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
+      ? user.identity.personal.gallery.images
+          .map(normalizeStoredGalleryImage)
+          .filter(Boolean)
       : [];
     const imageToDelete = imageGallery.find(
       (image) => image.publicId === publicId,
@@ -1756,16 +1709,20 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       imageGallery.filter((image) => image.publicId !== publicId),
     );
     const currentProfilePublicId = String(
-      user?.media?.profilePicture?.publicId || "",
+      user?.identity?.personal?.profilePicture?.picture?.publicId || "",
     ).trim();
 
-    user.media = user.media || {};
-    user.media.imageGallery = nextImageGallery;
+    user.identity = user.identity || {};
+    user.identity.personal = user.identity.personal || {};
+    user.identity.personal.gallery = user.identity.personal.gallery || {};
+    user.identity.personal.profilePicture =
+      user.identity.personal.profilePicture || {};
+    user.identity.personal.gallery.images = nextImageGallery;
     if (currentProfilePublicId === publicId) {
       const fallbackImage =
         nextImageGallery.find((image) => image.resourceType === "image") ||
         null;
-      user.media.profilePicture = fallbackImage
+      user.identity.personal.profilePicture.picture = fallbackImage
         ? {
             url: fallbackImage.url,
             publicId: fallbackImage.publicId,
@@ -1785,7 +1742,7 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
     return res.status(200).json({
       message: "Image deleted from gallery.",
       imageGallery: nextImageGallery,
-      profilePicture: user.media.profilePicture || {
+      profilePicture: user.identity.personal.profilePicture.picture || {
         url: "",
         publicId: "",
         assetId: "",
@@ -1822,7 +1779,7 @@ UserRouter.get(
   async function (req, res, next) {
     try {
       const user = await UserModel.findOne({
-        "info.username": req.params.username,
+        "identity.atSignup.username": req.params.username,
       }).select("clinicalReality");
 
       if (!user) {
@@ -1896,7 +1853,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
     }
 
     const user = await UserModel.findById(req.authentication.userId).select(
-      "info.password",
+      "identity.atSignup.password",
     );
 
     if (!user) {
@@ -1907,7 +1864,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     const passwordMatches = await bcrypt.compare(
       currentPassword,
-      user.info.password,
+      user.identity.atSignup.password,
     );
 
     if (!passwordMatches) {
@@ -1918,7 +1875,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     const isSamePassword = await bcrypt.compare(
       nextPassword,
-      user.info.password,
+      user.identity.atSignup.password,
     );
 
     if (isSamePassword) {
@@ -1927,7 +1884,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
       });
     }
 
-    user.info.password = await bcrypt.hash(nextPassword, 10);
+    user.identity.atSignup.password = await bcrypt.hash(nextPassword, 10);
     await user.save();
 
     return res.status(200).json({
@@ -1979,7 +1936,9 @@ UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
 /////Searching for a user to be a friend
 UserRouter.get("/searchUsers/:name", function (req, res, next) {
   UserModel.find({})
-    .select("info.firstname info.lastname info.username")
+    .select(
+      "identity.personal.firstname identity.personal.lastname identity.atSignup.username",
+    )
     .then((users) => {
       const array = [];
       const searchTerm = String(req.params.name || "")
@@ -2010,9 +1969,9 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
 
 // Public doctor profile with populated posts
 UserRouter.get("/profile/:username", function (req, res, next) {
-  UserModel.findOne({ "info.username": req.params.username })
+  UserModel.findOne({ "identity.atSignup.username": req.params.username })
     .select(
-      "info.username info.firstname info.lastname posts media.profilePicture",
+      "identity.atSignup.username identity.personal.firstname identity.personal.lastname posts identity.personal.profilePicture.picture",
     )
     .populate("posts")
     .then((user) => {
@@ -2023,9 +1982,9 @@ UserRouter.get("/profile/:username", function (req, res, next) {
       }
 
       return res.status(200).json({
-        username: user.info.username,
-        firstname: user.info.firstname,
-        lastname: user.info.lastname,
+        username: user.identity.atSignup.username,
+        firstname: user.identity.personal.firstname,
+        lastname: user.identity.personal.lastname,
         profilePicture: String(user?.media?.profilePicture?.url || "").trim(),
         posts: Array.isArray(user.posts) ? user.posts : [],
       });
@@ -2067,7 +2026,7 @@ UserRouter.post("/visit-log", async function (req, res, next) {
 
     const io = req.app.locals.io;
     const visitLogOwner = await UserModel.findOne({
-      "info.username": VISIT_LOG_OWNER_USERNAME,
+      "identity.atSignup.username": VISIT_LOG_OWNER_USERNAME,
     }).select("_id");
 
     if (io && visitLogOwner?._id) {
@@ -2116,7 +2075,7 @@ UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
 // Requesting a friend
 UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
   const io = req.app.locals.io;
-  UserModel.findOne({ "info.username": req.params.username })
+  UserModel.findOne({ "identity.atSignup.username": req.params.username })
     .then((user) => {
       user.notifications.push({
         id: req.body.id,
@@ -2223,6 +2182,7 @@ UserRouter.delete(
 ///////Update Notification INFO USER
 UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
   const io = req.app.locals.io;
+  let currentUser;
   UserModel.findOne({ _id: req.params.me_id })
     .then((user) => {
       user.notifications.forEach((notification) => {
@@ -2231,31 +2191,31 @@ UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
           user.save();
         }
       });
-      return user;
+      currentUser = user;
+      return UserModel.findOne({ _id: req.params.friend_id }).select("chat");
     })
-    .then((user) => {
-      return ChatModel.findOne({ _id: req.params.friend_id }).then((chat) => {
-        if (chat) {
-          let hasChatUpdates = false;
+    .then((friendUser) => {
+      if (friendUser) {
+        let hasChatUpdates = false;
+        friendUser.chat = Array.isArray(friendUser.chat) ? friendUser.chat : [];
 
-          chat.conversation.forEach((message) => {
-            if (
-              String(message?._id) === String(req.params.me_id) &&
-              message?.from === "me" &&
-              message?.status !== "read"
-            ) {
-              message.status = "read";
-              hasChatUpdates = true;
-            }
-          });
-
-          if (hasChatUpdates) {
-            return chat.save().then(() => user);
+        friendUser.chat.forEach((message) => {
+          if (
+            String(message?._id) === String(req.params.me_id) &&
+            message?.from === "me" &&
+            message?.status !== "read"
+          ) {
+            message.status = "read";
+            hasChatUpdates = true;
           }
-        }
+        });
 
-        return user;
-      });
+        if (hasChatUpdates) {
+          return friendUser.save().then(() => currentUser);
+        }
+      }
+
+      return currentUser;
     })
     .then((user) => {
       emitUserRefresh(
@@ -2507,8 +2467,8 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
         });
       }
 
-      user.status.isConnected = req.body.isConnected;
-      user.status.lastSeenAt = new Date();
+      user.identity.status.isLoggedIn = req.body.isConnected;
+      user.identity.status.lastSeenAt = new Date();
 
       if (!req.body.isConnected && Array.isArray(user.login_record)) {
         for (let i = user.login_record.length - 1; i >= 0; i -= 1) {
@@ -2540,8 +2500,8 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
     req.params.id,
     {
       $set: {
-        "status.isConnected": true,
-        "status.lastSeenAt": new Date(),
+        "identity.status.isLoggedIn": true,
+        "identity.status.lastSeenAt": new Date(),
       },
     },
     {
@@ -2850,15 +2810,13 @@ UserRouter.put("/editTerminology/:termID/:my_id", function (req, res, next) {
 UserRouter.post("/addCourse/:my_id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      user.schoolPlanner.courses.push(req.body);
+      user.memory.courses.push(req.body);
       return user.save();
     })
     .then((result) => {
       if (result) {
         const createdCourse = Array.isArray(result?.schoolPlanner?.courses)
-          ? result.schoolPlanner.courses[
-              result.schoolPlanner.courses.length - 1
-            ] || null
+          ? result.memory.courses[result.memory.courses.length - 1] || null
           : null;
         res.status(201).json({
           course: createdCourse,
@@ -2872,7 +2830,7 @@ UserRouter.post("/addCourse/:my_id", function (req, res, next) {
 UserRouter.post("/addLecture/:my_id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      user.schoolPlanner.lectures.push(req.body);
+      user.memory.lectures.push(req.body);
       recalculateCourseLectureTotals(user);
       return user.save();
     })
@@ -2888,12 +2846,12 @@ UserRouter.post("/addLecture/:my_id", function (req, res, next) {
 UserRouter.delete("/deleteCourse/:my_id/:courseID", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      const courseIndex = user.schoolPlanner.courses.findIndex(
+      const courseIndex = user.memory.courses.findIndex(
         (course) => String(course._id) === req.params.courseID,
       );
 
       if (courseIndex !== -1) {
-        user.schoolPlanner.courses.splice(courseIndex, 1);
+        user.memory.courses.splice(courseIndex, 1);
       }
 
       return user.save();
@@ -2913,7 +2871,7 @@ UserRouter.delete("/deleteAllCourses/:my_id", function (req, res, next) {
         return null;
       }
 
-      user.schoolPlanner.courses = [];
+      user.memory.courses = [];
       return user.save();
     })
     .then((result) => {
@@ -2930,12 +2888,12 @@ UserRouter.delete(
   function (req, res, next) {
     UserModel.findOne({ _id: req.params.my_id })
       .then((user) => {
-        const lectureIndex = user.schoolPlanner.lectures.findIndex(
+        const lectureIndex = user.memory.lectures.findIndex(
           (lecture) => String(lecture._id) === req.params.lectureID,
         );
 
         if (lectureIndex !== -1) {
-          user.schoolPlanner.lectures.splice(lectureIndex, 1);
+          user.memory.lectures.splice(lectureIndex, 1);
         }
 
         recalculateCourseLectureTotals(user);
@@ -2955,12 +2913,12 @@ UserRouter.delete(
 UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      const courseIndex = user.schoolPlanner.courses.findIndex(
+      const courseIndex = user.memory.courses.findIndex(
         (course) => String(course._id) === req.params.courseID,
       );
 
       if (courseIndex !== -1) {
-        const previousCourse = user.schoolPlanner.courses[courseIndex];
+        const previousCourse = user.memory.courses[courseIndex];
         const previousCourseName = previousCourse.course_name;
         const previousInstructors = Array.isArray(
           previousCourse.course_instructors,
@@ -2975,33 +2933,31 @@ UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
           _id: previousCourse._id,
         };
 
-        user.schoolPlanner.courses.splice(courseIndex, 1, nextCoursePayload);
+        user.memory.courses.splice(courseIndex, 1, nextCoursePayload);
 
-        user.schoolPlanner.lectures = user.schoolPlanner.lectures.map(
-          (lecture) => {
-            if (lecture.lecture_course !== previousCourseName) {
-              return lecture;
+        user.memory.lectures = user.memory.lectures.map((lecture) => {
+          if (lecture.lecture_course !== previousCourseName) {
+            return lecture;
+          }
+
+          let nextLectureInstructor = lecture.lecture_instructor;
+
+          if (previousInstructors.includes(lecture.lecture_instructor)) {
+            if (nextInstructors.includes(lecture.lecture_instructor)) {
+              nextLectureInstructor = lecture.lecture_instructor;
+            } else if (nextInstructors.length > 0) {
+              nextLectureInstructor = nextInstructors[0];
+            } else {
+              nextLectureInstructor = "-";
             }
+          }
 
-            let nextLectureInstructor = lecture.lecture_instructor;
-
-            if (previousInstructors.includes(lecture.lecture_instructor)) {
-              if (nextInstructors.includes(lecture.lecture_instructor)) {
-                nextLectureInstructor = lecture.lecture_instructor;
-              } else if (nextInstructors.length > 0) {
-                nextLectureInstructor = nextInstructors[0];
-              } else {
-                nextLectureInstructor = "-";
-              }
-            }
-
-            return {
-              ...lecture.toObject(),
-              lecture_course: req.body.course_name,
-              lecture_instructor: nextLectureInstructor,
-            };
-          },
-        );
+          return {
+            ...lecture.toObject(),
+            lecture_course: req.body.course_name,
+            lecture_instructor: nextLectureInstructor,
+          };
+        });
       }
 
       return user.save();
@@ -3009,7 +2965,7 @@ UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
     .then((result) => {
       if (result) {
         const updatedCourse = Array.isArray(result?.schoolPlanner?.courses)
-          ? result.schoolPlanner.courses.find(
+          ? result.memory.courses.find(
               (course) => String(course?._id) === String(req.params.courseID),
             ) || null
           : null;
@@ -3027,31 +2983,26 @@ UserRouter.post(
   function (req, res, next) {
     UserModel.findOne({ _id: req.params.my_id })
       .then((user) => {
-        for (i = 0; i < user.schoolPlanner.courses.length; i++) {
-          if (
-            user.schoolPlanner.courses[i].course_name == req.params.courseNAME
-          ) {
-            user.schoolPlanner.courses.splice(i, 1, {
-              course_name: user.schoolPlanner.courses[i].course_name,
-              course_component: user.schoolPlanner.courses[i].course_component,
-              course_dayAndTime:
-                user.schoolPlanner.courses[i].course_dayAndTime,
-              course_term: user.schoolPlanner.courses[i].course_term,
-              course_year: user.schoolPlanner.courses[i].course_year,
-              course_class: user.schoolPlanner.courses[i].course_class,
-              course_status: user.schoolPlanner.courses[i].course_status,
-              course_instructors:
-                user.schoolPlanner.courses[i].course_instructors,
-              course_grade: user.schoolPlanner.courses[i].course_grade,
-              course_fullGrade: user.schoolPlanner.courses[i].course_fullGrade,
-              course_exams: user.schoolPlanner.courses[i].course_exams,
+        for (i = 0; i < user.memory.courses.length; i++) {
+          if (user.memory.courses[i].course_name == req.params.courseNAME) {
+            user.memory.courses.splice(i, 1, {
+              course_name: user.memory.courses[i].course_name,
+              course_component: user.memory.courses[i].course_component,
+              course_dayAndTime: user.memory.courses[i].course_dayAndTime,
+              course_term: user.memory.courses[i].course_term,
+              course_year: user.memory.courses[i].course_year,
+              course_class: user.memory.courses[i].course_class,
+              course_status: user.memory.courses[i].course_status,
+              course_instructors: user.memory.courses[i].course_instructors,
+              course_grade: user.memory.courses[i].course_grade,
+              course_fullGrade: user.memory.courses[i].course_fullGrade,
+              course_exams: user.memory.courses[i].course_exams,
               course_length: req.body.course_length,
               course_progress: req.body.course_progress,
-              course_partOfPlan:
-                user.schoolPlanner.courses[i].course_partOfPlan,
-              exam_type: user.schoolPlanner.courses[i].exam_type,
-              exam_date: user.schoolPlanner.courses[i].exam_date,
-              exam_time: user.schoolPlanner.courses[i].exam_time,
+              course_partOfPlan: user.memory.courses[i].course_partOfPlan,
+              exam_type: user.memory.courses[i].exam_type,
+              exam_date: user.memory.courses[i].exam_date,
+              exam_time: user.memory.courses[i].exam_time,
             });
           }
         }
@@ -3072,24 +3023,21 @@ UserRouter.put(
     UserModel.findOne({ _id: req.params.my_id })
       .then((user) => {
         var lectureFound;
-        for (var i = 0; i < user.schoolPlanner.lectures.length; i++) {
-          if (user.schoolPlanner.lectures[i]._id == req.params.lectureID) {
-            lectureFound = user.schoolPlanner.lectures[i];
-            let index = user.schoolPlanner.lectures[
-              i
-            ].lecture_pagesFinished.indexOf(req.body.pageNum);
+        for (var i = 0; i < user.memory.lectures.length; i++) {
+          if (user.memory.lectures[i]._id == req.params.lectureID) {
+            lectureFound = user.memory.lectures[i];
+            let index = user.memory.lectures[i].lecture_pagesFinished.indexOf(
+              req.body.pageNum,
+            );
             if (index == -1) {
-              user.schoolPlanner.lectures[i].lecture_pagesFinished.push(
+              user.memory.lectures[i].lecture_pagesFinished.push(
                 req.body.pageNum,
               );
             } else {
-              user.schoolPlanner.lectures[i].lecture_pagesFinished.splice(
-                index,
-                1,
-              );
+              user.memory.lectures[i].lecture_pagesFinished.splice(index, 1);
             }
-            user.schoolPlanner.lectures[i].lecture_progress =
-              user.schoolPlanner.lectures[i].lecture_pagesFinished.length;
+            user.memory.lectures[i].lecture_progress =
+              user.memory.lectures[i].lecture_pagesFinished.length;
           }
         }
         recalculateCourseLectureTotals(user);
@@ -3110,10 +3058,10 @@ UserRouter.put(
 UserRouter.put("/hideUncheckedLectures/:my_id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      for (var i = 0; i < user.schoolPlanner.lectures.length; i++) {
-        if (user.schoolPlanner.lectures[i].lecture_partOfPlan == false) {
-          user.schoolPlanner.lectures.splice(i, 1, {
-            ...user.schoolPlanner.lectures[i].toObject(),
+      for (var i = 0; i < user.memory.lectures.length; i++) {
+        if (user.memory.lectures[i].lecture_partOfPlan == false) {
+          user.memory.lectures.splice(i, 1, {
+            ...user.memory.lectures[i].toObject(),
             lecture_hidden: true,
           });
         }
@@ -3131,10 +3079,10 @@ UserRouter.put("/hideUncheckedLectures/:my_id", function (req, res, next) {
 UserRouter.put("/unhideUncheckedLectures/:my_id", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      for (var i = 0; i < user.schoolPlanner.lectures.length; i++) {
-        if (user.schoolPlanner.lectures[i].lecture_partOfPlan == false) {
-          user.schoolPlanner.lectures.splice(i, 1, {
-            ...user.schoolPlanner.lectures[i].toObject(),
+      for (var i = 0; i < user.memory.lectures.length; i++) {
+        if (user.memory.lectures[i].lecture_partOfPlan == false) {
+          user.memory.lectures.splice(i, 1, {
+            ...user.memory.lectures[i].toObject(),
             lecture_hidden: false,
           });
         }
@@ -3153,12 +3101,12 @@ UserRouter.put("/unhideUncheckedLectures/:my_id", function (req, res, next) {
 UserRouter.post("/editLecture/:my_id/:lectureID", function (req, res, next) {
   UserModel.findOne({ _id: req.params.my_id })
     .then((user) => {
-      const lectureIndex = user.schoolPlanner.lectures.findIndex(
+      const lectureIndex = user.memory.lectures.findIndex(
         (lecture) => String(lecture._id) === req.params.lectureID,
       );
 
       if (lectureIndex !== -1) {
-        user.schoolPlanner.lectures.splice(lectureIndex, 1, req.body);
+        user.memory.lectures.splice(lectureIndex, 1, req.body);
       }
       recalculateCourseLectureTotals(user);
       return user.save();
