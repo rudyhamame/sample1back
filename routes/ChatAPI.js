@@ -1,14 +1,15 @@
 import express from "express";
-import UserModel from "../models/Users.js";
+import UserModel from "../compat/UserModel.js";
 import { emitUserRefresh } from "../helpers/realtime.js";
+import { isUserOnline } from "../services/presence.js";
 import { sendTelegramSavedMessageForUser } from "./TelegramAPI.js";
 
 const ChatRouter = express.Router();
 
 const getUserNameParts = (user) => {
-  const firstname = String(user?.identity?.personal?.firstname || "").trim();
-  const lastname = String(user?.identity?.personal?.lastname || "").trim();
-  const username = String(user?.identity?.atSignup?.username || "").trim();
+  const firstname = String(user?.bio?.firstname || "").trim();
+  const lastname = String(user?.bio?.lastname || "").trim();
+  const username = String(user?.auth?.username || "").trim();
 
   return {
     firstname,
@@ -18,142 +19,144 @@ const getUserNameParts = (user) => {
   };
 };
 
-const buildChatMessage = ({ counterpartId, message, sentAt, from, status }) => ({
-  _id: counterpartId,
-  message,
-  date: sentAt,
-  from,
-  status,
-});
+const ensureConnections = (user) => {
+  user.connections = Array.isArray(user.connections)
+    ? user.connections
+    : user.connections?.toObject?.() || [];
+};
 
-ChatRouter.post("/sendMessage/:friendID/:my_id", async function (req, res, next) {
-  const senderId = String(req.params.my_id || "").trim();
-  const friendId = String(req.params.friendID || "").trim();
-  const message = String(req.body?.message || "");
-  const io = req.app.locals.io;
-  const sentAt = new Date();
+const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
+  ensureConnections(user);
 
-  if (!senderId || !friendId) {
-    return res.status(400).json({
-      message: "Sender and friend IDs are required.",
-    });
+  const friendIdString = String(friendId);
+  let friendEntry = user.connections.find(
+    (entry) => entry?.kind === "friend" && String(entry?.id) === friendIdString,
+  );
+
+  if (!friendEntry) {
+    friendEntry = {
+      kind: "friend",
+      id: friendId,
+      mode: "stranger",
+      messages: [],
+    };
+    user.connections.push(friendEntry);
   }
 
-  try {
-    const [senderUser, friendUser] = await Promise.all([
-      UserModel.findById(senderId).select(
-        "chat identity.personal.firstname identity.personal.lastname identity.atSignup.username",
-      ),
-      UserModel.findById(friendId).select(
-        "chat notifications identity.status.isLoggedIn telegram.status identity.personal.firstname identity.personal.lastname identity.atSignup.username",
-      ),
-    ]);
+  friendEntry.messages = Array.isArray(friendEntry.messages)
+    ? friendEntry.messages
+    : [];
 
-    if (!senderUser || !friendUser) {
-      return res.status(404).json({
-        message: "One or both chat users were not found.",
+  friendEntry.messages.push({
+    messageBody: message,
+    messageStatus: [
+      {
+        value: status,
+        updatedAt: sentAt,
+      },
+    ],
+  });
+};
+
+ChatRouter.post(
+  "/sendMessage/:friendID/:my_id",
+  async function (req, res, next) {
+    const senderId = String(req.params.my_id || "").trim();
+    const friendId = String(req.params.friendID || "").trim();
+    const message = String(req.body?.message || "");
+    const io = req.app.locals.io;
+    const sentAt = new Date();
+
+    if (!senderId || !friendId) {
+      return res.status(400).json({
+        message: "Sender and friend IDs are required.",
       });
     }
 
-    senderUser.chat = Array.isArray(senderUser.chat) ? senderUser.chat : [];
-    friendUser.chat = Array.isArray(friendUser.chat) ? friendUser.chat : [];
+    try {
+      const [senderUser, friendUser] = await Promise.all([
+        UserModel.findById(senderId).select(
+          "connections profile.firstname profile.lastname auth.username",
+        ),
+        UserModel.findById(friendId).select(
+          "connections status settings.telegram.status profile.firstname profile.lastname auth.username",
+        ),
+      ]);
 
-    senderUser.chat.push(
-      buildChatMessage({
-        counterpartId: friendId,
+      if (!senderUser || !friendUser) {
+        return res.status(404).json({
+          message: "One or both chat users were not found.",
+        });
+      }
+
+      appendRelationshipMessage(
+        senderUser,
+        friendUser._id,
         message,
+        "sent",
         sentAt,
-        from: "me",
-        status: "received",
-      }),
-    );
-    friendUser.chat.push(
-      buildChatMessage({
-        counterpartId: senderId,
+      );
+      appendRelationshipMessage(
+        friendUser,
+        senderUser._id,
         message,
+        "delivered",
         sentAt,
-        from: "them",
-        status: "received",
-      }),
-    );
+      );
 
-    const senderIdentity = getUserNameParts(senderUser);
-    const friendIdentity = getUserNameParts(friendUser);
-    const senderName =
-      senderIdentity.fullName || senderIdentity.username || "a contact";
-    const recipientLabel =
-      friendIdentity.fullName || friendIdentity.username || "you";
+      const senderIdentity = getUserNameParts(senderUser);
+      const friendIdentity = getUserNameParts(friendUser);
+      const senderName =
+        senderIdentity.fullName || senderIdentity.username || "a contact";
+      const recipientLabel =
+        friendIdentity.fullName || friendIdentity.username || "you";
 
-    const existingNotification = (friendUser.notifications || []).find(
-      (notification) =>
-        String(notification?.id || "") === senderId &&
-        notification?.type === "chat_message" &&
-        notification?.status !== "read",
-    );
+      await Promise.all([senderUser.save(), friendUser.save()]);
 
-    if (existingNotification) {
-      const nextCount = Number(existingNotification.count || 0) + 1;
-      existingNotification.count = nextCount;
-      existingNotification.message = `You have ${nextCount} new ${nextCount === 1 ? "message" : "messages"} from ${senderName}`;
-      existingNotification.status = "unread";
-    } else {
-      friendUser.notifications.push({
-        id: senderId,
-        type: "chat_message",
-        count: 1,
-        message: `You have 1 new message from ${senderName}`,
-        status: "unread",
+      if (!isUserOnline(friendUser)) {
+        const senderUsername = senderIdentity.username;
+        const messagePreview = message.trim();
+        const telegramAlert = [
+          `New PhenoMed message for ${recipientLabel}`,
+          `From: ${senderName}${senderUsername ? ` (@${senderUsername})` : ""}`,
+          "",
+          "Received while you were offline.",
+          "",
+          "Message:",
+          messagePreview || "[No text]",
+        ].join("\n");
+
+        await sendTelegramSavedMessageForUser({
+          user: friendUser,
+          text: telegramAlert,
+        });
+      }
+
+      emitUserRefresh(io, [senderId, friendId], "chat:message", {
+        friendId,
       });
-    }
 
-    await Promise.all([senderUser.save(), friendUser.save()]);
-
-    if (!friendUser?.identity?.status?.isLoggedIn) {
-      const senderUsername = senderIdentity.username;
-      const messagePreview = message.trim();
-      const telegramAlert = [
-        `New PhenoMed message for ${recipientLabel}`,
-        `From: ${senderName}${senderUsername ? ` (@${senderUsername})` : ""}`,
-        "",
-        "Received while you were offline.",
-        "",
-        "Message:",
-        messagePreview || "[No text]",
-      ].join("\n");
-
-      await sendTelegramSavedMessageForUser({
-        user: friendUser,
-        text: telegramAlert,
+      return res.status(201).json({
+        message: "Message sent.",
       });
+    } catch (error) {
+      return next(error);
     }
-
-    emitUserRefresh(io, [senderId, friendId], "chat:message", {
-      friendId,
-    });
-
-    return res.status(201).json({
-      message: "Message sent.",
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+  },
+);
 
 ChatRouter.post("/prepareChat/:my_id", async function (req, res, next) {
   try {
-    const user = await UserModel.findById(req.params.my_id).select("chat");
+    const user = await UserModel.findById(req.params.my_id).select(
+      "connections",
+    );
 
     if (!user) {
-      return res.status(404).json({
-        message: "User not found.",
-      });
+      return res.status(404).json({ message: "User not found." });
     }
 
-    if (!Array.isArray(user.chat)) {
-      user.chat = [];
-      await user.save();
-    }
-
+    ensureConnections(user);
+    await user.save();
     return res.status(201).json();
   } catch (error) {
     return next(error);

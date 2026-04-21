@@ -1,3 +1,339 @@
-(node:16552) TimeoutNegativeWarning: -1774577499.509 is a negative number.
-Timeout duration was set to 1.
-(Use `node --trace-warnings ...` to show where the warning was created)
+Failed to reconcile stale online users MongoServerSelectionError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at Topology.selectServer (E:\mctosh\sample1back\node_modules\mongodb\lib\sdam\topology.js:347:38)
+    at async tryOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:199:22)
+    at async executeOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:80:16)
+    at async FindCursor._initialize (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\find_cursor.js:62:26)
+    at async FindCursor.cursorInit (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:620:27)
+    at async FindCursor.fetchBatch (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:654:13)
+    at async FindCursor.next (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:326:17)
+    at async [Symbol.asyncIterator] (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:254:34)
+    at async FindCursor.toArray (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:406:26)
+    at async model.Query._find (E:\mctosh\sample1back\node_modules\mongoose\lib\query.js:2434:14) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'ReplicaSetNoPrimary',
+    servers: Map(3) {
+      'ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-01.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net:27017' => [ServerDescription]
+    },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: 'atlas-iu6f7k-shard-0',
+    maxElectionId: new ObjectId('7fffffff00000000000000c4'),
+    maxSetVersion: 29,
+    commonWireVersion: 25,
+    logicalSessionTimeoutMinutes: 30
+  },
+  code: undefined,
+  [cause]: MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+      at Object.onceWrapper (node:events:622:26)
+      at TLSSocket.emit (node:events:507:28)
+      at emitErrorNT (node:internal/streams/destroy:170:8)
+      at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    errorLabelSet: Set(3) { 'SystemOverloadedError', 'RetryableError', 'ResetPool' },
+    beforeHandshake: false,
+    [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+        at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+      errno: -3008,
+      code: 'ENOTFOUND',
+      syscall: 'getaddrinfo',
+      hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+    }
+  }
+}
+Failed to reconcile stale online users MongoServerSelectionError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at Topology.selectServer (E:\mctosh\sample1back\node_modules\mongodb\lib\sdam\topology.js:347:38)
+    at runNextTicks (node:internal/process/task_queues:65:5)
+    at listOnTimeout (node:internal/timers:569:9)
+    at process.processTimers (node:internal/timers:543:7)
+    at async tryOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:150:18)
+    at async executeOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:80:16)
+    at async FindCursor._initialize (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\find_cursor.js:62:26)
+    at async FindCursor.cursorInit (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:620:27)
+    at async FindCursor.fetchBatch (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:654:13)
+    at async FindCursor.next (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:326:17) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'ReplicaSetNoPrimary',
+    servers: Map(3) {
+      'ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-01.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net:27017' => [ServerDescription]
+    },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: 'atlas-iu6f7k-shard-0',
+    maxElectionId: new ObjectId('7fffffff00000000000000c4'),
+    maxSetVersion: 29,
+    commonWireVersion: 25,
+    logicalSessionTimeoutMinutes: 30
+  },
+  code: undefined,
+  [cause]: MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+      at Object.onceWrapper (node:events:622:26)
+      at TLSSocket.emit (node:events:507:28)
+      at emitErrorNT (node:internal/streams/destroy:170:8)
+      at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    errorLabelSet: Set(3) { 'SystemOverloadedError', 'RetryableError', 'ResetPool' },
+    beforeHandshake: false,
+    [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+        at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+      errno: -3008,
+      code: 'ENOTFOUND',
+      syscall: 'getaddrinfo',
+      hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+    }
+  }
+}
+Failed to reconcile stale online users MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+    at Object.onceWrapper (node:events:622:26)
+    at TLSSocket.emit (node:events:507:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  errorLabelSet: Set(2) { 'SystemOverloadedError', 'RetryableError' },
+  beforeHandshake: false,
+  connectionGeneration: 12,
+  [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+  }
+}
+Failed to reconcile stale online users MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+    at Object.onceWrapper (node:events:622:26)
+    at TLSSocket.emit (node:events:507:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  errorLabelSet: Set(2) { 'SystemOverloadedError', 'RetryableError' },
+  beforeHandshake: false,
+  connectionGeneration: 12,
+  [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+  }
+}
+Failed to reconcile stale online users MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+    at Object.onceWrapper (node:events:622:26)
+    at TLSSocket.emit (node:events:507:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  errorLabelSet: Set(2) { 'SystemOverloadedError', 'RetryableError' },
+  beforeHandshake: false,
+  connectionGeneration: 12,
+  [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+  }
+}
+Failed to reconcile stale online users MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+    at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+    at Object.onceWrapper (node:events:622:26)
+    at TLSSocket.emit (node:events:507:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  errorLabelSet: Set(2) { 'SystemOverloadedError', 'RetryableError' },
+  beforeHandshake: false,
+  connectionGeneration: 12,
+  [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net'
+  }
+}
+Failed to reconcile stale online users MongoServerSelectionError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net
+    at Topology.selectServer (E:\mctosh\sample1back\node_modules\mongodb\lib\sdam\topology.js:347:38)
+    at runNextTicks (node:internal/process/task_queues:65:5)
+    at listOnTimeout (node:internal/timers:569:9)
+    at process.processTimers (node:internal/timers:543:7)
+    at async tryOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:199:22)
+    at async executeOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:80:16)
+    at async FindCursor._initialize (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\find_cursor.js:62:26)
+    at async FindCursor.cursorInit (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:620:27)
+    at async FindCursor.fetchBatch (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:654:13)
+    at async FindCursor.next (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:326:17) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'ReplicaSetNoPrimary',
+    servers: Map(3) {
+      'ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-01.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net:27017' => [ServerDescription]
+    },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: 'atlas-iu6f7k-shard-0',
+    maxElectionId: new ObjectId('7fffffff00000000000000c4'),
+    maxSetVersion: 29,
+    commonWireVersion: 25,
+    logicalSessionTimeoutMinutes: null
+  },
+  code: undefined,
+  [cause]: MongoNetworkError: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net
+      at TLSSocket.<anonymous> (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connect.js:297:44)
+      at Object.onceWrapper (node:events:622:26)
+      at TLSSocket.emit (node:events:507:28)
+      at emitErrorNT (node:internal/streams/destroy:170:8)
+      at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    errorLabelSet: Set(3) { 'SystemOverloadedError', 'RetryableError', 'ResetPool' },
+    beforeHandshake: false,
+    [cause]: Error: getaddrinfo ENOTFOUND ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net
+        at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+      errno: -3008,
+      code: 'ENOTFOUND',
+      syscall: 'getaddrinfo',
+      hostname: 'ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net'
+    }
+  }
+}
+Failed to reconcile stale online users MongoServerSelectionError: connection <monitor> to 89.195.118.166:27017 timed out
+    at Topology.selectServer (E:\mctosh\sample1back\node_modules\mongodb\lib\sdam\topology.js:347:38)
+    at runNextTicks (node:internal/process/task_queues:65:5)
+    at listOnTimeout (node:internal/timers:569:9)
+    at process.processTimers (node:internal/timers:543:7)
+    at async tryOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:150:18)
+    at async executeOperation (E:\mctosh\sample1back\node_modules\mongodb\lib\operations\execute_operation.js:80:16)
+    at async FindCursor._initialize (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\find_cursor.js:62:26)
+    at async FindCursor.cursorInit (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:620:27)
+    at async FindCursor.fetchBatch (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:654:13)
+    at async FindCursor.next (E:\mctosh\sample1back\node_modules\mongodb\lib\cursor\abstract_cursor.js:326:17) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'ReplicaSetNoPrimary',
+    servers: Map(3) {
+      'ac-fthqktu-shard-00-00.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-01.yhxrlx6.mongodb.net:27017' => [ServerDescription],
+      'ac-fthqktu-shard-00-02.yhxrlx6.mongodb.net:27017' => [ServerDescription]
+    },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: 'atlas-iu6f7k-shard-0',
+    maxElectionId: new ObjectId('7fffffff00000000000000c4'),
+    maxSetVersion: 29,
+    commonWireVersion: 25,
+    logicalSessionTimeoutMinutes: 30
+  },
+  code: undefined,
+  [cause]: MongoNetworkTimeoutError: connection <monitor> to 89.195.118.166:27017 timed out
+      at Timeout._onTimeout (E:\mctosh\sample1back\node_modules\mongodb\lib\cmap\connection.js:140:26)
+      at listOnTimeout (node:internal/timers:608:17)
+      at process.processTimers (node:internal/timers:543:7) {
+    errorLabelSet: Set(2) { 'ResetPool', 'InterruptInUseConnections' },
+    beforeHandshake: false,
+    [cause]: undefined
+  }
+}
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to reconcile stale online users ReferenceError: emitUserRefresh is not defined
+    at Timeout._onTimeout (file:///E:/mctosh/sample1back/server.js:557:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Failed to mark messages as read ReferenceError: emitUserRefresh is not defined
+    at Socket.<anonymous> (file:///E:/mctosh/sample1back/server.js:404:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)

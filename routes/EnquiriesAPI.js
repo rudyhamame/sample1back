@@ -1,6 +1,10 @@
 import express from "express";
 import OpenAI from "openai";
-import UserModel from "../models/Users.js";
+import UserModel from "../compat/UserModel.js";
+import {
+  findAiSettingsLean,
+  findUserMemoryLean,
+} from "../services/userData.js";
 
 const EnquiriesRouter = express.Router();
 
@@ -217,38 +221,47 @@ const buildProviderAttemptOrder = (
   return availableProviders;
 };
 
-const buildUserSummary = (user) => {
-  const courses = user.schoolPlanner?.courses?.length || 0;
-  const lectures = user.schoolPlanner?.lectures?.length || 0;
-  const terminology = user.terminology?.length || 0;
-  const sessions = user.study_session?.length || 0;
-  const friends = user.friends?.length || 0;
-  const notifications = user.notifications?.length || 0;
-  const posts = user.posts?.length || 0;
-  const structureKeywords = user.study?.structure_keywords?.length || 0;
-  const functionKeywords = user.study?.function_keywords?.length || 0;
+const buildUserSummary = (user, memoryDoc) => {
+  const courses = Array.isArray(memoryDoc?.courses)
+    ? memoryDoc.courses.length
+    : 0;
+  const lectures = (
+    Array.isArray(memoryDoc?.studyPlanner?.studyOrganizer?.courses)
+      ? memoryDoc.studyPlanner.studyOrganizer.courses
+      : []
+  ).reduce((lectureCount, course) => {
+    const components = Array.isArray(course?.components)
+      ? course.components
+      : [];
+    return (
+      lectureCount +
+      components.reduce((componentLectureCount, component) => {
+        const componentLectures = Array.isArray(component?.lectures)
+          ? component.lectures.length
+          : 0;
+        return componentLectureCount + componentLectures;
+      }, 0)
+    );
+  }, 0);
+  const friends = Array.isArray(user?.connections)
+    ? user.connections.length
+    : 0;
 
   return {
-    username: user.info?.username || "",
-    firstname: user.info?.firstname || "",
-    lastname: user.info?.lastname || "",
+    username: user?.auth?.username || "",
+    firstname: user?.bio?.firstname || "",
+    lastname: user?.bio?.lastname || "",
     counts: {
       friends,
-      notifications,
-      posts,
-      terminology,
-      sessions,
       courses,
       lectures,
-      structureKeywords,
-      functionKeywords,
     },
   };
 };
 
 const buildFallbackGreeting = (summary) => {
   const { username, counts } = summary;
-  return `Dr. ${username}, your workspace is looking strong with ${counts.courses} courses, ${counts.lectures} lectures, and ${counts.terminology} saved medical terms ready for today.`;
+  return `Dr. ${username}, your workspace is looking strong with ${counts.courses} courses and ${counts.lectures} lectures ready for today.`;
 };
 
 const getGreetingErrorReply = (error, summary) => {
@@ -369,10 +382,10 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
 
   try {
     const user = await UserModel.findOne(
-      userId ? { _id: userId } : { "identity.atSignup.username": username },
+      userId ? { _id: userId } : { "auth.username": username },
     )
       .select(
-        "identity.atSignup.username identity.personal.firstname identity.personal.lastname AI.settings.aiProvider friends notifications posts terminology study_session schoolPlanner study.structure_keywords study.function_keywords",
+        "auth.username profile.firstname profile.lastname connections memory",
       )
       .lean();
 
@@ -382,9 +395,16 @@ EnquiriesRouter.post("/greeting", async function (req, res) {
       });
     }
 
-    summary = buildUserSummary(user);
+    const memoryDoc = await findUserMemoryLean(user._id);
+    summary = buildUserSummary(user, memoryDoc);
 
-    const preferredProvider = getPreferredAiProvider(user?.info?.aiProvider);
+    const aiSettingsDoc = await findAiSettingsLean(
+      user._id,
+      "settings.aiProvider",
+    );
+    const preferredProvider = getPreferredAiProvider(
+      aiSettingsDoc?.settings?.aiProvider,
+    );
     const groqClient = getGroqClient();
     const openAiClient = getOpenAIClient();
 
@@ -405,14 +425,8 @@ First name: ${summary.firstname}
 Last name: ${summary.lastname}
 Database summary:
 - Friends: ${summary.counts.friends}
-- Notifications: ${summary.counts.notifications}
-- Posts: ${summary.counts.posts}
-- Terminology terms: ${summary.counts.terminology}
-- Study sessions: ${summary.counts.sessions}
 - Courses: ${summary.counts.courses}
-- Lectures: ${summary.counts.lectures}
-- Structure keywords: ${summary.counts.structureKeywords}
-- Function keywords: ${summary.counts.functionKeywords}`;
+- Lectures: ${summary.counts.lectures}`;
     provider =
       preferredProvider === "groq" && groqClient
         ? "groq"
@@ -458,7 +472,6 @@ Database summary:
           counts: {
             courses: 0,
             lectures: 0,
-            terminology: 0,
           },
         },
       ),

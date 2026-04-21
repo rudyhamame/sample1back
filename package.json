@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "assert": "^2.0.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.9.0",
@@ -31,7 +32,7 @@
     "telegram": "^2.26.22"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20.0.0 <=23.x"
   },
   "type": "module"
 }

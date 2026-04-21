@@ -1,71 +1,538 @@
+// --- Video Upload Route for /api/user/videoUpload ---
+import multer from "multer";
+import fs from "fs";
+import compressVideo from "../helpers/compressVideo.js";
+import { emitCompressionProgress } from "../helpers/progressSocket.js";
+// ...existing code...
+const upload = multer({ dest: "uploads/" });
 //For user data
 import express from "express";
 import { execFileSync } from "child_process";
 import crypto from "crypto";
-import { v2 as cloudinary } from "cloudinary";
+import cloudinary from "../helpers/cloudinary.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import UserModel from "../models/Users.js";
-const UserRouter = express.Router();
+import UserModel from "../compat/UserModel.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import checkAuth from "../check-auth.js";
 import { AccessToken } from "livekit-server-sdk";
-import VisitLogModel from "../models/VisitLog.js";
 import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
+import { setUserConnectionState } from "../helpers/connectionStatus.js";
+import {
+  findAiSettingsLean,
+  findUserMemoryLean,
+  ensureUserMemoryDoc,
+  upsertAiSettings,
+} from "../services/userData.js";
+import {
+  addComponentToPlanner,
+  addCourseInfoToPlanner,
+  addLectureToPlanner,
+  flattenMemoryCoursesForPlanner,
+  flattenMemoryLecturesForPlanner,
+  getStudyPlanAid,
+  recalculateCourseLectureTotals,
+  removeCourseOrComponentFromPlanner,
+  removeLectureFromPlanner,
+  updateCourseInPlanner,
+  updateCoursePagesInPlanner,
+  updateStudyPlanAidInPlanner,
+  updateLectureInPlanner,
+} from "./user/helpers/studyPlannerService.js";
+const UserRouter = express.Router();
+
+const requireSelfParam = (paramName) => (req, res, next) => {
+  const authenticatedUserId = String(req.authentication?.userId || "").trim();
+  const paramValue = String(req.params?.[paramName] || "").trim();
+
+  if (!authenticatedUserId) {
+    return res.status(401).json({
+      message: "Missing login session.",
+    });
+  }
+
+  if (!paramValue) {
+    return res.status(400).json({
+      message: `Missing parameter: ${paramName}.`,
+    });
+  }
+
+  if (authenticatedUserId !== paramValue) {
+    return res.status(403).json({
+      message: "You are not allowed to perform this action.",
+    });
+  }
+
+  return next();
+};
+
+const getSubjectAuth = (user) =>
+  user?.auth && typeof user.auth === "object" ? user.auth : {};
+
+const getSubjectBio = (user) => {
+  if (user?.profile && typeof user.profile === "object") {
+    return user.profile;
+  }
+
+  return user?.bio && typeof user.bio === "object" ? user.bio : {};
+};
+
+const isProfileComplete = (user) => {
+  const profile = getSubjectBio(user);
+
+  // Check required fields
+  if (
+    !profile.firstname?.trim() ||
+    !profile.lastname?.trim() ||
+    !profile.email?.trim() ||
+    !profile.phone?.trim() ||
+    !profile.dob ||
+    !profile.hometown?.Country?.trim() ||
+    !profile.hometown?.City?.trim() ||
+    !profile.bio?.trim()
+  ) {
+    return false;
+  }
+
+  // Check if user has either studying or working info
+  const studying = profile.studying;
+  const working = profile.working;
+  const studyingTime =
+    studying?.time && typeof studying.time === "object" ? studying.time : {};
+  const currentDate =
+    studyingTime?.currentDate && typeof studyingTime.currentDate === "object"
+      ? studyingTime.currentDate
+      : {};
+
+  const hasStudyingInfo =
+    studying &&
+    (studying.university?.trim() || studying.program?.trim()) &&
+    studying.program?.trim() &&
+    studying.university?.trim() &&
+    (currentDate.term?.trim() || studying.term?.trim());
+
+  const hasWorkingInfo =
+    working &&
+    (working.company?.trim() || working.position?.trim()) &&
+    working.company?.trim() &&
+    working.position?.trim();
+
+  return hasStudyingInfo || hasWorkingInfo;
+};
+
+const getSubjectStatus = (user) =>
+  user?.status && typeof user.status === "object" ? user.status : {};
+
+const getLegacyProfilePicture = (user) => {
+  const bio = getSubjectBio(user);
+  const profilePic =
+    bio?.profilePic && typeof bio.profilePic === "object" ? bio.profilePic : {};
+
+  return {
+    url: String(profilePic?.url || "").trim(),
+    publicId: String(profilePic?.publicId || "").trim(),
+    assetId: "",
+    mimeType: String(profilePic?.mimeType || "").trim(),
+    width: Number.isFinite(Number(profilePic?.width))
+      ? Number(profilePic.width)
+      : null,
+    height: Number.isFinite(Number(profilePic?.height))
+      ? Number(profilePic.height)
+      : null,
+    updatedAt: null,
+  };
+};
+
+const getLegacyProfilePictureViewport = (user) => {
+  const bio = getSubjectBio(user);
+  const viewport =
+    bio?.viewport && typeof bio.viewport === "object" ? bio.viewport : {};
+
+  return {
+    scale: Number.isFinite(Number(viewport?.zoom)) ? Number(viewport.zoom) : 1,
+    offsetX: Number.isFinite(Number(viewport?.x)) ? Number(viewport.x) : 0,
+    offsetY: Number.isFinite(Number(viewport?.y)) ? Number(viewport.y) : 0,
+    width: Number.isFinite(Number(viewport?.width))
+      ? Number(viewport.width)
+      : null,
+    height: Number.isFinite(Number(viewport?.height))
+      ? Number(viewport.height)
+      : null,
+    updatedAt: null,
+  };
+};
+
+const buildLegacyIdentity = (user) => {
+  const auth = getSubjectAuth(user);
+  const bio = getSubjectBio(user);
+  const status = getSubjectStatus(user);
+
+  return {
+    atSignup: {
+      username: String(auth?.username || "").trim(),
+    },
+    personal: {
+      firstname: String(bio?.firstname || "").trim(),
+      lastname: String(bio?.lastname || "").trim(),
+      dob: bio?.dob || null,
+      gender: "other",
+      email_address: String(bio?.email || "").trim(),
+      program: "",
+      university: "",
+      year: "",
+      studyYear: "",
+      term: "",
+      profession: "",
+      profilePicture: {
+        picture: getLegacyProfilePicture(user),
+        profilePictureViewport: getLegacyProfilePictureViewport(user),
+      },
+    },
+    status: {
+      isLoggedIn: status?.value === "online",
+      lastSeenAt: status?.updatedAt || null,
+      loggedInAt: status?.value === "online" ? status?.updatedAt || null : null,
+      loggedOutAt:
+        status?.value === "offline" ? status?.updatedAt || null : null,
+    },
+  };
+};
+
+// --- /api/user/videoUpload route must be defined after UserRouter initialization ---
+UserRouter.post(
+  "/videoUpload",
+  checkAuth,
+  upload.single("video"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No video file uploaded." });
+      }
+      const userId = req.authentication.userId;
+      const filePath = req.file.path;
+      const originalSize = req.file.size;
+      const maxVideoSizeBytes = 100 * 1024 * 1024;
+      let uploadPath = filePath;
+      let compressed = false;
+
+      // Compress if >= 100MB
+      if (originalSize >= maxVideoSizeBytes) {
+        const compressedPath = filePath + "-compressed.mp4";
+        // Emit start of compression
+        if (req.app.locals.io) {
+          req.app.locals.io
+            .to(userId.toString())
+            .emit("compression-progress", { percent: 0 });
+        }
+        await compressVideo(filePath, compressedPath, {
+          onProgress: (percent) => {
+            // Emit progress to the user via socket.io
+            if (req.app.locals.io) {
+              req.app.locals.io
+                .to(userId.toString())
+                .emit("compression-progress", { percent });
+            }
+          },
+        });
+        // Emit end of compression
+        if (req.app.locals.io) {
+          req.app.locals.io
+            .to(userId.toString())
+            .emit("compression-progress", { percent: 100, done: true });
+        }
+        uploadPath = compressedPath;
+        compressed = true;
+      }
+
+      // Upload to Cloudinary
+      const cloudinaryResult = await cloudinary.uploader.upload(uploadPath, {
+        resource_type: "video",
+        folder: `sample1/user-videos/${userId}`,
+      });
+
+      // Clean up temp files
+      fs.unlinkSync(filePath);
+      if (compressed) {
+        fs.unlinkSync(uploadPath);
+      }
+
+      // Build video object for user.memory.files.local.videos (flat identity)
+      const videoIdentity = {
+        fileName: req.file.originalname,
+        url: cloudinaryResult.secure_url,
+        publicId: cloudinaryResult.public_id,
+        mimeType: req.file.mimetype,
+        assetId: cloudinaryResult.asset_id || "",
+        contentHash: cloudinaryResult.etag || "",
+        folder: cloudinaryResult.folder || "",
+        resourceType: cloudinaryResult.resource_type || "video",
+        width: cloudinaryResult.width || 0,
+        height: cloudinaryResult.height || 0,
+        format: cloudinaryResult.format || "",
+        bytes: cloudinaryResult.bytes || 0,
+        duration: cloudinaryResult.duration || 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        shared: false,
+      };
+
+      // Push to user.memory.files.local.videos
+      const user = await UserModel.findById(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const normalizedVideo = normalizeStoredGalleryImage(videoIdentity);
+      const existingGallery = getMemoryLocalGallery(memoryDoc);
+      const nextImageGallery = sortGalleryImages([
+        ...(normalizedVideo ? [normalizedVideo] : []),
+        ...existingGallery.filter(
+          (mediaItem) =>
+            !normalizedVideo || mediaItem.publicId !== normalizedVideo.publicId,
+        ),
+      ]);
+      setMemoryLocalGallery(memoryDoc, nextImageGallery);
+      await memoryDoc.save();
+
+      return res.status(200).json({
+        message: "Video uploaded successfully.",
+        video: videoIdentity,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FRONTEND_REPO_PATH = path.resolve(__dirname, "../../sample1front");
+const START_MENU_LIST_IDS = ["main", "settings"];
 
-const recalculateCourseLectureTotals = (user) => {
-  const lectures = Array.isArray(user.schoolPlanner?.lectures)
-    ? user.memory.lectures
-    : [];
-
-  user.memory.courses = user.memory.courses.map((course) => {
-    let courseLength = 0;
-    let courseProgress = 0;
-
-    lectures.forEach((lecture) => {
-      if (
-        lecture.lecture_course === course.course_name &&
-        lecture.lecture_partOfPlan === true
-      ) {
-        courseLength += Number(lecture.lecture_length) || 0;
-        courseProgress += Number(lecture.lecture_progress) || 0;
-      }
-    });
-
-    const normalizedCourse =
-      typeof course.toObject === "function" ? course.toObject() : { ...course };
-
-    return {
-      ...normalizedCourse,
-      course_length: courseLength,
-      course_progress: courseProgress,
-    };
-  });
-};
+const normalizeStartMenuLayoutForStorage = (layout = {}) =>
+  START_MENU_LIST_IDS.reduce((nextLayout, listId) => {
+    const itemIds = Array.isArray(layout?.[listId]) ? layout[listId] : [];
+    nextLayout[listId] = itemIds
+      .map((itemId) => String(itemId || "").trim())
+      .filter(Boolean)
+      .slice(0, 80);
+    return nextLayout;
+  }, {});
 
 const getUserAndFriendIds = (user) => {
   if (!user) {
     return [];
   }
 
-  const friendIds = Array.isArray(user.friends)
-    ? user.friends.map((friend) => String(friend))
-    : [];
+  const relationshipEntries = Array.isArray(user.connections)
+    ? user.connections
+    : Array.isArray(user.friends)
+      ? user.friends
+      : [];
+  const friendIds = relationshipEntries
+    .map((friend) => {
+      if (!friend) {
+        return "";
+      }
+
+      // Support both the legacy "friends: [ObjectId]" shape and the new
+      // "friends: [{ userID, userMode, ... }]" relationship shape.
+      const candidate =
+        typeof friend === "object" && friend !== null
+          ? friend.id || friend.userID || friend._id || friend
+          : friend;
+      const normalized =
+        typeof candidate === "object" && candidate !== null
+          ? candidate._id || candidate
+          : candidate;
+
+      return String(normalized || "").trim();
+    })
+    .filter(Boolean);
 
   return [String(user._id), ...friendIds];
+};
+
+const mapFriendForClient = (friend) => {
+  if (!friend || typeof friend !== "object") {
+    return null;
+  }
+
+  const normalizedFriend =
+    typeof friend.toObject === "function" ? friend.toObject() : { ...friend };
+  const existingInfo = normalizedFriend?.info || {};
+  const existingStatus = normalizedFriend?.status || {};
+  const existingMedia = normalizedFriend?.media || {};
+  const mediaProfilePicture =
+    existingMedia?.profilePicture &&
+    typeof existingMedia.profilePicture === "object"
+      ? existingMedia.profilePicture
+      : {};
+  const legacyIdentity = buildLegacyIdentity(normalizedFriend);
+  const identity = legacyIdentity;
+  const personal = identity?.personal || {};
+  const identityStatus = identity?.status || {};
+  const profilePicture = personal?.profilePicture?.picture || {};
+
+  return {
+    ...normalizedFriend,
+    info: {
+      ...existingInfo,
+      username: String(
+        existingInfo?.username || identity?.atSignup?.username || "",
+      ).trim(),
+      firstname: String(
+        existingInfo?.firstname || personal?.firstname || "",
+      ).trim(),
+      lastname: String(
+        existingInfo?.lastname || personal?.lastname || "",
+      ).trim(),
+      profilePicture: String(
+        existingInfo?.profilePicture ||
+          mediaProfilePicture?.url ||
+          profilePicture?.url ||
+          "",
+      ).trim(),
+    },
+    status: {
+      ...existingStatus,
+      ...identityStatus,
+      isConnected: Boolean(
+        existingStatus?.isConnected ?? identityStatus?.isLoggedIn,
+      ),
+    },
+    media: {
+      ...existingMedia,
+      profilePicture: {
+        ...profilePicture,
+        ...mediaProfilePicture,
+        url: String(
+          mediaProfilePicture?.url || profilePicture?.url || "",
+        ).trim(),
+      },
+    },
+  };
+};
+
+const mapFriendEntryForClient = (entry) => {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const normalizedEntry =
+    typeof entry.toObject === "function" ? entry.toObject() : { ...entry };
+  const friendUser =
+    (normalizedEntry.userID && typeof normalizedEntry.userID === "object"
+      ? normalizedEntry.userID
+      : null) ||
+    (normalizedEntry.id && typeof normalizedEntry.id === "object"
+      ? normalizedEntry.id
+      : null);
+  const friendId = String(
+    friendUser?._id ||
+      normalizedEntry.id ||
+      normalizedEntry.userID ||
+      normalizedEntry._id ||
+      "",
+  ).trim();
+
+  if (!friendId) {
+    return null;
+  }
+
+  const mappedUser = friendUser ? mapFriendForClient(friendUser) : {};
+  const userMode = String(
+    normalizedEntry.userMode || normalizedEntry.mode || "stranger",
+  ).trim();
+
+  return {
+    ...mappedUser,
+    _id: String(mappedUser?._id || friendId).trim(),
+    id: friendId,
+    userID: friendId,
+    userMode,
+    relationship: {
+      userMode,
+    },
+  };
+};
+
+const normalizeUserId = (value) => String(value || "").trim();
+
+const getFriendRelationshipEntry = (user, otherUserId) => {
+  const normalizedOtherId = normalizeUserId(otherUserId);
+  if (!user || !normalizedOtherId) {
+    return null;
+  }
+
+  const friends = Array.isArray(user.connections)
+    ? user.connections
+    : Array.isArray(user.friends)
+      ? user.friends
+      : [];
+  return (
+    friends.find((entry) => {
+      if (!entry) {
+        return false;
+      }
+
+      if (typeof entry === "object" && entry !== null) {
+        const candidate = entry.id || entry.userID || entry._id || entry;
+        const normalized =
+          typeof candidate === "object" && candidate !== null
+            ? candidate._id || candidate
+            : candidate;
+        return normalizeUserId(normalized) === normalizedOtherId;
+      }
+
+      return normalizeUserId(entry) === normalizedOtherId;
+    }) || null
+  );
+};
+
+const ensureFriendRelationship = (user, otherUserId, userMode) => {
+  const normalizedOtherId = normalizeUserId(otherUserId);
+  const normalizedMode = String(userMode || "stranger").trim();
+  if (!user || !normalizedOtherId) {
+    return false;
+  }
+
+  user.connections = Array.isArray(user.connections) ? user.connections : [];
+  const existing = getFriendRelationshipEntry(user, normalizedOtherId);
+
+  if (existing && typeof existing === "object") {
+    existing.id = existing.id || normalizedOtherId;
+    existing.kind = existing.kind || "friend";
+    existing.mode = normalizedMode;
+    existing.userID = normalizedOtherId;
+    existing.userMode = normalizedMode;
+    return true;
+  }
+
+  // If the relationship isn't in the array yet (or it's a legacy ObjectId),
+  // add a proper relationship entry.
+  user.connections.push({
+    kind: "friend",
+    id: normalizedOtherId,
+    mode: normalizedMode,
+    messages: [],
+  });
+  return true;
 };
 
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
-const CLOUDINARY_RING_VIDEO_UPLOAD_FOLDER = "sample1/noga-ring-videos";
 const CLOUDINARY_IMAGE_UPLOAD_FOLDER = "sample1/user-images";
 
 const sanitizeCloudinaryFolderSegment = (value, fallback = "user") => {
@@ -86,9 +553,6 @@ const buildUserCloudinaryFolder = (baseFolder, userId) => {
   );
   return `${baseFolder}/${userSegment}`;
 };
-
-const buildUserRingVideoFolder = (userId) =>
-  buildUserCloudinaryFolder(CLOUDINARY_RING_VIDEO_UPLOAD_FOLDER, userId);
 
 const buildUserImageGalleryFolder = (userId) =>
   buildUserCloudinaryFolder(CLOUDINARY_IMAGE_UPLOAD_FOLDER, userId);
@@ -332,41 +796,31 @@ const createLiveKitToken = async ({
   };
 };
 
-const ensureRingVideoFolderForUser = async (user) => {
-  if (!user?._id) {
-    return "";
-  }
-
-  const currentFolder = String(
-    user?.schoolPlanner?.ringVideo?.folder || "",
-  ).trim();
-  if (currentFolder) {
-    return currentFolder;
-  }
-
-  const folder = buildUserRingVideoFolder(user._id);
-
-  await UserModel.updateOne(
-    { _id: user._id },
-    {
-      $set: {
-        "identity.personal.gallery.videos.0.folder": folder,
-      },
-    },
-  );
-
-  return folder;
-};
-
 const normalizeStoredGalleryImage = (image) => {
   if (!image) {
     return null;
   }
 
-  const url = String(image?.url || image?.secure_url || "").trim();
-  const publicId = String(image?.publicId || image?.public_id || "").trim();
+  const identity = image?.identity || {};
+  const url = String(
+    image?.url || image?.secure_url || identity?.url || "",
+  ).trim();
+  const publicId = String(
+    image?.publicId ||
+      image?.public_id ||
+      identity?.publicId ||
+      identity?.fileName ||
+      "",
+  ).trim();
+  const mimeType = String(
+    image?.mimeType || image?.mime_type || identity?.mimeType || "",
+  ).trim();
   const normalizedResourceType = String(
-    image?.resourceType || image?.resource_type || "image",
+    image?.resourceType ||
+      image?.resource_type ||
+      (mimeType.startsWith("video/") ? "video" : "") ||
+      (mimeType && !mimeType.startsWith("image/") ? "raw" : "") ||
+      "image",
   )
     .trim()
     .toLowerCase();
@@ -384,61 +838,197 @@ const normalizeStoredGalleryImage = (image) => {
   return {
     url,
     publicId,
-    assetId: String(image?.assetId || image?.asset_id || "").trim(),
+    assetId: String(
+      image?.assetId || image?.asset_id || image?._id || "",
+    ).trim(),
     folder: String(image?.folder || "").trim(),
     resourceType,
-    mimeType: String(image?.mimeType || image?.mime_type || "").trim(),
+    mimeType,
     width: Number(image?.width) || 0,
     height: Number(image?.height) || 0,
     format: String(image?.format || "").trim(),
     bytes: Number(image?.bytes) || 0,
     duration: Number(image?.duration) || 0,
-    createdAt: image?.createdAt ? new Date(image.createdAt) : new Date(),
+    createdAt:
+      image?.createdAt || identity?.createdAt
+        ? new Date(image?.createdAt || identity?.createdAt)
+        : new Date(),
+    updatedAt: image?.updatedAt || identity?.updatedAt || null,
   };
 };
 
-const extractCloudinaryDeliveryTypeFromUrl = (value) => {
-  const url = String(value || "").trim();
+const buildMemoryLocalImageFile = (media) => ({
+  identity: {
+    fileName: String(media?.publicId || "").trim(),
+    mimeType: String(media?.mimeType || "").trim(),
+    url: String(media?.url || "").trim(),
+    publicId: String(media?.publicId || "").trim(),
+    assetId: String(media?.assetId || "").trim(),
+    contentHash: String(media?.contentHash || "").trim(),
+    folder: String(media?.folder || "").trim(),
+    resourceType: String(media?.resourceType || "image").trim() || "image",
+    width: Number(media?.width) || 0,
+    height: Number(media?.height) || 0,
+    format: String(media?.format || "").trim(),
+    bytes: Number(media?.bytes) || 0,
+    createdAt: media?.createdAt || new Date(),
+    updatedAt: media?.updatedAt || null,
+    shared: false,
+  },
+  ocr: {},
+});
 
-  if (!url) {
-    return "upload";
-  }
+const buildMemoryLocalVideoFile = (media) => ({
+  fileName: String(media?.fileName || media?.publicId || "").trim(),
+  url: String(media?.url || "").trim(),
+  publicId: String(media?.publicId || "").trim(),
+  mimeType: String(media?.mimeType || "").trim(),
+  assetId: String(media?.assetId || "").trim(),
+  contentHash: String(media?.contentHash || "").trim(),
+  folder: String(media?.folder || "").trim(),
+  resourceType: String(media?.resourceType || "video").trim() || "video",
+  width: Number(media?.width) || 0,
+  height: Number(media?.height) || 0,
+  format: String(media?.format || "").trim(),
+  bytes: Number(media?.bytes) || 0,
+  duration: Number(media?.duration) || 0,
+  createdAt: media?.createdAt || new Date(),
+  updatedAt: media?.updatedAt || null,
+  shared: false,
+});
 
-  const match = url.match(/\/(?:image|video|raw)\/([^/]+)\//i);
-  const deliveryType = String(match?.[1] || "")
-    .trim()
-    .toLowerCase();
+const buildHumanTraceMediaItem = (media, resourceType = "image") => ({
+  index: {
+    fileName: String(media?.fileName || media?.publicId || "").trim(),
+    mimeType: String(media?.mimeType || "").trim(),
+    contentHash: String(media?.contentHash || "").trim(),
+    resourceType:
+      String(media?.resourceType || resourceType).trim() || resourceType,
+  },
+  metadata: {
+    width: Number.isFinite(Number(media?.width)) ? Number(media.width) : null,
+    height: Number.isFinite(Number(media?.height))
+      ? Number(media.height)
+      : null,
+    format: String(media?.format || "").trim(),
+    bytes: Number.isFinite(Number(media?.bytes)) ? Number(media.bytes) : null,
+    duration: Number.isFinite(Number(media?.duration))
+      ? Number(media.duration)
+      : null,
+    totalPages: Number.isFinite(Number(media?.totalPages))
+      ? Number(media.totalPages)
+      : null,
+    createdAt: media?.createdAt || new Date(),
+    updatedAt: media?.updatedAt || new Date(),
+  },
+  storageContext: {
+    url: String(media?.url || "").trim(),
+    publicId: String(media?.publicId || "").trim(),
+    assetId: String(media?.assetId || "").trim(),
+    folder: String(media?.folder || "").trim(),
+  },
+});
 
-  return deliveryType || "upload";
+const buildHumanMediaTrace = (media, resourceType = "image") => {
+  const normalizedType = resourceType === "video" ? "video" : "image";
+  return {
+    user: {
+      images:
+        normalizedType === "image"
+          ? [buildHumanTraceMediaItem(media, "image")]
+          : [],
+      videos:
+        normalizedType === "video"
+          ? [buildHumanTraceMediaItem(media, "video")]
+          : [],
+      texts: [],
+      audios: [],
+      documents: [],
+    },
+    telegram: null,
+    ai: null,
+    chat: null,
+  };
 };
 
-const extractCloudinaryFormat = (image) => {
-  const explicitFormat = String(image?.format || "")
-    .trim()
-    .toLowerCase();
-
-  if (explicitFormat) {
-    return explicitFormat;
+const getHumanTraceMediaBucket = (trace, resourceType = "image") => {
+  const human =
+    trace?.user && typeof trace.user === "object"
+      ? trace.user
+      : trace?.human && typeof trace.human === "object"
+        ? trace.human
+        : null;
+  if (!human) {
+    return [];
   }
 
-  const mimeType = String(image?.mimeType || "")
-    .trim()
-    .toLowerCase();
+  const bucket =
+    resourceType === "video"
+      ? Array.isArray(human.videos)
+        ? human.videos
+        : []
+      : Array.isArray(human.images)
+        ? human.images
+        : [];
 
-  if (mimeType === "application/pdf") {
-    return "pdf";
-  }
-
-  const url = String(image?.url || "").trim();
-  const fileName = url.split("/").pop() || "";
-  const extensionMatch = fileName.match(/\.([a-z0-9]+)(?:[?#].*)?$/i);
-
-  return (
-    String(extensionMatch?.[1] || "")
-      .trim()
-      .toLowerCase() || "pdf"
-  );
+  return bucket.map((item) => ({
+    fileName: String(item?.index?.fileName || "").trim(),
+    url: String(item?.storageContext?.url || "").trim(),
+    publicId: String(item?.storageContext?.publicId || "").trim(),
+    mimeType: String(item?.index?.mimeType || "").trim(),
+    assetId: String(item?.storageContext?.assetId || "").trim(),
+    contentHash: String(item?.index?.contentHash || "").trim(),
+    folder: String(item?.storageContext?.folder || "").trim(),
+    resourceType:
+      String(item?.index?.resourceType || resourceType).trim() || resourceType,
+    width: Number.isFinite(Number(item?.metadata?.width))
+      ? Number(item.metadata.width)
+      : null,
+    height: Number.isFinite(Number(item?.metadata?.height))
+      ? Number(item.metadata.height)
+      : null,
+    format: String(item?.metadata?.format || "").trim(),
+    bytes: Number.isFinite(Number(item?.metadata?.bytes))
+      ? Number(item.metadata.bytes)
+      : null,
+    duration: Number.isFinite(Number(item?.metadata?.duration))
+      ? Number(item.metadata.duration)
+      : null,
+    totalPages: Number.isFinite(Number(item?.metadata?.totalPages))
+      ? Number(item.metadata.totalPages)
+      : null,
+    createdAt: item?.metadata?.createdAt || new Date(),
+    updatedAt: item?.metadata?.updatedAt || new Date(),
+  }));
 };
+
+const getMemoryLocalImages = (memoryDoc) =>
+  Array.isArray(memoryDoc?.traces)
+    ? memoryDoc.traces.flatMap((trace) => getHumanTraceMediaBucket(trace, "image"))
+    : memoryDoc?.traces && typeof memoryDoc.traces === "object"
+      ? getHumanTraceMediaBucket(memoryDoc.traces, "image")
+      : Array.isArray(memoryDoc?.files?.local?.images)
+        ? memoryDoc.files.local.images
+        : [];
+
+const getMemoryLocalVideos = (memoryDoc) =>
+  Array.isArray(memoryDoc?.traces)
+    ? memoryDoc.traces.flatMap((trace) => getHumanTraceMediaBucket(trace, "video"))
+    : memoryDoc?.traces && typeof memoryDoc.traces === "object"
+      ? getHumanTraceMediaBucket(memoryDoc.traces, "video")
+      : Array.isArray(memoryDoc?.files?.local?.videos)
+        ? memoryDoc.files.local.videos
+        : [];
+
+const getMemoryLocalGallery = (memoryDoc) =>
+  sortGalleryImages([
+    ...getMemoryLocalImages(memoryDoc)
+      .map(normalizeStoredGalleryImage)
+      .filter(Boolean),
+    ...getMemoryLocalVideos(memoryDoc)
+      .map(normalizeStoredGalleryImage)
+      .filter(Boolean),
+  ]);
 
 const sortGalleryImages = (images = []) =>
   images
@@ -448,6 +1038,56 @@ const sortGalleryImages = (images = []) =>
         new Date(secondImage?.createdAt || 0).getTime() -
         new Date(firstImage?.createdAt || 0).getTime(),
     );
+
+const setMemoryLocalGallery = (memoryDoc, images = []) => {
+  const tracesArray = Array.isArray(memoryDoc?.traces) ? memoryDoc.traces : [];
+  const traceRoot =
+    tracesArray[0] && typeof tracesArray[0] === "object"
+      ? tracesArray[0]
+      : memoryDoc?.traces && typeof memoryDoc.traces === "object"
+        ? memoryDoc.traces
+        : {};
+  const existingUserTrace =
+    traceRoot?.user && typeof traceRoot.user === "object" ? traceRoot.user : {};
+  const nextImages = [];
+  const nextVideos = [];
+  sortGalleryImages(images).forEach((image) => {
+    const normalizedType = image?.resourceType === "video" ? "video" : "image";
+    const item = buildHumanTraceMediaItem(image, normalizedType);
+    if (normalizedType === "video") {
+      nextVideos.push(item);
+      return;
+    }
+    nextImages.push(item);
+  });
+
+  const nextRoot = {
+    user: {
+      images: nextImages,
+      videos: nextVideos,
+      texts: Array.isArray(existingUserTrace.texts) ? existingUserTrace.texts : [],
+      audios: Array.isArray(existingUserTrace.audios)
+        ? existingUserTrace.audios
+        : [],
+      documents: Array.isArray(existingUserTrace.documents)
+        ? existingUserTrace.documents
+        : [],
+    },
+    telegram: traceRoot?.telegram || null,
+    ai: traceRoot?.ai || null,
+    chat: traceRoot?.chat || null,
+  };
+
+  if (Array.isArray(memoryDoc?.traces)) {
+    memoryDoc.traces = [
+      nextRoot,
+      ...memoryDoc.traces.slice(1).filter((entry) => entry && typeof entry === "object"),
+    ];
+    return;
+  }
+
+  memoryDoc.traces = [nextRoot];
+};
 
 const deleteCloudinaryAsset = async ({
   cloudName = "",
@@ -637,6 +1277,25 @@ const getPublicCloudinaryStatus = () => {
   };
 };
 
+const isDatabaseAvailabilityError = (error) => {
+  const errorName = String(error?.name || "").trim();
+  const errorMessage = String(error?.message || "").trim();
+  const knownNames = new Set([
+    "MongoServerSelectionError",
+    "MongoNetworkError",
+    "MongoNetworkTimeoutError",
+    "MongooseServerSelectionError",
+  ]);
+
+  if (knownNames.has(errorName)) {
+    return true;
+  }
+
+  return /enotfound|timed out|getaddrinfo|replicasetnoprimary|server selection/i.test(
+    errorMessage,
+  );
+};
+
 const buildCloudinarySignature = ({ paramsToSign = {}, apiSecret = "" }) => {
   const serializedParams = Object.entries(paramsToSign)
     .filter(([, value]) => String(value || "").trim() !== "")
@@ -653,35 +1312,35 @@ const buildCloudinarySignature = ({ paramsToSign = {}, apiSecret = "" }) => {
 //Login API
 UserRouter.post("/login", function (req, res, next) {
   const io = req.app.locals.io;
+
+  const username = String(req.body?.username || "").trim();
+  const password = req.body?.password;
+  if (!username || !password) {
+    return res
+      .status(400)
+      .json({ message: "Please provide a username and password." });
+  }
+
   UserModel.findOne({
-    "identity.atSignup.username": req.body.username,
+    "auth.username": req.body.username,
   })
     .exec()
     .then((user) => {
       if (user) {
         bcrypt.compare(
           req.body.password,
-          user.identity.atSignup.password,
+          user.auth?.password || "",
           (err, result) => {
             if (result) {
-              UserModel.findByIdAndUpdate(
-                user._id,
-                {
-                  $set: {
-                    "identity.status.isLoggedIn": true,
-                    "identity.status.lastSeenAt": new Date(),
-                  },
-                  $push: {
-                    login_record: {
-                      $each: [{ loggedInAt: new Date(), loggedOutAt: null }],
-                      $slice: -100,
-                    },
-                  },
-                },
-                {
-                  new: true,
-                },
-              )
+              const now = new Date();
+              setUserConnectionState(user, {
+                isConnected: true,
+                at: now,
+                markLogin: true,
+              });
+
+              user
+                .save()
                 .then((updatedUser) => {
                   emitUserRefresh(
                     io,
@@ -692,9 +1351,31 @@ UserRouter.post("/login", function (req, res, next) {
                       targetUserId: String(updatedUser._id),
                     },
                   );
+
+                  const profileComplete = isProfileComplete(updatedUser);
+
+                  if (!profileComplete) {
+                    // Return 202 (Accepted) to indicate profile completion is required
+                    return res.status(202).json({
+                      message: "Profile completion required",
+                      requiresProfileCompletion: true,
+                      token: jwt.sign(
+                        {
+                          username: updatedUser.auth?.username || "",
+                          userId: updatedUser._id,
+                        },
+                        process.env.JWT_KEY,
+                        {
+                          expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+                        },
+                      ),
+                      user: updatedUser,
+                    });
+                  }
+
                   const token = jwt.sign(
                     {
-                      username: updatedUser.identity.atSignup.username,
+                      username: updatedUser.auth?.username || "",
                       userId: updatedUser._id,
                     },
                     process.env.JWT_KEY,
@@ -724,21 +1405,57 @@ UserRouter.post("/login", function (req, res, next) {
     .catch(next);
 });
 
+UserRouter.post("/logout", checkAuth, function (req, res, next) {
+  const io = req.app.locals.io;
+
+  UserModel.findById(req.authentication.userId)
+    .then((user) => {
+      if (!user) {
+        res.status(404).json({
+          message: "User not found.",
+        });
+        return null;
+      }
+
+      setUserConnectionState(user, {
+        isConnected: false,
+        at: new Date(),
+      });
+
+      return user.save();
+    })
+    .then((user) => {
+      if (!user) {
+        return null;
+      }
+
+      emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
+        isConnected: false,
+        targetUserId: String(user._id),
+      });
+
+      return res.status(200).json({
+        ok: true,
+        userId: String(user._id),
+      });
+    })
+    .catch(next);
+});
+
 // Direct signup (verification code flow removed)
 UserRouter.post("/signup", async function (req, res, next) {
   try {
-    const { username, password, firstname, lastname, email, dob } = req.body;
+    const { username, password } = req.body;
 
-    if (!username || !password || !firstname || !lastname || !email || !dob) {
+    if (!username || !password) {
       return res.status(400).json({
-        message: "Please provide all required signup information.",
+        message: "Please provide a username and password.",
       });
     }
 
-    const [existingUsernameUser, existingEmailUser] = await Promise.all([
-      UserModel.findOne({ "identity.atSignup.username": username }),
-      UserModel.findOne({ "identity.personal.email_address": email }),
-    ]);
+    const existingUsernameUser = await UserModel.findOne({
+      "auth.username": username,
+    });
 
     if (existingUsernameUser) {
       return res.status(409).json({
@@ -746,33 +1463,271 @@ UserRouter.post("/signup", async function (req, res, next) {
       });
     }
 
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const createdUser = new UserModel({
+      auth: {
+        username: String(username || "").trim(),
+        password: passwordHash,
+      },
+      profile: {
+        studying: {
+          time: {
+            startDate: {
+              startTerm: "First",
+            },
+            currentDate: {
+              term: "First",
+            },
+          },
+        },
+      },
+    });
+
+    setUserConnectionState(createdUser, {
+      isConnected: true,
+      at: new Date(),
+      markLogin: true,
+    });
+
+    await createdUser.save();
+
+    const token = jwt.sign(
+      {
+        username: createdUser.auth?.username || "",
+        userId: createdUser._id,
+      },
+      process.env.JWT_KEY,
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+      },
+    );
+
+    return res.status(201).json({
+      userID: createdUser._id,
+      token,
+      user: createdUser,
+      message: "Account created. Complete your profile to continue.",
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        message: "This account already exists.",
+      });
+    }
+
+    if (isDatabaseAvailabilityError(error)) {
+      return res.status(503).json({
+        message:
+          "The database is temporarily unavailable. Please try signing up again in a few moments.",
+      });
+    }
+
+    return next(error);
+  }
+});
+
+UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
+  try {
+    const firstname = String(req.body?.firstname || "").trim();
+    const lastname = String(req.body?.lastname || "").trim();
+    const email = String(req.body?.email || "")
+      .trim()
+      .toLowerCase();
+    const phone = String(req.body?.phone || "").trim();
+    const dobInput = String(req.body?.dob || "").trim();
+    const hometown = req.body?.hometown;
+    const bio = String(req.body?.bio || "").trim();
+    const studying = req.body?.studying;
+    const working = req.body?.working;
+    const normalizeNullableNumber = (value, defaultValue = null) => {
+      if (value === null || value === undefined || value === "") {
+        return defaultValue;
+      }
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : defaultValue;
+    };
+
+    if (
+      !firstname ||
+      !lastname ||
+      !email ||
+      !phone ||
+      !dobInput ||
+      !hometown?.Country ||
+      !hometown?.City ||
+      !bio
+    ) {
+      return res.status(400).json({
+        message:
+          "First name, last name, email, phone, date of birth, country, city, and bio are required.",
+      });
+    }
+
+    // Check if user provided studying or working info
+    const isStudying = studying && (studying.university || studying.program);
+    const isWorking = working && (working.company || working.position);
+
+    if (isStudying) {
+      const studyingTime =
+        studying?.time && typeof studying.time === "object" ? studying.time : {};
+      const startDate =
+        studyingTime?.startDate && typeof studyingTime.startDate === "object"
+          ? studyingTime.startDate
+          : {};
+      const currentDate =
+        studyingTime?.currentDate &&
+        typeof studyingTime.currentDate === "object"
+          ? studyingTime.currentDate
+          : {};
+      const hasCurrentTerm = Boolean(
+        String(currentDate.term || studying.term || "").trim(),
+      );
+
+      if (!studying.program || !studying.university || !hasCurrentTerm) {
+        return res.status(400).json({
+          message:
+            "Program, university, and current term are required for education information.",
+        });
+      }
+
+      if (
+        (startDate.startYear !== undefined && startDate.startYear !== null) ||
+        String(startDate.startTerm || "").trim() ||
+        (currentDate.year !== undefined && currentDate.year !== null) ||
+        String(currentDate.term || "").trim()
+      ) {
+        if (
+          !normalizeNullableNumber(startDate.startYear, null) ||
+          !String(startDate.startTerm || "").trim() ||
+          !normalizeNullableNumber(currentDate.year, null) ||
+          !String(currentDate.term || "").trim()
+        ) {
+          return res.status(400).json({
+            message:
+              "If studying time is provided, start year/term and current year/term are all required.",
+          });
+        }
+      }
+    }
+
+    if (isWorking) {
+      if (!working.company || !working.position) {
+        return res.status(400).json({
+          message:
+            "Company and position are required for professional information.",
+        });
+      }
+    }
+
+    if (!isStudying && !isWorking) {
+      return res.status(400).json({
+        message: "Please provide either education or professional information.",
+      });
+    }
+
+    const parsedDob = new Date(dobInput);
+    if (Number.isNaN(parsedDob.getTime())) {
+      return res.status(400).json({
+        message: "Please provide a valid date of birth.",
+      });
+    }
+
+    const existingEmailUser = await UserModel.findOne({
+      "profile.email": email,
+      _id: { $ne: req.authentication.userId },
+    }).select("_id");
+
     if (existingEmailUser) {
       return res.status(409).json({
         message: "That email address is already in use.",
       });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await UserModel.findById(req.authentication.userId);
 
-    const createdUser = new UserModel({
-      "identity.atSignup.username": String(username || "").trim(),
-      "identity.atSignup.password": passwordHash,
-      "identity.personal.firstname": String(firstname || "").trim(),
-      "identity.personal.lastname": String(lastname || "").trim(),
-      "identity.personal.email_address": String(email || "").trim(),
-      "identity.personal.dob": new Date(dob),
-    });
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
 
-    createdUser.identity.personal.gallery.videos[0] = {
-      ...(createdUser.identity.personal.gallery.videos[0] || {}),
-      folder: buildUserRingVideoFolder(createdUser._id),
+    user.profile = user.profile || {};
+    user.profile.firstname = firstname;
+    user.profile.lastname = lastname;
+    user.profile.email = email;
+    user.profile.phone = phone;
+    user.profile.dob = parsedDob;
+    user.profile.hometown = {
+      Country: hometown.Country,
+      City: hometown.City,
     };
+    user.profile.bio = bio;
 
-    await createdUser.save();
+    if (isStudying) {
+      const studyingTime =
+        studying?.time && typeof studying.time === "object" ? studying.time : {};
+      const startDate =
+        studyingTime?.startDate && typeof studyingTime.startDate === "object"
+          ? studyingTime.startDate
+          : {};
+      const currentDate =
+        studyingTime?.currentDate &&
+        typeof studyingTime.currentDate === "object"
+          ? studyingTime.currentDate
+          : {};
+      const normalizedStartYear = normalizeNullableNumber(
+        startDate.startYear,
+        null,
+      );
+      const normalizedCurrentYear = normalizeNullableNumber(
+        currentDate.year,
+        null,
+      );
+      const normalizedCurrentTerm = String(
+        currentDate.term || studying.term || "",
+      ).trim();
+      const normalizedStartTerm = String(startDate.startTerm || "").trim();
 
-    return res.status(201).json({
-      userID: createdUser._id,
-      message: "You have successfully signed up!",
+      user.profile.studying = {
+        university: studying.university,
+        program: studying.program,
+        programStartYear:
+          studying.programStartYear ||
+          studying.academicYear ||
+          (normalizedStartYear ? `${normalizedStartYear}/${normalizedStartYear + 1}` : ""),
+        term: normalizedCurrentTerm,
+        language: studying.language || "",
+        time: {
+          totalYears: normalizeNullableNumber(studyingTime.totalYears, 0) || 0,
+          currentAcademicYear: normalizeNullableNumber(
+            studyingTime.currentAcademicYear,
+            null,
+          ),
+          startDate: {
+            startYear: normalizedStartYear,
+            startTerm: normalizedStartTerm,
+          },
+          currentDate: {
+            year: normalizedCurrentYear,
+            term: normalizedCurrentTerm,
+          },
+        },
+      };
+    }
+
+    if (isWorking) {
+      user.profile.working = {
+        company: working.company,
+        position: working.position,
+      };
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Profile completed successfully.",
+      user,
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -785,81 +1740,18 @@ UserRouter.post("/signup", async function (req, res, next) {
   }
 });
 
-//Modifiying User's Connection Status
-UserRouter.put("/connection/:id", function (req, res, next) {
-  UserModel.findByIdAndUpdate({ _id: req.params.id }, req.body, {
-    useFindAndModify: false,
-  })
-    .then((result) => res.json(result))
-    .catch(next);
-});
-
-////////UpdateUser
-UserRouter.get("/update/:id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.id })
-    .select(
-      "identity friends notifications chat posts terminology study_session login_record memory study clinicalReality media",
-    )
-    .populate({
-      path: "friends",
-      populate: {
-        path: "posts",
-      },
-    })
-    .populate("posts")
-    .then((profile) => {
-      const ownPosts = Array.isArray(profile.posts) ? profile.posts : [];
-      const friendPosts = Array.isArray(profile.friends)
-        ? profile.friends.flatMap((friend) =>
-            Array.isArray(friend.posts) ? friend.posts : [],
-          )
-        : [];
-      const posts = [...ownPosts, ...friendPosts]
-        .filter(Boolean)
-        .filter(
-          (post, index, allPosts) =>
-            allPosts.findIndex(
-              (candidate) => String(candidate?._id) === String(post?._id),
-            ) === index,
-        )
-        .sort((firstPost, secondPost) => {
-          const firstDate = new Date(firstPost?.date || 0).getTime();
-          const secondDate = new Date(secondPost?.date || 0).getTime();
-          return secondDate - firstDate;
-        });
-
-      res.status(200).json({
-        identity: profile.identity,
-        chat: Array.isArray(profile.chat) ? profile.chat : [],
-        friends: profile.friends,
-        notifications: profile.notifications,
-        posts,
-        terminology: profile.terminology,
-        study_session: profile.study_session,
-        login_record: profile.login_record || [],
-        isOnline: profile.identity.status.isLoggedIn,
-        memory: profile.memory,
-        study: profile.study,
-        clinicalReality: profile.clinicalReality,
-        media: profile.media || {
-          profilePicture: {
-            url: "",
-            publicId: "",
-            assetId: "",
-            updatedAt: null,
-          },
-          imageGallery: [],
-        },
-      });
-    })
-    .catch(next);
-});
-
-UserRouter.put("/profile", checkAuth, async function (req, res, next) {
+UserRouter.put("/signup/auth", checkAuth, async function (req, res, next) {
   try {
-    const user = await UserModel.findById(req.authentication.userId).select(
-      "info media",
-    );
+    const requestedUsername = String(req.body?.username || "").trim();
+    const requestedPassword = String(req.body?.password || "");
+
+    if (!requestedUsername) {
+      return res.status(400).json({
+        message: "Username is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId);
 
     if (!user) {
       return res.status(404).json({
@@ -867,14 +1759,310 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       });
     }
 
+    const currentUsername = String(user?.auth?.username || "").trim();
+
+    if (requestedUsername !== currentUsername) {
+      const existingUsernameUser = await UserModel.findOne({
+        "auth.username": requestedUsername,
+        _id: { $ne: req.authentication.userId },
+      }).select("_id");
+
+      if (existingUsernameUser) {
+        return res.status(409).json({
+          message: "That username is already in use.",
+        });
+      }
+    }
+
+    user.auth = user.auth || {};
+    user.auth.username = requestedUsername;
+
+    if (requestedPassword) {
+      user.auth.password = await bcrypt.hash(requestedPassword, 10);
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Signup credentials updated.",
+      user,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.get(
+  "/ui/start-menu-layout",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "settings.ui.startMenuLayout",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        startMenuLayout: normalizeStartMenuLayoutForStorage(
+          user.ui?.startMenuLayout,
+        ),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.patch(
+  "/ui/start-menu-layout",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const startMenuLayout = normalizeStartMenuLayoutForStorage(
+        req.body?.startMenuLayout,
+      );
+
+      const user = await UserModel.findByIdAndUpdate(
+        req.authentication.userId,
+        {
+          $set: {
+            "ui.startMenuLayout": {
+              ...startMenuLayout,
+              updatedAt: new Date(),
+            },
+          },
+        },
+        { new: true },
+      ).select("ui.startMenuLayout");
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        startMenuLayout: normalizeStartMenuLayoutForStorage(
+          user.ui?.startMenuLayout,
+        ),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+////////UpdateUser
+UserRouter.get("/update/:id", async function (req, res, next) {
+  try {
+    const profile = await UserModel.findById(req.params.id)
+      .select(
+        "auth profile bio settings connections status clinicalReality memory",
+      )
+      .lean();
+
+    if (!profile) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const memoryDoc = await findUserMemoryLean(profile._id);
+    const imageGallery = getMemoryLocalGallery(memoryDoc);
+    const flattenedCourses = flattenMemoryCoursesForPlanner(
+      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+      memoryDoc?.studyPlanner?.studyOrganizer?.exams,
+    );
+    const flattenedLectures = flattenMemoryLecturesForPlanner(
+      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+    );
+
+    const profilePicture = getLegacyProfilePicture(profile);
+    const profilePictureViewport = getLegacyProfilePictureViewport(profile);
+    const homeDrawing = {
+      draftPaths: [],
+      appliedPaths: [],
+      textItems: [],
+      updatedAt: null,
+    };
+
+    const friendEntries = Array.isArray(profile.connections)
+      ? profile.connections.map((entry) => ({
+          userID: entry?.id || null,
+          userMode: entry?.mode || "stranger",
+          ...entry,
+        }))
+      : [];
+    const friendIds = Array.from(
+      new Set(
+        friendEntries
+          .map((entry) => {
+            if (!entry) {
+              return "";
+            }
+
+            if (typeof entry === "object" && entry !== null) {
+              const candidate = entry.userID || entry._id || entry;
+              const normalized =
+                typeof candidate === "object" && candidate !== null
+                  ? candidate._id || candidate
+                  : candidate;
+              return String(normalized || "").trim();
+            }
+
+            return String(entry || "").trim();
+          })
+          .filter(Boolean),
+      ),
+    );
+
+    const friendUsers = friendIds.length
+      ? await UserModel.find({ _id: { $in: friendIds } })
+          .select(
+            [
+              "auth.username",
+              "profile.firstname",
+              "profile.lastname",
+              "profile.dob",
+              "profile.email",
+              "profile.phone",
+              "profile.bio",
+              "profile.studying",
+              "profile.working",
+              "profile.profilePic",
+              "profile.viewport",
+              "status",
+            ].join(" "),
+          )
+          .lean()
+      : [];
+    const friendUserById = new Map(
+      friendUsers.map((friendUser) => [String(friendUser._id), friendUser]),
+    );
+
+    const friends = friendEntries
+      .map((entry) => {
+        if (!entry) {
+          return null;
+        }
+
+        if (typeof entry === "object" && entry !== null) {
+          const candidate = entry.userID || entry._id || entry;
+          const friendId = String(
+            typeof candidate === "object" && candidate !== null
+              ? candidate._id || ""
+              : candidate || "",
+          ).trim();
+          const friendUser = friendId ? friendUserById.get(friendId) : null;
+          return friendUser
+            ? mapFriendEntryForClient({ ...entry, userID: friendUser })
+            : mapFriendEntryForClient(entry);
+        }
+
+        const friendId = String(entry || "").trim();
+        const friendUser = friendId ? friendUserById.get(friendId) : null;
+        return friendUser
+          ? mapFriendEntryForClient({ userID: friendUser })
+          : mapFriendEntryForClient({ userID: friendId });
+      })
+      .filter(Boolean);
+
+    return res.status(200).json({
+      identity: buildLegacyIdentity(profile),
+      friends: friends,
+      settings: profile.settings || {},
+      memory: {
+        ...(memoryDoc || {}),
+        courses: flattenedCourses,
+        lectures: flattenedLectures,
+      },
+      clinicalReality: profile.clinicalReality,
+      media: {
+        profilePicture,
+        profilePictureViewport,
+        imageGallery,
+        homeDrawing,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post(
+  "/editStudyPlanAid/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanAid = updateStudyPlanAidInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanAid: getStudyPlanAid(memoryDoc),
+        updatedStudyPlanAid,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.put("/profile", checkAuth, async function (req, res, next) {
+  try {
+    const user = await UserModel.findById(req.authentication.userId)
+      .select(
+        [
+          "auth.username",
+          "bio.firstname",
+          "bio.lastname",
+          "bio.program",
+          "bio.university",
+          "bio.studyYear",
+          "bio.term",
+          "bio.viewport",
+        ].join(" "),
+      )
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const auth = getSubjectAuth(user);
+    const bio = getSubjectBio(user);
+    const aiSettingsDoc = await findAiSettingsLean(
+      req.authentication.userId,
+      "settings.aiProvider settings.languageOfReply settings.inputType settings.outputType",
+    );
+    const aiSettings = aiSettingsDoc?.settings || {};
+
     const nextFirstname = String(
-      req.body?.firstname ?? user.identity.personal.firstname ?? "",
+      req.body?.firstname ?? bio.firstname ?? "",
     ).trim();
     const nextLastname = String(
-      req.body?.lastname ?? user.identity.personal.lastname ?? "",
+      req.body?.lastname ?? bio.lastname ?? "",
     ).trim();
     const nextUsername = String(
-      req.body?.username ?? user.identity.atSignup.username ?? "",
+      req.body?.username ?? auth.username ?? "",
     ).trim();
 
     if (!nextFirstname || !nextLastname || !nextUsername) {
@@ -883,10 +2071,10 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       });
     }
 
-    if (nextUsername !== String(user.identity.atSignup.username || "").trim()) {
+    if (nextUsername !== String(auth.username || "").trim()) {
       const existingUsernameUser = await UserModel.findOne({
-        "identity.atSignup.username": nextUsername,
-        _id: { $ne: user._id },
+        "auth.username": nextUsername,
+        _id: { $ne: req.authentication.userId },
       }).select("_id");
 
       if (existingUsernameUser) {
@@ -897,7 +2085,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
 
     const requestedAiProvider = String(
-      req.body?.aiProvider ?? user.AI.settings.aiProvider ?? "openai",
+      req.body?.aiProvider ?? aiSettings.aiProvider ?? "openai",
     )
       .trim()
       .toLowerCase();
@@ -908,22 +2096,31 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       ? requestedAiProvider
       : "openai";
 
-    user.identity.personal.firstname = nextFirstname;
-    user.identity.personal.lastname = nextLastname;
-    user.identity.atSignup.username = nextUsername;
-    user.identity.personal.program = String(
-      req.body?.program ?? user.identity.personal.program ?? "",
+    const nextProgram = String(req.body?.program ?? bio.program ?? "").trim();
+    const nextUniversity = String(
+      req.body?.university ?? bio.university ?? "",
     ).trim();
-    user.identity.personal.university = String(
-      req.body?.university ?? user.identity.personal.university ?? "",
+    const nextStudyYear = String(
+      req.body?.studyYear ?? bio.studyYear ?? "",
     ).trim();
-    user.identity.personal.studyYear = String(
-      req.body?.studyYear ?? user.identity.personal.studyYear ?? "",
-    ).trim();
-    user.identity.personal.term = String(
-      req.body?.term ?? user.identity.personal.term ?? "",
-    ).trim();
-    user.AI.settings.aiProvider = nextAiProvider;
+    const nextTerm = String(req.body?.term ?? bio.term ?? "").trim();
+
+    const updateSet = {
+      "bio.firstname": nextFirstname,
+      "bio.lastname": nextLastname,
+      "auth.username": nextUsername,
+      "bio.program": nextProgram,
+      "bio.university": nextUniversity,
+      "bio.studyYear": nextStudyYear,
+      "bio.term": nextTerm,
+    };
+
+    let nextProfilePictureViewport = getLegacyProfilePictureViewport(user) || {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      updatedAt: null,
+    };
 
     const requestedViewport = req.body?.profilePictureViewport;
     if (requestedViewport && typeof requestedViewport === "object") {
@@ -931,8 +2128,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       const rawOffsetX = Number(requestedViewport?.offsetX);
       const rawOffsetY = Number(requestedViewport?.offsetY);
 
-      user.media = user.media || {};
-      user.identity.personal.profilePicture.profilePictureViewport = {
+      nextProfilePictureViewport = {
         scale: Number.isFinite(rawScale)
           ? Math.min(Math.max(rawScale, 1), 4)
           : 1,
@@ -940,7 +2136,22 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
         offsetY: Number.isFinite(rawOffsetY) ? rawOffsetY : 0,
         updatedAt: new Date(),
       };
+
+      updateSet["bio.viewport"] = {
+        x: nextProfilePictureViewport.offsetX,
+        y: nextProfilePictureViewport.offsetY,
+        zoom: nextProfilePictureViewport.scale,
+        width: null,
+        height: null,
+      };
     }
+
+    let nextHomeDrawing = {
+      draftPaths: [],
+      appliedPaths: [],
+      textItems: [],
+      updatedAt: null,
+    };
 
     const requestedHomeDrawing = req.body?.homeDrawing;
     if (requestedHomeDrawing && typeof requestedHomeDrawing === "object") {
@@ -1001,8 +2212,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           ? requestedHomeDrawing.paths
           : [];
 
-      user.media = user.media || {};
-      user.identity.personal.gallery.homeDrawing = {
+      nextHomeDrawing = {
         draftPaths: sanitizeDrawingPaths(requestedHomeDrawing?.draftPaths),
         appliedPaths: sanitizeDrawingPaths(
           Array.isArray(requestedHomeDrawing?.appliedPaths)
@@ -1014,223 +2224,41 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       };
     }
 
-    await user.save();
+    await UserModel.updateOne(
+      { _id: req.authentication.userId },
+      { $set: updateSet },
+    );
+
+    await upsertAiSettings(req.authentication.userId, {
+      aiProvider: nextAiProvider,
+      updatedAt: new Date(),
+    });
+
+    const responseInfo = {
+      firstname: nextFirstname,
+      lastname: nextLastname,
+      username: nextUsername,
+      program: nextProgram,
+      university: nextUniversity,
+      studyYear: nextStudyYear,
+      term: nextTerm,
+      aiProvider: nextAiProvider,
+    };
+
+    const responseMedia = {
+      profilePictureViewport: nextProfilePictureViewport,
+      homeDrawing: nextHomeDrawing,
+    };
 
     return res.status(200).json({
       message: "Personal information updated.",
-      info: user.info,
-      media: {
-        profilePictureViewport: user?.media?.profilePictureViewport || {
-          scale: 1,
-          offsetX: 0,
-          offsetY: 0,
-          updatedAt: null,
-        },
-        homeDrawing: user?.media?.homeDrawing || {
-          draftPaths: [],
-          appliedPaths: [],
-          textItems: [],
-          updatedAt: null,
-        },
-      },
+      info: responseInfo,
+      media: responseMedia,
     });
   } catch (error) {
     next(error);
   }
 });
-
-UserRouter.get(
-  "/schoolPlanner/ring-video",
-  checkAuth,
-  async function (req, res, next) {
-    try {
-      const user = await UserModel.findById(req.authentication.userId).select(
-        "identity.personal.gallery.videos[0]",
-      );
-
-      if (!user) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      const folder = await ensureRingVideoFolderForUser(user);
-
-      return res.status(200).json({
-        ringVideo: {
-          url: String(user?.schoolPlanner?.ringVideo?.url || "").trim(),
-          publicId: String(
-            user?.schoolPlanner?.ringVideo?.publicId || "",
-          ).trim(),
-          folder,
-          updatedAt: user?.schoolPlanner?.ringVideo?.updatedAt || null,
-        },
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.post(
-  "/schoolPlanner/ring-video/signature",
-  checkAuth,
-  async function (req, res, next) {
-    try {
-      const cloudinaryConfig = getCloudinaryConfig();
-
-      if (!cloudinaryConfig.isReady) {
-        return res.status(503).json({
-          message: "Cloudinary is not configured on backend.",
-          missing: cloudinaryConfig.missing,
-        });
-      }
-
-      const user = await UserModel.findById(req.authentication.userId).select(
-        "identity.personal.gallery.videos.0.folder",
-      );
-
-      if (!user) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      const folder = await ensureRingVideoFolderForUser(user);
-
-      const publicId =
-        String(req.body?.publicId || "")
-          .trim()
-          .slice(0, 180)
-          .replace(/[^a-zA-Z0-9/_-]/g, "-") || `ring-${Date.now()}`;
-      const timestamp = Math.floor(Date.now() / 1000);
-      const paramsToSign = {
-        folder,
-        public_id: publicId,
-        timestamp,
-      };
-
-      const signature = buildCloudinarySignature({
-        paramsToSign,
-        apiSecret: cloudinaryConfig.apiSecret,
-      });
-
-      return res.status(200).json({
-        cloudName: cloudinaryConfig.cloudName,
-        apiKey: cloudinaryConfig.apiKey,
-        timestamp,
-        folder,
-        publicId,
-        signature,
-        uploadUrl: `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/video/upload`,
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.put(
-  "/schoolPlanner/ring-video",
-  checkAuth,
-  async function (req, res, next) {
-    try {
-      const videoUrl = String(req.body?.videoUrl || "").trim();
-      const publicId = String(req.body?.publicId || "").trim();
-      const folder = buildUserRingVideoFolder(req.authentication.userId);
-
-      if (!videoUrl) {
-        return res.status(400).json({
-          message: "videoUrl is required.",
-        });
-      }
-
-      const updatedUser = await UserModel.findByIdAndUpdate(
-        req.authentication.userId,
-        {
-          "identity.personal.gallery.videos[0].url": videoUrl,
-          "identity.personal.gallery.videos[0].publicId": publicId,
-          "identity.personal.gallery.videos.0.folder": folder,
-          "identity.personal.gallery.videos.0.updatedAt": new Date(),
-        },
-        {
-          new: true,
-        },
-      ).select("identity.personal.gallery.videos[0]");
-
-      if (!updatedUser) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      return res.status(200).json({
-        message: "Ring video saved.",
-        ringVideo: updatedUser.schoolPlanner?.ringVideo || {
-          url: "",
-          publicId: "",
-          folder,
-          updatedAt: null,
-        },
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.post(
-  "/schoolPlanner/ring-video/backfill-folders",
-  checkAuth,
-  async function (req, res, next) {
-    try {
-      if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
-        return res.status(403).json({
-          message: "Not authorized.",
-        });
-      }
-
-      const usersMissingFolder = await UserModel.find({
-        $or: [
-          { "identity.personal.gallery.videos.0.folder": { $exists: false } },
-          { "identity.personal.gallery.videos.0.folder": null },
-          { "identity.personal.gallery.videos.0.folder": "" },
-        ],
-      }).select("_id");
-
-      if (!usersMissingFolder.length) {
-        return res.status(200).json({
-          message: "No users needed Cloudinary folder backfill.",
-          updatedCount: 0,
-        });
-      }
-
-      const bulkOperations = usersMissingFolder.map((user) => ({
-        updateOne: {
-          filter: { _id: user._id },
-          update: {
-            $set: {
-              "identity.personal.gallery.videos.0.folder":
-                buildUserRingVideoFolder(user._id),
-            },
-          },
-        },
-      }));
-
-      const bulkResult = await UserModel.bulkWrite(bulkOperations, {
-        ordered: false,
-      });
-
-      return res.status(200).json({
-        message: "Cloudinary folders backfilled for existing users.",
-        updatedCount: Number(bulkResult?.modifiedCount || 0),
-        matchedCount: Number(bulkResult?.matchedCount || 0),
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
 
 UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
   try {
@@ -1242,22 +2270,13 @@ UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const imageGallery = sortGalleryImages(
-      (Array.isArray(user?.identity?.personal?.gallery?.images)
-        ? user.identity.personal.gallery.images
-        : [])
-        .map(normalizeStoredGalleryImage)
-        .filter(Boolean),
-    );
-    const profilePicture = normalizeStoredGalleryImage(
-      user?.identity?.personal?.profilePicture?.picture,
-    )
+    const memoryDoc = await ensureUserMemoryDoc(user);
+    const imageGallery = getMemoryLocalGallery(memoryDoc);
+    const legacyProfilePicture = getLegacyProfilePicture(user);
+    const profilePicture = normalizeStoredGalleryImage(legacyProfilePicture)
       ? {
-          ...normalizeStoredGalleryImage(
-            user.identity.personal.profilePicture.picture,
-          ),
-          updatedAt:
-            user?.identity?.personal?.profilePicture?.picture?.updatedAt || null,
+          ...normalizeStoredGalleryImage(legacyProfilePicture),
+          updatedAt: legacyProfilePicture?.updatedAt || null,
         }
       : {
           url: "",
@@ -1350,7 +2369,7 @@ UserRouter.post("/livekit/token", checkAuth, async function (req, res, next) {
     }
 
     const user = await UserModel.findById(req.authentication.userId).select(
-      "identity.personal.firstname identity.personal.lastname identity.atSignup.username",
+      "auth.username profile.firstname profile.lastname bio.firstname bio.lastname",
     );
 
     if (!user) {
@@ -1359,9 +2378,10 @@ UserRouter.post("/livekit/token", checkAuth, async function (req, res, next) {
       });
     }
 
-    const firstname = String(user?.info?.firstname || "").trim();
-    const lastname = String(user?.info?.lastname || "").trim();
-    const username = String(user?.info?.username || "").trim();
+    const bio = getSubjectBio(user);
+    const firstname = String(bio?.firstname || "").trim();
+    const lastname = String(bio?.lastname || "").trim();
+    const username = String(user?.auth?.username || "").trim();
     const displayName =
       `${firstname} ${lastname}`.trim() ||
       username ||
@@ -1391,90 +2411,6 @@ UserRouter.post("/livekit/token", checkAuth, async function (req, res, next) {
     return next(error);
   }
 });
-
-UserRouter.get(
-  "/image-gallery/private-download",
-  checkAuth,
-  async function (req, res, next) {
-    try {
-      const cloudinaryConfig = getCloudinaryConfig();
-
-      if (!cloudinaryConfig.isReady) {
-        return res.status(503).json({
-          message: "Cloudinary is not configured on backend.",
-          missing: cloudinaryConfig.missing,
-        });
-      }
-
-      const requestedPublicId = String(req.query?.publicId || "").trim();
-      const requestedUrl = String(req.query?.url || "").trim();
-
-      if (!requestedPublicId && !requestedUrl) {
-        return res.status(400).json({
-          message: "publicId or url is required.",
-        });
-      }
-
-      const user = await UserModel.findById(req.authentication.userId);
-
-      if (!user) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
-        ? user.identity.personal.gallery.images
-            .map(normalizeStoredGalleryImage)
-            .filter(Boolean)
-        : [];
-
-      const selectedImage = imageGallery.find((image) => {
-        if (requestedPublicId && image.publicId === requestedPublicId) {
-          return true;
-        }
-
-        if (requestedUrl && image.url === requestedUrl) {
-          return true;
-        }
-
-        return false;
-      });
-
-      if (!selectedImage) {
-        return res.status(404).json({
-          message: "Requested media file was not found in your gallery.",
-        });
-      }
-
-      cloudinary.config({
-        cloud_name: cloudinaryConfig.cloudName,
-        api_key: cloudinaryConfig.apiKey,
-        api_secret: cloudinaryConfig.apiSecret,
-        secure: true,
-      });
-
-      const fileUrl = cloudinary.utils.private_download_url(
-        selectedImage.publicId,
-        extractCloudinaryFormat(selectedImage),
-        {
-          resource_type: selectedImage.resourceType || "raw",
-          type: extractCloudinaryDeliveryTypeFromUrl(selectedImage.url),
-          expires_at: Math.floor(Date.now() / 1000) + 60 * 10,
-          attachment: false,
-        },
-      );
-
-      return res.status(200).json({
-        url: fileUrl,
-        publicId: selectedImage.publicId,
-        resourceType: selectedImage.resourceType || "raw",
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
 
 UserRouter.post(
   "/image-gallery/signature",
@@ -1564,12 +2500,13 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const existingImages = Array.isArray(user?.identity?.personal?.gallery?.images)
-      ? user.identity.personal.gallery.images
-          .map(normalizeStoredGalleryImage)
-          .filter(Boolean)
-      : [];
-    const dedupedImages = existingImages.filter(
+    const memoryDoc = await ensureUserMemoryDoc(user);
+    if (!memoryDoc) {
+      return res.status(500).json({ message: "Failed to access user memory." });
+    }
+
+    const existingGallery = getMemoryLocalGallery(memoryDoc);
+    const dedupedImages = existingGallery.filter(
       (image) => image.publicId !== normalizedImage.publicId,
     );
     const nextImageGallery = sortGalleryImages([
@@ -1577,15 +2514,12 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       ...dedupedImages,
     ]);
     const existingProfilePicture = normalizeStoredGalleryImage(
-      user?.identity?.personal?.profilePicture?.picture,
+      getLegacyProfilePicture(user),
     );
 
-    user.identity = user.identity || {};
-    user.identity.personal = user.identity.personal || {};
-    user.identity.personal.gallery = user.identity.personal.gallery || {};
-    user.identity.personal.gallery.images = nextImageGallery;
+    setMemoryLocalGallery(memoryDoc, nextImageGallery);
 
-    await user.save();
+    await memoryDoc.save();
 
     return res.status(200).json({
       message: "Media saved to gallery.",
@@ -1616,11 +2550,8 @@ UserRouter.put(
         });
       }
 
-      const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
-        ? user.identity.personal.gallery.images
-            .map(normalizeStoredGalleryImage)
-            .filter(Boolean)
-        : [];
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      const imageGallery = getMemoryLocalGallery(memoryDoc);
       const selectedImage = imageGallery.find(
         (image) => image.publicId === selectedPublicId,
       );
@@ -1637,22 +2568,20 @@ UserRouter.put(
         });
       }
 
-      user.identity = user.identity || {};
-      user.identity.personal = user.identity.personal || {};
-      user.identity.personal.profilePicture =
-        user.identity.personal.profilePicture || {};
-      user.identity.personal.profilePicture.picture = {
+      user.profile = user.profile || {};
+      user.profile.profilePic = {
         url: selectedImage.url,
         publicId: selectedImage.publicId,
-        assetId: selectedImage.assetId,
-        updatedAt: new Date(),
+        mimeType: selectedImage.mimeType || "",
+        width: selectedImage.width || null,
+        height: selectedImage.height || null,
       };
 
       await user.save();
 
       return res.status(200).json({
         message: "Profile picture updated.",
-        profilePicture: user.identity.personal.profilePicture.picture,
+        profilePicture: getLegacyProfilePicture(user),
         imageGallery: sortGalleryImages(imageGallery),
       });
     } catch (error) {
@@ -1679,75 +2608,81 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const imageGallery = Array.isArray(user?.identity?.personal?.gallery?.images)
-      ? user.identity.personal.gallery.images
-          .map(normalizeStoredGalleryImage)
-          .filter(Boolean)
-      : [];
+    const memoryDoc = await ensureUserMemoryDoc(user);
+    if (!memoryDoc) {
+      return res.status(500).json({ message: "Failed to access user memory." });
+    }
+
+    const imageGallery = getMemoryLocalGallery(memoryDoc);
     const imageToDelete = imageGallery.find(
       (image) => image.publicId === publicId,
     );
 
     if (!imageToDelete) {
       return res.status(404).json({
-        message: "Image not found in gallery.",
+        message: "Media not found in gallery.",
       });
     }
 
     const cloudinaryConfig = getCloudinaryConfig();
     if (cloudinaryConfig.isReady) {
-      await deleteCloudinaryAsset({
-        cloudName: cloudinaryConfig.cloudName,
-        apiKey: cloudinaryConfig.apiKey,
-        apiSecret: cloudinaryConfig.apiSecret,
-        publicId: imageToDelete.publicId,
-        resourceType: imageToDelete.resourceType || "image",
-      });
+      try {
+        await deleteCloudinaryAsset({
+          cloudName: cloudinaryConfig.cloudName,
+          apiKey: cloudinaryConfig.apiKey,
+          apiSecret: cloudinaryConfig.apiSecret,
+          publicId: imageToDelete.publicId,
+          resourceType: imageToDelete.resourceType || "image",
+        });
+      } catch (cloudinaryDeleteError) {
+        // Keep local deletion successful even if Cloudinary is temporarily unavailable.
+        console.warn(
+          "Cloudinary deletion failed for gallery media:",
+          imageToDelete.publicId,
+          cloudinaryDeleteError?.message || cloudinaryDeleteError,
+        );
+      }
     }
 
     const nextImageGallery = sortGalleryImages(
       imageGallery.filter((image) => image.publicId !== publicId),
     );
     const currentProfilePublicId = String(
-      user?.identity?.personal?.profilePicture?.picture?.publicId || "",
+      user?.profile?.profilePic?.publicId ||
+        user?.bio?.profilePic?.publicId ||
+        "",
     ).trim();
 
-    user.identity = user.identity || {};
-    user.identity.personal = user.identity.personal || {};
-    user.identity.personal.gallery = user.identity.personal.gallery || {};
-    user.identity.personal.profilePicture =
-      user.identity.personal.profilePicture || {};
-    user.identity.personal.gallery.images = nextImageGallery;
+    user.profile = user.profile || {};
+
+    setMemoryLocalGallery(memoryDoc, nextImageGallery);
     if (currentProfilePublicId === publicId) {
       const fallbackImage =
         nextImageGallery.find((image) => image.resourceType === "image") ||
         null;
-      user.identity.personal.profilePicture.picture = fallbackImage
+      user.profile.profilePic = fallbackImage
         ? {
             url: fallbackImage.url,
             publicId: fallbackImage.publicId,
-            assetId: fallbackImage.assetId,
-            updatedAt: new Date(),
+            mimeType: fallbackImage.mimeType || "",
+            width: fallbackImage.width || null,
+            height: fallbackImage.height || null,
           }
         : {
             url: "",
             publicId: "",
-            assetId: "",
-            updatedAt: null,
+            mimeType: "",
+            width: null,
+            height: null,
           };
     }
 
-    await user.save();
+    await Promise.all([memoryDoc.save(), user.save()]);
 
     return res.status(200).json({
-      message: "Image deleted from gallery.",
+      message: "Media deleted from gallery.",
       imageGallery: nextImageGallery,
-      profilePicture: user.identity.personal.profilePicture.picture || {
-        url: "",
-        publicId: "",
-        assetId: "",
-        updatedAt: null,
-      },
+      profilePicture: getLegacyProfilePicture(user),
     });
   } catch (error) {
     return next(error);
@@ -1779,7 +2714,7 @@ UserRouter.get(
   async function (req, res, next) {
     try {
       const user = await UserModel.findOne({
-        "identity.atSignup.username": req.params.username,
+        "auth.username": req.params.username,
       }).select("clinicalReality");
 
       if (!user) {
@@ -1853,7 +2788,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
     }
 
     const user = await UserModel.findById(req.authentication.userId).select(
-      "identity.atSignup.password",
+      "auth.password",
     );
 
     if (!user) {
@@ -1864,7 +2799,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     const passwordMatches = await bcrypt.compare(
       currentPassword,
-      user.identity.atSignup.password,
+      user.auth?.password || "",
     );
 
     if (!passwordMatches) {
@@ -1875,7 +2810,7 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     const isSamePassword = await bcrypt.compare(
       nextPassword,
-      user.identity.atSignup.password,
+      user.auth?.password || "",
     );
 
     if (isSamePassword) {
@@ -1884,7 +2819,8 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
       });
     }
 
-    user.identity.atSignup.password = await bcrypt.hash(nextPassword, 10);
+    user.auth = user.auth || {};
+    user.auth.password = await bcrypt.hash(nextPassword, 10);
     await user.save();
 
     return res.status(200).json({
@@ -1922,7 +2858,6 @@ UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    user.login_record = [];
     await user.save();
 
     return res.status(200).json({
@@ -1933,25 +2868,39 @@ UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
   }
 });
 
+UserRouter.get("/hometown-cities", function (req, res, next) {
+  UserModel.distinct("profile.hometown.City", {
+    "profile.hometown.City": { $exists: true, $ne: "" },
+  })
+    .then((cities) => {
+      return res.status(200).json({
+        cities: cities.filter((city) => city && city.trim()).sort(),
+      });
+    })
+    .catch((error) => {
+      return next(error);
+    });
+});
+
 /////Searching for a user to be a friend
 UserRouter.get("/searchUsers/:name", function (req, res, next) {
   UserModel.find({})
-    .select(
-      "identity.personal.firstname identity.personal.lastname identity.atSignup.username",
-    )
+    .select("auth.username bio.firstname bio.lastname bio.profilePic status")
     .then((users) => {
       const array = [];
       const searchTerm = String(req.params.name || "")
         .trim()
         .toLowerCase();
       users.forEach((user) => {
-        const firstname = String(user?.info?.firstname || "").toLowerCase();
-        const lastname = String(user?.info?.lastname || "").toLowerCase();
-        const username = String(user?.info?.username || "").toLowerCase();
+        const firstname = String(user?.bio?.firstname || "").toLowerCase();
+        const lastname = String(user?.bio?.lastname || "").toLowerCase();
+        const fullName = `${firstname} ${lastname}`.trim();
+        const username = String(user?.auth?.username || "").toLowerCase();
 
         if (
           firstname.includes(searchTerm) ||
           lastname.includes(searchTerm) ||
+          fullName.includes(searchTerm) ||
           username.includes(searchTerm)
         ) {
           array.push(user);
@@ -1967,13 +2916,10 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
     .catch(next);
 });
 
-// Public doctor profile with populated posts
+// Public doctor profile
 UserRouter.get("/profile/:username", function (req, res, next) {
-  UserModel.findOne({ "identity.atSignup.username": req.params.username })
-    .select(
-      "identity.atSignup.username identity.personal.firstname identity.personal.lastname posts identity.personal.profilePicture.picture",
-    )
-    .populate("posts")
+  UserModel.findOne({ "auth.username": req.params.username })
+    .select("auth.username bio.firstname bio.lastname bio.profilePic")
     .then((user) => {
       if (!user) {
         return res.status(404).json({
@@ -1982,11 +2928,10 @@ UserRouter.get("/profile/:username", function (req, res, next) {
       }
 
       return res.status(200).json({
-        username: user.identity.atSignup.username,
-        firstname: user.identity.personal.firstname,
-        lastname: user.identity.personal.lastname,
-        profilePicture: String(user?.media?.profilePicture?.url || "").trim(),
-        posts: Array.isArray(user.posts) ? user.posts : [],
+        username: user.auth?.username || "",
+        firstname: user.bio?.firstname || "",
+        lastname: user.bio?.lastname || "",
+        profilePicture: String(user?.bio?.profilePic?.url || "").trim(),
       });
     })
     .catch(next);
@@ -2000,13 +2945,24 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    const visitLog = await VisitLogModel.find({})
-      .sort({ visitedAt: -1 })
-      .limit(VISIT_LOG_LIMIT)
+    const owner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("visitLog")
       .lean();
 
+    const visitLog = Array.isArray(owner?.visitLog) ? owner.visitLog : [];
+    const sortedLog = visitLog
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b?.visitedAt || 0).getTime() -
+          new Date(a?.visitedAt || 0).getTime(),
+      )
+      .slice(0, VISIT_LOG_LIMIT);
+
     return res.status(200).json({
-      visitLog,
+      visitLog: sortedLog,
     });
   } catch (error) {
     return next(error);
@@ -2018,34 +2974,55 @@ UserRouter.post("/visit-log", async function (req, res, next) {
     const ip = getRequestIp(req);
     const country = getCountryFromIp(ip);
 
-    const visitLog = await VisitLogModel.create({
+    const visitLogOwner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    }).select("_id visitLog");
+
+    if (!visitLogOwner) {
+      return res.status(404).json({
+        message: "Visit log owner not found.",
+      });
+    }
+
+    visitLogOwner.visitLog = Array.isArray(visitLogOwner.visitLog)
+      ? visitLogOwner.visitLog
+      : [];
+
+    visitLogOwner.visitLog.unshift({
       ip,
       country,
       visitedAt: new Date(),
     });
 
+    // Keep it bounded since this is now embedded in the `subjects` collection.
+    visitLogOwner.visitLog = visitLogOwner.visitLog.slice(0, VISIT_LOG_LIMIT);
+
+    await visitLogOwner.save();
+
+    const storedEntry =
+      Array.isArray(visitLogOwner.visitLog) && visitLogOwner.visitLog.length
+        ? visitLogOwner.visitLog[0]
+        : null;
+
     const io = req.app.locals.io;
-    const visitLogOwner = await UserModel.findOne({
-      "identity.atSignup.username": VISIT_LOG_OWNER_USERNAME,
-    }).select("_id");
 
     if (io && visitLogOwner?._id) {
       io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
         visitLog: {
-          _id: String(visitLog._id),
-          ip: visitLog.ip,
-          country: visitLog.country || "Unknown",
-          visitedAt: visitLog.visitedAt,
+          _id: storedEntry?._id ? String(storedEntry._id) : "",
+          ip: storedEntry?.ip || ip,
+          country: storedEntry?.country || country || "Unknown",
+          visitedAt: storedEntry?.visitedAt || new Date(),
         },
       });
     }
 
     return res.status(201).json({
       visitLog: {
-        _id: String(visitLog._id),
-        ip: visitLog.ip,
-        country: visitLog.country || "Unknown",
-        visitedAt: visitLog.visitedAt,
+        _id: storedEntry?._id ? String(storedEntry._id) : "",
+        ip: storedEntry?.ip || ip,
+        country: storedEntry?.country || country || "Unknown",
+        visitedAt: storedEntry?.visitedAt || new Date(),
       },
     });
   } catch (error) {
@@ -2061,11 +3038,25 @@ UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    const result = await VisitLogModel.deleteMany({});
+    const owner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    }).select("_id visitLog");
+
+    if (!owner) {
+      return res.status(404).json({
+        message: "Visit log owner not found.",
+      });
+    }
+
+    const deletedCount = Array.isArray(owner.visitLog)
+      ? owner.visitLog.length
+      : 0;
+    owner.visitLog = [];
+    await owner.save();
 
     return res.status(200).json({
       message: "Visit log cleared.",
-      deletedCount: result.deletedCount || 0,
+      deletedCount,
     });
   } catch (error) {
     return next(error);
@@ -2073,80 +3064,172 @@ UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
 });
 
 // Requesting a friend
-UserRouter.post("/addFriend/:username/", checkAuth, function (req, res, next) {
-  const io = req.app.locals.io;
-  UserModel.findOne({ "identity.atSignup.username": req.params.username })
-    .then((user) => {
-      user.notifications.push({
-        id: req.body.id,
-        type: "friend_request",
-        count: 1,
-        message: req.body.message,
+UserRouter.post(
+  "/addFriend/:username/",
+  checkAuth,
+  async function (req, res, next) {
+    const io = req.app.locals.io;
+    try {
+      const user = await UserModel.findOne({
+        "auth.username": req.params.username,
       });
-      return user.save();
-    })
-    .then((user) => {
-      emitUserRefresh(io, user?._id?.toString(), "notification:new");
-      res.status(201).json({
-        message: "Request sent!",
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const requesterId = String(
+        req.authentication?.userId || req.body.id || "",
+      ).trim();
+      const receiverId = String(user._id);
+      if (!requesterId) {
+        return res.status(400).json({ message: "Requester id is required." });
+      }
+      if (String(user._id) === requesterId) {
+        return res
+          .status(400)
+          .json({ message: "You cannot send a friend request to yourself." });
+      }
+      // Check if already friends
+      const isAlreadyFriend = (user.friends || []).some((friend) => {
+        if (typeof friend === "object" && friend !== null) {
+          return String(friend.userID || friend._id || friend) === requesterId;
+        }
+        return String(friend) === requesterId;
       });
-    })
-    .catch(next);
-});
+      if (isAlreadyFriend) {
+        return res.status(409).json({ message: "You're already friends." });
+      }
+      // Add a pending friend request using friends[].userMode
+      user.friends = Array.isArray(user.friends) ? user.friends : [];
+      const existingRequest = user.friends.find((entry) => {
+        if (typeof entry === "object" && entry !== null) {
+          return (
+            String(entry.userID || entry._id || entry) === requesterId &&
+            entry.userMode === "requestReceived"
+          );
+        }
+        return false;
+      });
+      if (existingRequest) {
+        return res
+          .status(200)
+          .json({ message: "Friend request already pending." });
+      }
+      user.friends.push({
+        userID: requesterId,
+        userMode: "requestReceived",
+      });
+      await user.save();
+      // Also update the requester to track the sent request
+      const requester = await UserModel.findById(requesterId);
+      if (requester) {
+        requester.friends = Array.isArray(requester.friends)
+          ? requester.friends
+          : [];
+        const alreadyTracked = requester.friends.find((entry) => {
+          if (typeof entry === "object" && entry !== null) {
+            return (
+              String(entry.userID || entry._id || entry) === receiverId &&
+              entry.userMode === "requestSent"
+            );
+          }
+          return false;
+        });
+        if (!alreadyTracked) {
+          requester.friends.push({
+            userID: receiverId,
+            userMode: "requestSent",
+          });
+          await requester.save();
+        }
+      }
+      emitUserRefresh(io, user?._id?.toString(), "friends:updated");
+      res.status(201).json({ message: "Request sent!" });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 ////////ACCEPT REQUEST JUST ONE TIME
-UserRouter.post("/acceptFriend/:my_id/:friend_id", function (req, res, next) {
-  const io = req.app.locals.io;
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      let conflict = false;
-      user.friends.forEach((friend) => {
-        if (friend == req.params.friend_id) {
-          conflict = true;
-        }
-      });
-      if (conflict == true) {
-        return res.status(409).json({
-          message: "You're already friends",
+UserRouter.post(
+  "/acceptFriend/:my_id/:friend_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    const io = req.app.locals.io;
+    const receiverId = String(req.params.my_id || "").trim();
+    const requesterId = String(req.params.friend_id || "").trim();
+
+    try {
+      const [receiver, requester] = await Promise.all([
+        UserModel.findById(receiverId),
+        UserModel.findById(requesterId),
+      ]);
+
+      if (!receiver || !requester) {
+        return res.status(404).json({
+          message: "One of the users was not found.",
         });
-      } else {
-        return conflict;
       }
-    })
-    .then((result) => {
-      if (result == false) {
-        UserModel.findOne({ _id: req.params.my_id })
-          .then((user) => {
-            user.friends.push({
-              _id: req.params.friend_id,
-            });
-            user.save();
-          })
-          .then(() => {
-            UserModel.findOne({
-              _id: req.params.friend_id,
-            }).then((user) => {
-              user.friends.push({
-                _id: req.params.my_id,
-              });
-              user.save();
-            });
-            emitUserRefresh(
-              io,
-              [req.params.my_id, req.params.friend_id],
-              "friends:updated",
-            );
-            res.status(201).json({
-              message: "Request accepted. You're now friends!",
-            });
-          });
+
+      receiver.notifications =
+        receiver.notifications && typeof receiver.notifications === "object"
+          ? receiver.notifications
+          : {};
+      requester.notifications =
+        requester.notifications && typeof requester.notifications === "object"
+          ? requester.notifications
+          : {};
+
+      receiver.notifications.friend_requests = (
+        Array.isArray(receiver.notifications.friend_requests)
+          ? receiver.notifications.friend_requests
+          : []
+      ).filter((request) => String(request?.id || "") !== requesterId);
+      receiver.notifications.rejected_users = (
+        Array.isArray(receiver.notifications.rejected_users)
+          ? receiver.notifications.rejected_users
+          : []
+      ).filter((entry) => String(entry?.id || "") !== requesterId);
+      requester.notifications.sent_friend_requests = (
+        Array.isArray(requester.notifications.sent_friend_requests)
+          ? requester.notifications.sent_friend_requests
+          : []
+      ).filter((request) => String(request?.id || "") !== receiverId);
+
+      if (
+        !(receiver.friends || []).some(
+          (friend) => String(friend) === requesterId,
+        )
+      ) {
+        receiver.friends.push(requester._id);
       }
-    });
-});
+
+      if (
+        !(requester.friends || []).some(
+          (friend) => String(friend) === receiverId,
+        )
+      ) {
+        requester.friends.push(receiver._id);
+      }
+
+      await Promise.all([receiver.save(), requester.save()]);
+
+      emitUserRefresh(io, [receiverId, requesterId], "friends:updated");
+
+      return res.status(201).json({
+        message: "Request accepted. You're now friends!",
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 UserRouter.delete(
   "/removeFriend/:my_id/:friend_id",
   checkAuth,
+  requireSelfParam("my_id"),
   function (req, res, next) {
     const io = req.app.locals.io;
     const { my_id, friend_id } = req.params;
@@ -2179,57 +3262,8 @@ UserRouter.delete(
   },
 );
 
-///////Update Notification INFO USER
-UserRouter.put("/editUserInfo/:me_id/:friend_id", function (req, res, next) {
-  const io = req.app.locals.io;
-  let currentUser;
-  UserModel.findOne({ _id: req.params.me_id })
-    .then((user) => {
-      user.notifications.forEach((notification) => {
-        if (notification.id == req.params.friend_id) {
-          notification.status = "read";
-          user.save();
-        }
-      });
-      currentUser = user;
-      return UserModel.findOne({ _id: req.params.friend_id }).select("chat");
-    })
-    .then((friendUser) => {
-      if (friendUser) {
-        let hasChatUpdates = false;
-        friendUser.chat = Array.isArray(friendUser.chat) ? friendUser.chat : [];
-
-        friendUser.chat.forEach((message) => {
-          if (
-            String(message?._id) === String(req.params.me_id) &&
-            message?.from === "me" &&
-            message?.status !== "read"
-          ) {
-            message.status = "read";
-            hasChatUpdates = true;
-          }
-        });
-
-        if (hasChatUpdates) {
-          return friendUser.save().then(() => currentUser);
-        }
-      }
-
-      return currentUser;
-    })
-    .then((user) => {
-      emitUserRefresh(
-        io,
-        [req.params.me_id, req.params.friend_id],
-        "notification:read",
-      );
-      res.status(200).json(user);
-    })
-    .catch(next);
-});
-
 UserRouter.put(
-  "/notifications/:notificationId/read",
+  "/friend-requests/:requestId/read",
   checkAuth,
   async function (req, res, next) {
     try {
@@ -2241,35 +3275,89 @@ UserRouter.put(
         });
       }
 
-      let notification = user.notifications.id(req.params.notificationId);
+      const friendRequests = Array.isArray(user.notifications?.friend_requests)
+        ? user.notifications.friend_requests
+        : [];
 
-      if (!notification) {
-        notification = (user.notifications || []).find(
-          (entry) => String(entry?._id) === String(req.params.notificationId),
+      let friendRequest = user.notifications?.friend_requests?.id?.(
+        req.params.requestId,
+      );
+
+      if (!friendRequest) {
+        friendRequest = friendRequests.find(
+          (entry) => String(entry?._id) === String(req.params.requestId),
         );
       }
 
-      if (!notification) {
-        notification = (user.notifications || []).find(
-          (entry) => String(entry?.id) === String(req.params.notificationId),
+      if (!friendRequest) {
+        friendRequest = friendRequests.find(
+          (entry) => String(entry?.id) === String(req.params.requestId),
         );
       }
 
-      if (!notification) {
+      if (!friendRequest) {
         return res.status(404).json({
-          message: "Notification not found.",
+          message: "Friend request not found.",
         });
       }
 
-      notification.status = "read";
-      await user.save();
+      const requesterId = String(friendRequest.id || "").trim();
+
+      user.notifications.rejected_users = Array.isArray(
+        user.notifications?.rejected_users,
+      )
+        ? user.notifications.rejected_users
+        : [];
+
+      const alreadyRejected = user.notifications.rejected_users.some(
+        (entry) => String(entry?.id || "") === requesterId,
+      );
+
+      if (!alreadyRejected && requesterId) {
+        user.notifications.rejected_users.push({
+          id: requesterId,
+          message: friendRequest.message || "Friend request rejected",
+          status: "rejected",
+        });
+      }
+
+      user.notifications.friend_requests = friendRequests.filter(
+        (entry) =>
+          String(entry?._id || "") !== String(friendRequest._id || "") &&
+          String(entry?.id || "") !== requesterId,
+      );
+
+      const requester = requesterId
+        ? await UserModel.findById(requesterId)
+        : null;
+
+      if (requester) {
+        requester.notifications =
+          requester.notifications && typeof requester.notifications === "object"
+            ? requester.notifications
+            : {};
+        requester.notifications.sent_friend_requests = (
+          Array.isArray(requester.notifications.sent_friend_requests)
+            ? requester.notifications.sent_friend_requests
+            : []
+        ).filter((request) => String(request?.id || "") !== String(user._id));
+      }
+
+      await Promise.all([
+        user.save(),
+        requester ? requester.save() : Promise.resolve(),
+      ]);
 
       const io = req.app.locals.io;
-      emitUserRefresh(io, String(user._id), "notification:read");
+      emitUserRefresh(
+        io,
+        requesterId ? [String(user._id), requesterId] : String(user._id),
+        "friend-request:rejected",
+      );
 
       return res.status(200).json({
-        message: "Notification marked as read.",
-        notificationId: String(notification._id || req.params.notificationId),
+        message: "Friend request rejected.",
+        requestId: String(friendRequest._id || req.params.requestId),
       });
     } catch (error) {
       return next(error);
@@ -2277,207 +3365,22 @@ UserRouter.put(
   },
 );
 
-/////////////Update User isConnected status
-UserRouter.put("/connection/:id", function (req, res, next) {
-  UserModel.findByIdAndUpdate({ _id: req.params.id }, req.body, {
-    useFindAndModify: false,
-  })
-    .then(function (result) {
-      res.json(result);
-    })
-    .catch(next);
-});
-
-///////SENDING MESSAGE TO FRIEND
-UserRouter.post("/chat/send/:friendID", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.friendID })
-    .then((friend) => {
-      friend.chat.push(req.body);
-      friend.save();
-    })
-    .then((response) => {
-      res.status(201).json(response);
-    })
-    .catch(next);
-});
-
-///////POST A POST//The best architecture
-UserRouter.post("/posts/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((mine) => {
-      mine.posts.push(req.body);
-      return mine.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json(result.posts.pop());
-      } else {
-        res.status(500).json();
-      }
-    })
-    .catch(next);
-});
-/////Searching in posts
-UserRouter.get(
-  "/searchPosts/:keyword/:subject/:category/:my_id",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((mine) => {
-        const array = [];
-        mine.posts.forEach((post) => {
-          PostsModel.findOne({ _id: post }).then((user) => {
-            if (
-              req.params.keyword !== "$" &&
-              req.params.subject === "$" &&
-              req.params.category === "$"
-            ) {
-              if (
-                String(user.note).toLowerCase() ===
-                  req.params.keyword.toLowerCase() ||
-                String(user.note)
-                  .toLowerCase()
-                  .includes(req.params.keyword.toLowerCase())
-              ) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword === "$" &&
-              req.params.subject !== "$" &&
-              req.params.category === "$"
-            ) {
-              if (user.subject === req.params.subject) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword === "$" &&
-              req.params.subject === "$" &&
-              req.params.category !== "$"
-            ) {
-              if (user.category === req.params.category) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword !== "$" &&
-              req.params.subject !== "$" &&
-              req.params.category === "$"
-            ) {
-              if (
-                String(user.note).toLowerCase() ===
-                  req.params.keyword.toLowerCase() ||
-                String(user.note)
-                  .toLowerCase()
-                  .includes(
-                    req.params.keyword.toLowerCase() &&
-                      user.subject === req.params.subject,
-                  )
-              ) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword !== "$" &&
-              req.params.subject === "$" &&
-              req.params.category !== "$"
-            ) {
-              if (
-                String(user.note).toLowerCase() ===
-                  req.params.keyword.toLowerCase() ||
-                String(user.note)
-                  .toLowerCase()
-                  .includes(
-                    req.params.keyword.toLowerCase() &&
-                      user.category === req.params.category,
-                  )
-              ) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword == "$" &&
-              req.params.subject !== "$" &&
-              req.params.category !== "$"
-            ) {
-              if (
-                user.subject === req.params.subject &&
-                user.category === req.params.category
-              ) {
-                array.push(user);
-              }
-            }
-            if (
-              req.params.keyword !== "$" &&
-              req.params.subject !== "$" &&
-              req.params.category !== "$"
-            ) {
-              if (
-                String(user.note).toLowerCase() ===
-                  req.params.keyword.toLowerCase() ||
-                String(user.note)
-                  .toLowerCase()
-                  .includes(
-                    req.params.keyword.toLowerCase() &&
-                      user.subject === req.params.subject &&
-                      user.category === req.params.category,
-                  )
-              ) {
-                array.push(user);
-              }
-            }
-          });
-        });
-        return array;
-      })
-      .then((array2) => {
-        console.log(array2);
-        res.status(200).json({
-          array: array2,
-        });
-      })
-      .catch(next);
-  },
-);
-//////////////Terminology post
-UserRouter.post("/newTerminology/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((mine) => {
-      mine.terminology.push(req.body);
-      return mine.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json(result.terminology.pop());
-      } else {
-        res.status(500).json();
-      }
-    })
-    .catch(next);
-});
-
 //////////////////////Posting update for a user before leaving app
 UserRouter.put("/isOnline/:id", function (req, res, next) {
   const io = req.app.locals.io;
   UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
-        return res.status(404).json({
+        res.status(404).json({
           message: "User not found.",
         });
+        return null;
       }
 
-      user.identity.status.isLoggedIn = req.body.isConnected;
-      user.identity.status.lastSeenAt = new Date();
-
-      if (!req.body.isConnected && Array.isArray(user.login_record)) {
-        for (let i = user.login_record.length - 1; i >= 0; i -= 1) {
-          if (!user.login_record[i].loggedOutAt) {
-            user.login_record[i].loggedOutAt = new Date();
-            break;
-          }
-        }
-      }
+      setUserConnectionState(user, {
+        isConnected: req.body.isConnected,
+        at: new Date(),
+      });
 
       return user.save();
     })
@@ -2496,23 +3399,25 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
 });
 
 UserRouter.put("/heartbeat/:id", function (req, res, next) {
-  UserModel.findByIdAndUpdate(
-    req.params.id,
-    {
-      $set: {
-        "identity.status.isLoggedIn": true,
-        "identity.status.lastSeenAt": new Date(),
-      },
-    },
-    {
-      new: true,
-    },
-  )
+  UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
-        return res.status(404).json({
+        res.status(404).json({
           message: "User not found.",
         });
+        return null;
+      }
+
+      setUserConnectionState(user, {
+        isConnected: true,
+        at: new Date(),
+      });
+
+      return user.save();
+    })
+    .then((user) => {
+      if (!user) {
+        return null;
       }
 
       return res.status(200).json({
@@ -2522,851 +3427,366 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
     })
     .catch(next);
 });
-//////////////////////Posting update for a user before leaving app
-UserRouter.put("/updateBeforeLeave/:id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.id })
-    .then((result) => {
-      result.study_session.push(req.body.study_session);
-      result.save();
-    })
-    .then((response) => {
-      res.status(201).json(response);
-    })
-    .catch(next);
-});
+UserRouter.post(
+  "/addCourseInfo/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
 
-//////////////////////delete unit
-UserRouter.delete(
-  "/deleteCustomize/:my_id/:customizeID/:type",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        if (req.params.type == "unit_inMemory") {
-          for (var i = 0; i < user.study.unitsInMemory.length; i++) {
-            if (user.study.unitsInMemory[i]._id == req.params.customizeID) {
-              user.study.unitsInMemory.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "propertyObject") {
-          for (var i = 0; i < user.study.propertyObjects.length; i++) {
-            if (user.study.propertyObjects[i]._id == req.params.customizeID) {
-              user.study.propertyObjects.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "functionNature") {
-          for (var i = 0; i < user.study.functionNatures.length; i++) {
-            if (user.study.functionNatures[i]._id == req.params.customizeID) {
-              user.study.functionNatures.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "changeFactor") {
-          for (var i = 0; i < user.study.changeFactors.length; i++) {
-            if (user.study.changeFactors[i]._id == req.params.customizeID) {
-              user.study.changeFactors.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-//////////////////////edit unit
-UserRouter.put(
-  "/editCustomize/:my_id/:customizeID/:type",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        if (req.params.type == "proprertyUnit") {
-          for (var i = 0; i < user.study.unitsInMemory.length; i++) {
-            if (user.study.unitsInMemory[i]._id == req.params.customizeID) {
-              user.study.unitsInMemory.splice(i, 1, req.body);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "propertyObject") {
-          for (var i = 0; i < user.study.propertyObjects.length; i++) {
-            if (user.study.propertyObjects[i]._id == req.params.customizeID) {
-              user.study.propertyObjects.splice(i, 1, req.body);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "functionNature") {
-          for (var i = 0; i < user.study.functionNatures.length; i++) {
-            if (user.study.functionNatures[i]._id == req.params.customizeID) {
-              user.study.functionNatures.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "changeFactor") {
-          for (var i = 0; i < user.study.changeFactors.length; i++) {
-            if (user.study.changeFactors[i]._id == req.params.customizeID) {
-              user.study.changeFactors.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-///////////////EDIT propertyObject and propertyUnit////////////
-//////////////////////edit unit
-UserRouter.put(
-  "/editPropertyObjectAndUnitCustomize/:my_id/:propertyObjectcustomizeID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        for (var i = 0; i < user.study.propertyObjects.length; i++) {
-          if (
-            user.study.propertyObjects[i]._id ==
-            req.params.propertyObjectcustomizeID
-          ) {
-            user.study.propertyObjects.splice(i, 1, req.body.propertyObject);
-            user.save();
-          }
-        }
-        user.study.unitsInMemory = req.body.propertyUnit;
-        user.save();
-        return user;
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-//////////////////////Add unit
-UserRouter.post("/addCustomize/:my_id/:type", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (req.params.type == "unit_inMemory") {
-        user.study.unitsInMemory.push(req.body);
-        return user.save();
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
       }
-      if (req.params.type == "propertyObject") {
-        user.study.propertyObjects.push(req.body);
-        return user.save();
-      }
-      if (req.params.type == "functionNature") {
-        user.study.functionNatures.push(req.body);
-        return user.save();
-      }
-      if (req.params.type == "changeFactor") {
-        user.study.changeFactors.push(req.body);
-        return user.save();
-      }
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
-//.................................AddMemory......................
-UserRouter.post("/addMemory/:my_id/:type", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (req.params.type == "unit_inMemory") {
-        user.study.inMemory.units.push(req.body.object);
-        return user.save();
-      }
-      if (req.params.type == "dataType_inMemory") {
-        user.study.inMemory.dataTypes.push(req.body.object);
-        return user.save();
-      }
-      if (req.params.type == "set_inMemory") {
-        user.study.inMemory.sets.push(req.body.object);
-        return user.save();
-      }
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
-//................................................................
-//////////////////////delete unit
-UserRouter.delete(
-  "/deleteMemory/:my_id/:memoryID/:type",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        if (req.params.type == "unit_inMemory") {
-          for (var i = 0; i < user.study.inMemory.units.length; i++) {
-            if (i == req.params.memoryID) {
-              user.study.inMemory.units.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "dataType_inMemory") {
-          for (var i = 0; i < user.study.inMemory.dataTypes.length; i++) {
-            if (i == req.params.memoryID) {
-              user.study.inMemory.dataTypes.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-        if (req.params.type == "set_inMemory") {
-          for (var i = 0; i < user.study.inMemory.sets.length; i++) {
-            if (i == req.params.memoryID) {
-              user.study.inMemory.sets.splice(i, 1);
-              return user.save();
-            }
-          }
-        }
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-//////////////////////delete unit
-UserRouter.put("/editMemory/:my_id/:memoryID/:type", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (req.params.type == "unit_inMemory") {
-        for (var i = 0; i < user.study.inMemory.units.length; i++) {
-          if (i == req.params.memoryID) {
-            user.study.inMemory.units.splice(i, 1, req.body.object);
-            return user.save();
-          }
-        }
-      }
-      if (req.params.type == "dataType_inMemory") {
-        for (var i = 0; i < user.study.inMemory.dataTypes.length; i++) {
-          if (i == req.params.memoryID) {
-            user.study.inMemory.dataTypes.splice(i, 1, req.body.object);
-            return user.save();
-          }
-        }
-      }
-      if (req.params.type == "set_inMemory") {
-        for (var i = 0; i < user.study.inMemory.sets.length; i++) {
-          if (i == req.params.memoryID) {
-            user.study.inMemory.sets.splice(i, 1);
-            return user.save();
-          }
-        }
-      }
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
-//...................................
-//////////////////////edit a term
-UserRouter.put("/editTerminology/:termID/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((mine) => {
-      for (var i = 0; i < mine.terminology.length; i++) {
-        if (mine.terminology[i]._id == req.params.termID) {
-          mine.terminology.splice(i, 1, req.body);
-        }
-      }
-      return mine.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-        console.log(result);
-      }
-    })
-    .catch(next);
-});
 
-//..........ADDING COURSE TO COURSE ARRAY........
-UserRouter.post("/addCourse/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      user.memory.courses.push(req.body);
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        const createdCourse = Array.isArray(result?.schoolPlanner?.courses)
-          ? result.memory.courses[result.memory.courses.length - 1] || null
-          : null;
-        res.status(201).json({
-          course: createdCourse,
-        });
+      const createdCourse = addCourseInfoToPlanner(memoryDoc, req.body);
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        course: createdCourse,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/addComponent/:my_id/:courseID",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
       }
-    })
-    .catch(next);
-});
-//....................
-//..........ADDING LECTURE TO COURSE ARRAY........
-UserRouter.post("/addLecture/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      user.memory.lectures.push(req.body);
-      recalculateCourseLectureTotals(user);
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
       }
-    })
-    .catch(next);
-});
-//....................
-//..........DELETE COURSE.....................
-UserRouter.delete("/deleteCourse/:my_id/:courseID", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      const courseIndex = user.memory.courses.findIndex(
-        (course) => String(course._id) === req.params.courseID,
+
+      const createdComponent = addComponentToPlanner(
+        memoryDoc,
+        req.params.courseID,
+        req.body,
       );
 
-      if (courseIndex !== -1) {
-        user.memory.courses.splice(courseIndex, 1);
+      if (!createdComponent) {
+        return res.status(404).json({ message: "Course not found." });
       }
 
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
+      await memoryDoc.save();
 
-UserRouter.delete("/deleteAllCourses/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (!user?.schoolPlanner) {
-        return null;
+      return res.status(201).json({
+        component: createdComponent,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+//..........ADDING COURSE TO COURSE ARRAY........
+UserRouter.post(
+  "/addCourse/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
       }
 
-      user.memory.courses = [];
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
       }
-    })
-    .catch(next);
-});
+
+      const createdPlannerCourse = addCourseInfoToPlanner(memoryDoc, {
+        course_code: req.body?.course_code,
+        course_name: req.body?.course_name,
+      });
+
+      const shouldCreateComponent = Boolean(
+        String(req.body?.course_class || "").trim() ||
+        String(req.body?.course_component || "").trim() ||
+        String(req.body?.academicYear || "").trim() ||
+        String(req.body?.course_year || "").trim() ||
+        String(req.body?.term || "").trim() ||
+        String(req.body?.course_term || "").trim() ||
+        (Array.isArray(req.body?.course_dayAndTime) &&
+          req.body.course_dayAndTime.length > 0) ||
+        String(req.body?.course_grade || "").trim() ||
+        (Array.isArray(req.body?.course_exams) &&
+          req.body.course_exams.length > 0),
+      );
+
+      if (shouldCreateComponent && createdPlannerCourse?._id) {
+        addComponentToPlanner(memoryDoc, createdPlannerCourse._id, {
+          ...req.body,
+          course_class:
+            String(req.body?.course_class || "").trim() ||
+            String(req.body?.course_component || "").trim(),
+        });
+      }
+
+      await memoryDoc.save();
+
+      const createdCourse =
+        flattenMemoryCoursesForPlanner(
+          [createdPlannerCourse || null],
+          memoryDoc.studyPlanner.studyOrganizer.exams,
+        )[0] || null;
+
+      return res.status(201).json({
+        course: createdCourse,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+//....................
+//..........ADDING LECTURE TO COURSE ARRAY........
+UserRouter.post(
+  "/addLecture/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      addLectureToPlanner(memoryDoc, req.body);
+      recalculateCourseLectureTotals(memoryDoc);
+      await memoryDoc.save();
+
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+//....................
+//..........DELETE COURSE.....................
+UserRouter.delete(
+  "/deleteCourse/:my_id/:courseID",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      removeCourseOrComponentFromPlanner(memoryDoc, req.params.courseID);
+
+      await memoryDoc.save();
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.delete(
+  "/deleteAllCourses/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+      memoryDoc.studyPlanner.studyOrganizer =
+        memoryDoc.studyPlanner.studyOrganizer || {};
+      memoryDoc.studyPlanner.studyOrganizer.courses = [];
+      memoryDoc.studyPlanner.studyOrganizer.exams = [];
+      await memoryDoc.save();
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 //...............................................
 //..........DELETE LECTURE.....................
 UserRouter.delete(
   "/deleteLecture/:my_id/:lectureID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        const lectureIndex = user.memory.lectures.findIndex(
-          (lecture) => String(lecture._id) === req.params.lectureID,
-        );
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
 
-        if (lectureIndex !== -1) {
-          user.memory.lectures.splice(lectureIndex, 1);
-        }
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
 
-        recalculateCourseLectureTotals(user);
-        return user.save();
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
+      removeLectureFromPlanner(memoryDoc, req.params.lectureID);
+      recalculateCourseLectureTotals(memoryDoc);
+      await memoryDoc.save();
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
   },
 );
 //...............................................
 
 //................Edit Course................
-UserRouter.post("/editCourse/:my_id/:courseID", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      const courseIndex = user.memory.courses.findIndex(
-        (course) => String(course._id) === req.params.courseID,
+UserRouter.post(
+  "/editCourse/:my_id/:courseID",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedPlannerCourse = updateCourseInPlanner(
+        memoryDoc,
+        req.params.courseID,
+        req.body,
       );
 
-      if (courseIndex !== -1) {
-        const previousCourse = user.memory.courses[courseIndex];
-        const previousCourseName = previousCourse.course_name;
-        const previousInstructors = Array.isArray(
-          previousCourse.course_instructors,
-        )
-          ? previousCourse.course_instructors
-          : [];
-        const nextInstructors = Array.isArray(req.body.course_instructors)
-          ? req.body.course_instructors
-          : [];
-        const nextCoursePayload = {
-          ...req.body,
-          _id: previousCourse._id,
-        };
+      await memoryDoc.save();
 
-        user.memory.courses.splice(courseIndex, 1, nextCoursePayload);
+      const updatedCourse =
+        flattenMemoryCoursesForPlanner(
+          updatedPlannerCourse ? [updatedPlannerCourse] : [],
+          memoryDoc?.studyPlanner?.studyOrganizer?.exams,
+        ).find(
+          (course) => String(course?._id) === String(req.params.courseID),
+        ) ||
+        flattenMemoryCoursesForPlanner(
+          memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+          memoryDoc?.studyPlanner?.studyOrganizer?.exams,
+        ).find(
+          (course) => String(course?._id) === String(req.params.courseID),
+        ) ||
+        null;
 
-        user.memory.lectures = user.memory.lectures.map((lecture) => {
-          if (lecture.lecture_course !== previousCourseName) {
-            return lecture;
-          }
-
-          let nextLectureInstructor = lecture.lecture_instructor;
-
-          if (previousInstructors.includes(lecture.lecture_instructor)) {
-            if (nextInstructors.includes(lecture.lecture_instructor)) {
-              nextLectureInstructor = lecture.lecture_instructor;
-            } else if (nextInstructors.length > 0) {
-              nextLectureInstructor = nextInstructors[0];
-            } else {
-              nextLectureInstructor = "-";
-            }
-          }
-
-          return {
-            ...lecture.toObject(),
-            lecture_course: req.body.course_name,
-            lecture_instructor: nextLectureInstructor,
-          };
-        });
-      }
-
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        const updatedCourse = Array.isArray(result?.schoolPlanner?.courses)
-          ? result.memory.courses.find(
-              (course) => String(course?._id) === String(req.params.courseID),
-            ) || null
-          : null;
-        res.status(201).json({
-          course: updatedCourse,
-        });
-      }
-    })
-    .catch(next);
-});
+      return res.status(201).json({
+        course: updatedCourse,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 //................Edit Course Full Pages................
 UserRouter.post(
   "/editCoursePages/:my_id/:courseNAME",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        for (i = 0; i < user.memory.courses.length; i++) {
-          if (user.memory.courses[i].course_name == req.params.courseNAME) {
-            user.memory.courses.splice(i, 1, {
-              course_name: user.memory.courses[i].course_name,
-              course_component: user.memory.courses[i].course_component,
-              course_dayAndTime: user.memory.courses[i].course_dayAndTime,
-              course_term: user.memory.courses[i].course_term,
-              course_year: user.memory.courses[i].course_year,
-              course_class: user.memory.courses[i].course_class,
-              course_status: user.memory.courses[i].course_status,
-              course_instructors: user.memory.courses[i].course_instructors,
-              course_grade: user.memory.courses[i].course_grade,
-              course_fullGrade: user.memory.courses[i].course_fullGrade,
-              course_exams: user.memory.courses[i].course_exams,
-              course_length: req.body.course_length,
-              course_progress: req.body.course_progress,
-              course_partOfPlan: user.memory.courses[i].course_partOfPlan,
-              exam_type: user.memory.courses[i].exam_type,
-              exam_date: user.memory.courses[i].exam_date,
-              exam_time: user.memory.courses[i].exam_time,
-            });
-          }
-        }
-        return user.save();
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-//................setPageFinishLecture................
-UserRouter.put(
-  "/setPageFinishLecture/:my_id/:lectureID/:boolean",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        var lectureFound;
-        for (var i = 0; i < user.memory.lectures.length; i++) {
-          if (user.memory.lectures[i]._id == req.params.lectureID) {
-            lectureFound = user.memory.lectures[i];
-            let index = user.memory.lectures[i].lecture_pagesFinished.indexOf(
-              req.body.pageNum,
-            );
-            if (index == -1) {
-              user.memory.lectures[i].lecture_pagesFinished.push(
-                req.body.pageNum,
-              );
-            } else {
-              user.memory.lectures[i].lecture_pagesFinished.splice(index, 1);
-            }
-            user.memory.lectures[i].lecture_progress =
-              user.memory.lectures[i].lecture_pagesFinished.length;
-          }
-        }
-        recalculateCourseLectureTotals(user);
-        user.save();
-        return lectureFound;
-      })
-      .then((lectureFound) => {
-        if (lectureFound) {
-          res.status(201).json({
-            lectureFound: lectureFound,
-          });
-        }
-      })
-      .catch(next);
-  },
-);
-//................HIDE UNCHECKED................
-UserRouter.put("/hideUncheckedLectures/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      for (var i = 0; i < user.memory.lectures.length; i++) {
-        if (user.memory.lectures[i].lecture_partOfPlan == false) {
-          user.memory.lectures.splice(i, 1, {
-            ...user.memory.lectures[i].toObject(),
-            lecture_hidden: true,
-          });
-        }
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
       }
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
-//................UNHIDE UNCHECKED................
-UserRouter.put("/unhideUncheckedLectures/:my_id", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      for (var i = 0; i < user.memory.lectures.length; i++) {
-        if (user.memory.lectures[i].lecture_partOfPlan == false) {
-          user.memory.lectures.splice(i, 1, {
-            ...user.memory.lectures[i].toObject(),
-            lecture_hidden: false,
-          });
-        }
-      }
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
 
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      updateCoursePagesInPlanner(memoryDoc, req.params.courseNAME, req.body);
+
+      await memoryDoc.save();
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 //................Edit Lecture................
-UserRouter.post("/editLecture/:my_id/:lectureID", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      const lectureIndex = user.memory.lectures.findIndex(
-        (lecture) => String(lecture._id) === req.params.lectureID,
-      );
+UserRouter.post(
+  "/editLecture/:my_id/:lectureID",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
 
-      if (lectureIndex !== -1) {
-        user.memory.lectures.splice(lectureIndex, 1, req.body);
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
       }
-      recalculateCourseLectureTotals(user);
-      return user.save();
-    })
-    .then((result) => {
-      if (result) {
-        res.status(201).json();
-      }
-    })
-    .catch(next);
-});
 
-//..........ADDING KEYWORD TO COURSE ARRAY........
-UserRouter.post("/addKeyword/:my_id/:type", function (req, res, next) {
-  UserModel.findOne({ _id: req.params.my_id })
-    .then((user) => {
-      if (req.params.type == "Structure") {
-        user.study.structure_keywords.push(req.body);
-      }
-      if (req.params.type == "Function") {
-        user.study.function_keywords.push(req.body);
-      }
-      return user.save();
-    })
-    .then((user) => {
-      if (req.params.type == "Structure") {
-        return user.study.structure_keywords.pop();
-      }
-      if (req.params.type == "Function") {
-        return user.study.function_keywords.pop();
-      }
-    })
-    .then((keyword) => {
-      if (keyword) {
-        return res.status(201).json(keyword);
-      }
-    })
-    .catch(next);
-});
-
-//................Add keywordProperties................
-UserRouter.post(
-  "/addKeywordStructureProperties/:my_id/:keywordID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        var keyword;
-        for (i = 0; i < user.study.structure_keywords.length; i++) {
-          if (user.study.structure_keywords[i]._id == req.params.keywordID) {
-            user.study.structure_keywords[i].keyword_structureProperties.push(
-              req.body,
-            );
-            keyword = user.study.structure_keywords[i];
-          }
-        }
-        user.save();
-        return keyword;
-      })
-      .then((keyword) => {
-        if (keyword) {
-          res.status(201).json(keyword);
-        }
-      })
-      .catch(next);
+      updateLectureInPlanner(memoryDoc, req.params.lectureID, req.body);
+      recalculateCourseLectureTotals(memoryDoc);
+      await memoryDoc.save();
+      return res.status(201).json();
+    } catch (error) {
+      return next(error);
+    }
   },
 );
-//................Add keywordPropertiesFunction................
-UserRouter.post(
-  "/addKeywordFunctionProperties/:my_id/:keywordID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        var keyword;
-        for (i = 0; i < user.study.function_keywords.length; i++) {
-          if (user.study.function_keywords[i]._id == req.params.keywordID) {
-            user.study.function_keywords[i].keyword_functionProperties.push(
-              req.body,
-            );
-            keyword = user.study.function_keywords[i];
-          }
-        }
-        user.save();
-        return keyword;
-      })
-      .then((keyword) => {
-        if (keyword) {
-          res.status(201).json(keyword);
-        }
-      })
-      .catch(next);
-  },
-);
-//................Edit keywordProperties................
-UserRouter.post(
-  "/editKeywordStructureProperty/:my_id/:keywordID/:keywordPropertyID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        var keywordProperties;
-        for (i = 0; i < user.study.structure_keywords.length; i++) {
-          if (user.study.structure_keywords[i]._id == req.params.keywordID) {
-            for (
-              j = 0;
-              j <
-              user.study.structure_keywords[i].keyword_structureProperties
-                .length;
-              j++
-            ) {
-              if (
-                user.study.structure_keywords[i].keyword_structureProperties[j]
-                  ._id == req.params.keywordPropertyID
-              ) {
-                user.study.structure_keywords[
-                  i
-                ].keyword_structureProperties.splice(j, 1, req.body);
-                keywordProperties = user.study.structure_keywords[i];
-              }
-            }
-          }
-        }
-        user.save();
-        return keywordProperties;
-      })
-      .then((keywordProperties) => {
-        if (keywordProperties) {
-          res.status(201).json(keywordProperties);
-        }
-      })
-      .catch(next);
-  },
-);
-//................editKeywordStructureAfterChangingFunctionName................
-UserRouter.post(
-  "/editKeywordStructureAfterChangingFunctionName/:my_id",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        user.study.structure_keywords = req.body;
-        return user.save();
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json(result);
-        }
-      })
-      .catch(next);
-  },
-);
-//................DELETE KEYWORD STRUCTURE................
-UserRouter.post(
-  "/deleteKeyword/:my_id/:keywordID/:type",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        if (req.params.type === "Structure") {
-          for (i = 0; i < user.study.structure_keywords.length; i++) {
-            if (user.study.structure_keywords[i]._id == req.params.keywordID) {
-              user.study.structure_keywords.splice(i, 1);
-            }
-          }
-        }
-        if (req.params.type === "Function") {
-          for (i = 0; i < user.study.function_keywords.length; i++) {
-            if (user.study.function_keywords[i]._id == req.params.keywordID) {
-              user.study.function_keywords.splice(i, 1);
-            }
-          }
-        }
-        return user.save();
-      })
-      .then((result) => {
-        if (result) {
-          res.status(201).json();
-        }
-      })
-      .catch(next);
-  },
-);
-//................DELETE KEYWORD STRUCTURE PROPERTY................
-UserRouter.post(
-  "/deleteKeywordStructureProperty/:my_id/:keywordID/:keywordStructurePropertyID",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        let object;
-        for (i = 0; i < user.study.structure_keywords.length; i++) {
-          if (user.study.structure_keywords[i]._id == req.params.keywordID) {
-            for (
-              j = 0;
-              j <
-              user.study.structure_keywords[i].keyword_structureProperties
-                .length;
-              j++
-            ) {
-              if (
-                user.study.structure_keywords[i].keyword_structureProperties[j]
-                  ._id == req.params.keywordStructurePropertyID
-              ) {
-                let property =
-                  user.study.structure_keywords[i].keyword_structureProperties[
-                    j
-                  ];
-                user.study.structure_keywords[
-                  i
-                ].keyword_structureProperties.splice(j, 1);
-                user.save();
-                object = {
-                  length:
-                    user.study.structure_keywords[i].keyword_structureProperties
-                      .length,
-                  property: property,
-                };
-              }
-            }
-          }
-        }
-        return object;
-      })
-      .then((keywordStructureProperty_object) => {
-        res.status(201).json(keywordStructureProperty_object);
-      })
-      .catch(next);
-  },
-);
-
-//................EDIT KEYWORD STRUCTURE................
-UserRouter.post(
-  "/editKeyword/:my_id/:keywordID/:type",
-  function (req, res, next) {
-    UserModel.findOne({ _id: req.params.my_id })
-      .then((user) => {
-        if (req.params.type === "Structure") {
-          for (i = 0; i < user.study.structure_keywords.length; i++) {
-            if (user.study.structure_keywords[i]._id == req.params.keywordID) {
-              console.log(req.body);
-              user.study.structure_keywords.splice(i, 1, req.body);
-              user.save();
-              return user.study.structure_keywords[i];
-            }
-          }
-        }
-        if (req.params.type === "Function") {
-          for (i = 0; i < user.study.function_keywords.length; i++) {
-            if (user.study.function_keywords[i]._id == req.params.keywordID) {
-              user.study.function_keywords.splice(i, 1, req.body);
-              user.save();
-              return user.study.function_keywords[i];
-            }
-          }
-        }
-      })
-      .then((keywordFunction) => {
-        if (keywordFunction) {
-          res.status(201).json(keywordFunction);
-        }
-      })
-      .catch(next);
-  },
-);
-
 //....................
 //Attach all the routes to router\
 export default UserRouter;

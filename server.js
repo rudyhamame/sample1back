@@ -1,3 +1,4 @@
+import "dotenv/config";
 import morgan from "morgan";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -15,7 +16,10 @@ import ChatAPI from "./routes/ChatAPI.js";
 import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import ECGAPI from "./routes/ECGAPI.js";
 import TelegramAPI, { startTelegramSyncWorker } from "./routes/TelegramAPI.js";
-import UserModel from "./models/Users.js";
+// import VideoAPI from "./routes/VideoAPI.js";
+import UserModel from "./compat/UserModel.js";
+import { setUserConnectionState } from "./helpers/connectionStatus.js";
+import { emitUserRefresh } from "./helpers/realtime.js";
 
 import "dotenv/config";
 
@@ -199,12 +203,13 @@ app.get("/api/health", async function (req, res) {
     if (token && process.env.JWT_KEY) {
       const decoded = jwt.verify(token, process.env.JWT_KEY);
       const user = await UserModel.findById(decoded?.userId).select(
-        "telegram.status.apiIdEncrypted telegram.status.apiHashEncrypted telegram.status.stringSessionEncrypted",
+        "settings.telegram.status.apiIdEncrypted settings.telegram.status.apiHashEncrypted settings.telegram.status.stringSessionEncrypted",
       );
+      const telegramStatus = user?.settings?.telegram?.status || {};
       telegramConnected = Boolean(
-        user?.telegram.status?.apiIdEncrypted &&
-        user?.telegram.status?.apiHashEncrypted &&
-        user?.telegram.status?.stringSessionEncrypted,
+        telegramStatus.apiIdEncrypted &&
+        telegramStatus.apiHashEncrypted &&
+        telegramStatus.stringSessionEncrypted,
       );
     }
   } catch {}
@@ -369,32 +374,18 @@ io.on("connection", (socket) => {
         { _id: senderUserId },
         {
           $set: {
-            "chat.$[message].status": "read",
+            "chat.$[thread].conversation.$[message].status": "read",
+            "chat.$[thread].conversation.$[message].date.read": new Date(),
           },
         },
         {
           arrayFilters: [
             {
-              "message._id": readerUserId,
+              "thread.friend": readerUserId,
+            },
+            {
               "message.from": "me",
               "message.status": { $ne: "read" },
-            },
-          ],
-        },
-      );
-
-      await UserModel.updateOne(
-        { _id: readerUserId },
-        {
-          $set: {
-            "notifications.$[notification].status": "read",
-          },
-        },
-        {
-          arrayFilters: [
-            {
-              "notification.type": "chat_message",
-              "notification.id": senderUserId,
             },
           ],
         },
@@ -516,12 +507,17 @@ app.use("/api/chat", ChatAPI);
 app.use("/api/enquiries", EnquiriesAPI);
 app.use("/api/ecg", ECGAPI);
 app.use("/api/telegram", TelegramAPI);
+// app.use("/api/video", VideoAPI);
 
 // app.use("/api/posts", PostsAPI);
 
 app.use(function (error, req, res, next) {
+  if (res.headersSent) {
+    return next(error);
+  }
+
   res.status(error.status || 500);
-  res.json({
+  return res.json({
     error: {
       message: error.message,
     },
@@ -537,22 +533,15 @@ setInterval(async () => {
   try {
     const staleThreshold = new Date(Date.now() - USER_STALE_OFFLINE_AFTER_MS);
     const staleUsers = await UserModel.find({
-      "identity.status.isLoggedIn": true,
-      "identity.status.lastSeenAt": { $lt: staleThreshold },
-    }).select("_id friends login_record status");
+      "status.value": "online",
+      "status.updatedAt": { $lt: staleThreshold },
+    }).select("_id connections status");
 
     for (const staleUser of staleUsers) {
-      staleUser.identity.status.isLoggedIn = false;
-      staleUser.identity.status.lastSeenAt = new Date();
-
-      if (Array.isArray(staleUser.login_record)) {
-        for (let i = staleUser.login_record.length - 1; i >= 0; i -= 1) {
-          if (!staleUser.login_record[i].loggedOutAt) {
-            staleUser.login_record[i].loggedOutAt = new Date();
-            break;
-          }
-        }
-      }
+      setUserConnectionState(staleUser, {
+        isConnected: false,
+        at: new Date(),
+      });
 
       await staleUser.save();
 
@@ -560,7 +549,12 @@ setInterval(async () => {
         io,
         [
           String(staleUser._id),
-          ...(staleUser.friends || []).map((friend) => String(friend)),
+          ...((Array.isArray(staleUser.connections)
+            ? staleUser.connections
+            : []
+          )
+            .map((entry) => String(entry?.id || "").trim())
+            .filter(Boolean)),
         ],
         "connection:changed",
         {

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 
+// Sub-schema only. Do not register a model; `subjects` is the only collection.
 const VisitLogSchema = new mongoose.Schema({
   ip: {
     type: String,
@@ -16,6 +17,4 @@ const VisitLogSchema = new mongoose.Schema({
   },
 });
 
-const VisitLogModel = mongoose.model("visit_log", VisitLogSchema);
-
-export default VisitLogModel;
+export default VisitLogSchema;

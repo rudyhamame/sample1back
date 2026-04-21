@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 
+// Sub-schema only. Do not register a model; `subjects` is the only collection.
 const TelegramMessageSchema = new mongoose.Schema(
   {
     ownerUserId: {
@@ -143,26 +144,4 @@ const TelegramMessageSchema = new mongoose.Schema(
   },
 );
 
-TelegramMessageSchema.index(
-  {
-    ownerUserId: 1,
-    groupReference: 1,
-    telegramMessageId: 1,
-  },
-  {
-    unique: true,
-  },
-);
-
-TelegramMessageSchema.index({
-  ownerUserId: 1,
-  groupReference: 1,
-  dateMs: -1,
-});
-
-const TelegramMessageModel = mongoose.model(
-  "telegram_message",
-  TelegramMessageSchema,
-);
-
-export default TelegramMessageModel;
+export default TelegramMessageSchema;
