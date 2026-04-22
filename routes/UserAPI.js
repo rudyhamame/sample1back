@@ -128,8 +128,18 @@ const getSubjectStatus = (user) =>
 
 const getLegacyProfilePicture = (user) => {
   const bio = getSubjectBio(user);
+  const pictureRoot =
+    bio?.picture && typeof bio.picture === "object" ? bio.picture : {};
+  const profilePicRoot =
+    pictureRoot?.profilePic && typeof pictureRoot.profilePic === "object"
+      ? pictureRoot.profilePic
+      : {};
   const profilePic =
-    bio?.profilePic && typeof bio.profilePic === "object" ? bio.profilePic : {};
+    profilePicRoot?.index && typeof profilePicRoot.index === "object"
+      ? profilePicRoot.index
+      : bio?.profilePic && typeof bio.profilePic === "object"
+        ? bio.profilePic
+        : {};
 
   return {
     url: String(profilePic?.url || "").trim(),
@@ -148,8 +158,18 @@ const getLegacyProfilePicture = (user) => {
 
 const getLegacyProfilePictureViewport = (user) => {
   const bio = getSubjectBio(user);
+  const pictureRoot =
+    bio?.picture && typeof bio.picture === "object" ? bio.picture : {};
+  const profilePicRoot =
+    pictureRoot?.profilePic && typeof pictureRoot.profilePic === "object"
+      ? pictureRoot.profilePic
+      : {};
   const viewport =
-    bio?.viewport && typeof bio.viewport === "object" ? bio.viewport : {};
+    profilePicRoot?.viewport && typeof profilePicRoot.viewport === "object"
+      ? profilePicRoot.viewport
+      : bio?.viewport && typeof bio.viewport === "object"
+        ? bio.viewport
+        : {};
 
   return {
     scale: Number.isFinite(Number(viewport?.zoom)) ? Number(viewport.zoom) : 1,
@@ -180,11 +200,14 @@ const buildLegacyIdentity = (user) => {
       dob: bio?.dob || null,
       gender: "other",
       email_address: String(bio?.email || "").trim(),
-      program: "",
-      university: "",
-      year: "",
-      studyYear: "",
-      term: "",
+      faculty: String(bio?.studying?.faculty || "").trim(),
+      program: String(bio?.studying?.program || "").trim(),
+      university: String(bio?.studying?.university || "").trim(),
+      year: String(bio?.studying?.time?.currentDate?.year || "").trim(),
+      studyYear: String(bio?.studying?.time?.currentDate?.year || "").trim(),
+      term: String(
+        bio?.studying?.time?.currentDate?.term || bio?.studying?.term || "",
+      ).trim(),
       profession: "",
       profilePicture: {
         picture: getLegacyProfilePicture(user),
@@ -2030,13 +2053,15 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       .select(
         [
           "auth.username",
-          "bio.firstname",
-          "bio.lastname",
-          "bio.program",
-          "bio.university",
-          "bio.studyYear",
-          "bio.term",
-          "bio.viewport",
+          "profile.firstname",
+          "profile.lastname",
+          "profile.bio",
+          "profile.studying.program",
+          "profile.studying.university",
+          "profile.studying.faculty",
+          "profile.studying.time.currentDate.year",
+          "profile.studying.time.currentDate.term",
+          "profile.picture.profilePic.viewport",
         ].join(" "),
       )
       .lean();
@@ -2096,23 +2121,35 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       ? requestedAiProvider
       : "openai";
 
-    const nextProgram = String(req.body?.program ?? bio.program ?? "").trim();
+    const nextProgram = String(
+      req.body?.program ?? bio?.studying?.program ?? "",
+    ).trim();
     const nextUniversity = String(
-      req.body?.university ?? bio.university ?? "",
+      req.body?.university ?? bio?.studying?.university ?? "",
     ).trim();
+    const nextFaculty = String(req.body?.faculty ?? bio?.studying?.faculty ?? "").trim();
     const nextStudyYear = String(
-      req.body?.studyYear ?? bio.studyYear ?? "",
+      req.body?.studyYear ?? bio?.studying?.time?.currentDate?.year ?? "",
     ).trim();
-    const nextTerm = String(req.body?.term ?? bio.term ?? "").trim();
+    const nextTerm = String(
+      req.body?.term ?? bio?.studying?.time?.currentDate?.term ?? "",
+    ).trim();
+    const nextBio = String(req.body?.bio ?? bio?.bio ?? "").trim();
+    const nextStudyYearNumber = Number(nextStudyYear);
 
     const updateSet = {
-      "bio.firstname": nextFirstname,
-      "bio.lastname": nextLastname,
+      "profile.firstname": nextFirstname,
+      "profile.lastname": nextLastname,
+      "profile.bio": nextBio,
       "auth.username": nextUsername,
-      "bio.program": nextProgram,
-      "bio.university": nextUniversity,
-      "bio.studyYear": nextStudyYear,
-      "bio.term": nextTerm,
+      "profile.studying.program": nextProgram,
+      "profile.studying.university": nextUniversity,
+      "profile.studying.faculty": nextFaculty,
+      "profile.studying.time.currentDate.year":
+        nextStudyYear === "" || !Number.isFinite(nextStudyYearNumber)
+          ? null
+          : nextStudyYearNumber,
+      "profile.studying.time.currentDate.term": nextTerm || null,
     };
 
     let nextProfilePictureViewport = getLegacyProfilePictureViewport(user) || {
@@ -2137,7 +2174,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
         updatedAt: new Date(),
       };
 
-      updateSet["bio.viewport"] = {
+      updateSet["profile.picture.profilePic.viewport"] = {
         x: nextProfilePictureViewport.offsetX,
         y: nextProfilePictureViewport.offsetY,
         zoom: nextProfilePictureViewport.scale,
@@ -2238,6 +2275,8 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       firstname: nextFirstname,
       lastname: nextLastname,
       username: nextUsername,
+      bio: nextBio,
+      faculty: nextFaculty,
       program: nextProgram,
       university: nextUniversity,
       studyYear: nextStudyYear,
