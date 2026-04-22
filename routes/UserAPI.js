@@ -2652,15 +2652,23 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
         user?.bio?.profilePic?.publicId ||
         "",
     ).trim();
-
-    user.profile = user.profile || {};
+    const currentProfileUrl = String(
+      user?.profile?.profilePic?.url || user?.bio?.profilePic?.url || "",
+    ).trim();
+    const deletedImageUrl = String(imageToDelete?.url || "").trim();
 
     setMemoryLocalGallery(memoryDoc, nextImageGallery);
-    if (currentProfilePublicId === publicId) {
+    const shouldSaveUser =
+      currentProfilePublicId === publicId ||
+      (deletedImageUrl && currentProfileUrl === deletedImageUrl);
+
+    if (shouldSaveUser) {
+      user.profile = user.profile || {};
+
       const fallbackImage =
         nextImageGallery.find((image) => image.resourceType === "image") ||
         null;
-      user.profile.profilePic = fallbackImage
+      const nextProfilePicture = fallbackImage
         ? {
             url: fallbackImage.url,
             publicId: fallbackImage.publicId,
@@ -2675,9 +2683,19 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
             width: null,
             height: null,
           };
+
+      user.profile.profilePic = nextProfilePicture;
+
+      if (user?.bio && typeof user.bio === "object") {
+        user.bio.profilePic = nextProfilePicture;
+      }
     }
 
-    await Promise.all([memoryDoc.save(), user.save()]);
+    await memoryDoc.save();
+
+    if (shouldSaveUser) {
+      await user.save();
+    }
 
     return res.status(200).json({
       message: "Media deleted from gallery.",

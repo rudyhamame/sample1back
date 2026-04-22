@@ -48,19 +48,39 @@ const ProfileSchema = new Schema(
       position: { type: String, default: "" },
     },
     bio: { type: String, default: "" },
-    profilePic: {
-      url: { type: String, default: "" },
-      publicId: { type: String, default: "" },
-      mimeType: { type: String, default: "" },
-      width: { type: Number, default: null },
-      height: { type: Number, default: null },
-    },
-    viewport: {
-      x: { type: Number, default: 0 },
-      y: { type: Number, default: 0 },
-      zoom: { type: Number, default: 1 },
-      width: { type: Number, default: null },
-      height: { type: Number, default: null },
+    picture: {
+      profilePic: {
+        index: {
+          url: { type: String, default: "" },
+          publicId: { type: String, default: "" },
+          mimeType: { type: String, default: "" },
+          width: { type: Number, default: null },
+          height: { type: Number, default: null },
+        },
+        viewport: {
+          x: { type: Number, default: 0 },
+          y: { type: Number, default: 0 },
+          zoom: { type: Number, default: 1 },
+          width: { type: Number, default: null },
+          height: { type: Number, default: null },
+        },
+        wallpaper: {
+          index: {
+            url: { type: String, default: "" },
+            publicId: { type: String, default: "" },
+            mimeType: { type: String, default: "" },
+            width: { type: Number, default: null },
+            height: { type: Number, default: null },
+          },
+          viewport: {
+            x: { type: Number, default: 0 },
+            y: { type: Number, default: 0 },
+            zoom: { type: Number, default: 1 },
+            width: { type: Number, default: null },
+            height: { type: Number, default: null },
+          },
+        },
+      },
     },
   },
   { _id: false },

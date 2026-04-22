@@ -48,6 +48,7 @@ const TraceMediaItemSchema = new Schema(
 const TraceMoaUserSchema = new Schema(
   {
     images: { type: [TraceMediaItemSchema], default: [] },
+    patterns: { type: [TraceMediaItemSchema], default: [] },
     videos: { type: [TraceMediaItemSchema], default: [] },
     texts: { type: [TraceMediaItemSchema], default: [] },
     audios: { type: [TraceMediaItemSchema], default: [] },
