@@ -91,8 +91,7 @@ const isProfileComplete = (user) => {
     !profile.phone?.trim() ||
     !profile.dob ||
     !profile.hometown?.Country?.trim() ||
-    !profile.hometown?.City?.trim() ||
-    !profile.bio?.trim()
+    !profile.hometown?.City?.trim()
   ) {
     return false;
   }
@@ -130,6 +129,8 @@ const getLegacyProfilePicture = (user) => {
   const bio = getSubjectBio(user);
   const pictureRoot =
     bio?.picture && typeof bio.picture === "object" ? bio.picture : {};
+  const directProfilePic =
+    bio?.profilePic && typeof bio.profilePic === "object" ? bio.profilePic : {};
   const profilePicRoot =
     pictureRoot?.profilePic && typeof pictureRoot.profilePic === "object"
       ? pictureRoot.profilePic
@@ -137,8 +138,8 @@ const getLegacyProfilePicture = (user) => {
   const profilePic =
     profilePicRoot?.index && typeof profilePicRoot.index === "object"
       ? profilePicRoot.index
-      : bio?.profilePic && typeof bio.profilePic === "object"
-        ? bio.profilePic
+      : directProfilePic
+        ? directProfilePic
         : {};
 
   return {
@@ -552,6 +553,49 @@ const ensureFriendRelationship = (user, otherUserId, userMode) => {
   });
   return true;
 };
+
+const removeFriendRelationship = (user, otherUserId) => {
+  const normalizedOtherId = normalizeUserId(otherUserId);
+  if (!user || !normalizedOtherId) {
+    return false;
+  }
+
+  const currentConnections = Array.isArray(user.connections)
+    ? user.connections
+    : [];
+  const nextConnections = currentConnections.filter((entry) => {
+    if (!entry) {
+      return false;
+    }
+
+    if (typeof entry === "object" && entry !== null) {
+      const candidate = entry.id || entry.userID || entry._id || entry;
+      const normalized =
+        typeof candidate === "object" && candidate !== null
+          ? candidate._id || candidate
+          : candidate;
+      return normalizeUserId(normalized) !== normalizedOtherId;
+    }
+
+    return normalizeUserId(entry) !== normalizedOtherId;
+  });
+
+  const didChange = nextConnections.length !== currentConnections.length;
+  if (didChange) {
+    user.connections = nextConnections;
+  }
+
+  return didChange;
+};
+
+const getFriendRelationshipMode = (user, otherUserId) =>
+  String(
+    getFriendRelationshipEntry(user, otherUserId)?.mode ||
+      getFriendRelationshipEntry(user, otherUserId)?.userMode ||
+      "stranger",
+  )
+    .trim()
+    .toLowerCase();
 
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
@@ -1560,7 +1604,6 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
     const phone = String(req.body?.phone || "").trim();
     const dobInput = String(req.body?.dob || "").trim();
     const hometown = req.body?.hometown;
-    const bio = String(req.body?.bio || "").trim();
     const studying = req.body?.studying;
     const working = req.body?.working;
     const normalizeNullableNumber = (value, defaultValue = null) => {
@@ -1578,12 +1621,11 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       !phone ||
       !dobInput ||
       !hometown?.Country ||
-      !hometown?.City ||
-      !bio
+      !hometown?.City
     ) {
       return res.status(400).json({
         message:
-          "First name, last name, email, phone, date of birth, country, city, and bio are required.",
+          "First name, last name, email, phone, date of birth, country, and city are required.",
       });
     }
 
@@ -1685,7 +1727,6 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       Country: hometown.Country,
       City: hometown.City,
     };
-    user.profile.bio = bio;
 
     if (isStudying) {
       const studyingTime =
@@ -1881,7 +1922,7 @@ UserRouter.get("/update/:id", async function (req, res, next) {
   try {
     const profile = await UserModel.findById(req.params.id)
       .select(
-        "auth profile bio settings connections status clinicalReality memory",
+        "auth profile bio settings connections friends status clinicalReality memory",
       )
       .lean();
 
@@ -1910,13 +1951,35 @@ UserRouter.get("/update/:id", async function (req, res, next) {
       updatedAt: null,
     };
 
-    const friendEntries = Array.isArray(profile.connections)
-      ? profile.connections.map((entry) => ({
-          userID: entry?.id || null,
-          userMode: entry?.mode || "stranger",
-          ...entry,
-        }))
+    const connectionEntries = Array.isArray(profile.connections)
+      ? profile.connections
       : [];
+    const hasResolvableConnectionIds = connectionEntries.some((entry) =>
+      Boolean(String(entry?.id || entry?.userID || "").trim()),
+    );
+    const rawRelationshipEntries = hasResolvableConnectionIds
+      ? connectionEntries
+      : Array.isArray(profile.friends)
+        ? profile.friends
+        : connectionEntries;
+    const friendEntries = rawRelationshipEntries.map((entry) => {
+      const normalizedEntry =
+        typeof entry === "object" && entry !== null ? entry : {};
+
+      return {
+        ...normalizedEntry,
+        userID:
+          normalizedEntry?.id ||
+          normalizedEntry?.userID ||
+          normalizedEntry?._id ||
+          (typeof entry === "object" && entry !== null ? null : entry),
+        userMode:
+          normalizedEntry?.mode ||
+          normalizedEntry?.userMode ||
+          normalizedEntry?.relationship?.userMode ||
+          "stranger",
+      };
+    });
     const friendIds = Array.from(
       new Set(
         friendEntries
@@ -1953,8 +2016,8 @@ UserRouter.get("/update/:id", async function (req, res, next) {
               "profile.bio",
               "profile.studying",
               "profile.working",
-              "profile.profilePic",
-              "profile.viewport",
+              "profile.picture.profilePic.index",
+              "profile.picture.profilePic.viewport",
               "status",
             ].join(" "),
           )
@@ -2608,7 +2671,9 @@ UserRouter.put(
       }
 
       user.profile = user.profile || {};
-      user.profile.profilePic = {
+      user.profile.picture = user.profile.picture || {};
+      user.profile.picture.profilePic = user.profile.picture.profilePic || {};
+      user.profile.picture.profilePic.index = {
         url: selectedImage.url,
         publicId: selectedImage.publicId,
         mimeType: selectedImage.mimeType || "",
@@ -2687,12 +2752,16 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       imageGallery.filter((image) => image.publicId !== publicId),
     );
     const currentProfilePublicId = String(
-      user?.profile?.profilePic?.publicId ||
+      user?.profile?.picture?.profilePic?.index?.publicId ||
+        user?.profile?.profilePic?.publicId ||
         user?.bio?.profilePic?.publicId ||
         "",
     ).trim();
     const currentProfileUrl = String(
-      user?.profile?.profilePic?.url || user?.bio?.profilePic?.url || "",
+      user?.profile?.picture?.profilePic?.index?.url ||
+        user?.profile?.profilePic?.url ||
+        user?.bio?.profilePic?.url ||
+        "",
     ).trim();
     const deletedImageUrl = String(imageToDelete?.url || "").trim();
 
@@ -2703,6 +2772,8 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
 
     if (shouldSaveUser) {
       user.profile = user.profile || {};
+      user.profile.picture = user.profile.picture || {};
+      user.profile.picture.profilePic = user.profile.picture.profilePic || {};
 
       const fallbackImage =
         nextImageGallery.find((image) => image.resourceType === "image") ||
@@ -2723,7 +2794,7 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
             height: null,
           };
 
-      user.profile.profilePic = nextProfilePicture;
+      user.profile.picture.profilePic.index = nextProfilePicture;
 
       if (user?.bio && typeof user.bio === "object") {
         user.bio.profilePic = nextProfilePicture;
@@ -2942,15 +3013,24 @@ UserRouter.get("/hometown-cities", function (req, res, next) {
 /////Searching for a user to be a friend
 UserRouter.get("/searchUsers/:name", function (req, res, next) {
   UserModel.find({})
-    .select("auth.username bio.firstname bio.lastname bio.profilePic status")
+    .select(
+      [
+        "auth.username",
+        "profile.firstname",
+        "profile.lastname",
+        "profile.picture.profilePic.index",
+        "status",
+      ].join(" "),
+    )
     .then((users) => {
       const array = [];
       const searchTerm = String(req.params.name || "")
         .trim()
         .toLowerCase();
       users.forEach((user) => {
-        const firstname = String(user?.bio?.firstname || "").toLowerCase();
-        const lastname = String(user?.bio?.lastname || "").toLowerCase();
+        const bio = getSubjectBio(user);
+        const firstname = String(bio?.firstname || "").toLowerCase();
+        const lastname = String(bio?.lastname || "").toLowerCase();
         const fullName = `${firstname} ${lastname}`.trim();
         const username = String(user?.auth?.username || "").toLowerCase();
 
@@ -2976,7 +3056,14 @@ UserRouter.get("/searchUsers/:name", function (req, res, next) {
 // Public doctor profile
 UserRouter.get("/profile/:username", function (req, res, next) {
   UserModel.findOne({ "auth.username": req.params.username })
-    .select("auth.username bio.firstname bio.lastname bio.profilePic")
+    .select(
+      [
+        "auth.username",
+        "profile.firstname",
+        "profile.lastname",
+        "profile.picture.profilePic.index",
+      ].join(" "),
+    )
     .then((user) => {
       if (!user) {
         return res.status(404).json({
@@ -2984,11 +3071,14 @@ UserRouter.get("/profile/:username", function (req, res, next) {
         });
       }
 
+      const bio = getSubjectBio(user);
+      const profilePicture = getLegacyProfilePicture(user);
+
       return res.status(200).json({
         username: user.auth?.username || "",
-        firstname: user.bio?.firstname || "",
-        lastname: user.bio?.lastname || "",
-        profilePicture: String(user?.bio?.profilePic?.url || "").trim(),
+        firstname: bio?.firstname || "",
+        lastname: bio?.lastname || "",
+        profilePicture: String(profilePicture?.url || "").trim(),
       });
     })
     .catch(next);
@@ -3127,79 +3217,58 @@ UserRouter.post(
   async function (req, res, next) {
     const io = req.app.locals.io;
     try {
-      const user = await UserModel.findOne({
+      const receiver = await UserModel.findOne({
         "auth.username": req.params.username,
       });
-      if (!user) {
+      if (!receiver) {
         return res.status(404).json({ message: "User not found." });
       }
       const requesterId = String(
         req.authentication?.userId || req.body.id || "",
       ).trim();
-      const receiverId = String(user._id);
+      const receiverId = String(receiver._id);
       if (!requesterId) {
         return res.status(400).json({ message: "Requester id is required." });
       }
-      if (String(user._id) === requesterId) {
+      if (receiverId === requesterId) {
         return res
           .status(400)
           .json({ message: "You cannot send a friend request to yourself." });
       }
-      // Check if already friends
-      const isAlreadyFriend = (user.friends || []).some((friend) => {
-        if (typeof friend === "object" && friend !== null) {
-          return String(friend.userID || friend._id || friend) === requesterId;
-        }
-        return String(friend) === requesterId;
-      });
-      if (isAlreadyFriend) {
+
+      const requester = await UserModel.findById(requesterId);
+      if (!requester) {
+        return res.status(404).json({ message: "Requester not found." });
+      }
+
+      const receiverMode = getFriendRelationshipMode(receiver, requesterId);
+      const requesterMode = getFriendRelationshipMode(requester, receiverId);
+
+      if (receiverMode === "friend" || requesterMode === "friend") {
         return res.status(409).json({ message: "You're already friends." });
       }
-      // Add a pending friend request using friends[].userMode
-      user.friends = Array.isArray(user.friends) ? user.friends : [];
-      const existingRequest = user.friends.find((entry) => {
-        if (typeof entry === "object" && entry !== null) {
-          return (
-            String(entry.userID || entry._id || entry) === requesterId &&
-            entry.userMode === "requestReceived"
-          );
-        }
-        return false;
-      });
-      if (existingRequest) {
+
+      if (receiverMode === "blocked" || requesterMode === "blocked") {
+        return res.status(409).json({
+          message: "This relationship is currently blocked.",
+        });
+      }
+
+      if (
+        receiverMode === "requestreceived" &&
+        requesterMode === "requestsent"
+      ) {
         return res
           .status(200)
           .json({ message: "Friend request already pending." });
       }
-      user.friends.push({
-        userID: requesterId,
-        userMode: "requestReceived",
-      });
-      await user.save();
-      // Also update the requester to track the sent request
-      const requester = await UserModel.findById(requesterId);
-      if (requester) {
-        requester.friends = Array.isArray(requester.friends)
-          ? requester.friends
-          : [];
-        const alreadyTracked = requester.friends.find((entry) => {
-          if (typeof entry === "object" && entry !== null) {
-            return (
-              String(entry.userID || entry._id || entry) === receiverId &&
-              entry.userMode === "requestSent"
-            );
-          }
-          return false;
-        });
-        if (!alreadyTracked) {
-          requester.friends.push({
-            userID: receiverId,
-            userMode: "requestSent",
-          });
-          await requester.save();
-        }
-      }
-      emitUserRefresh(io, user?._id?.toString(), "friends:updated");
+
+      ensureFriendRelationship(receiver, requesterId, "requestReceived");
+      ensureFriendRelationship(requester, receiverId, "requestSent");
+
+      await Promise.all([receiver.save(), requester.save()]);
+
+      emitUserRefresh(io, [receiverId, requesterId], "friends:updated");
       res.status(201).json({ message: "Request sent!" });
     } catch (error) {
       next(error);
@@ -3229,46 +3298,23 @@ UserRouter.post(
         });
       }
 
-      receiver.notifications =
-        receiver.notifications && typeof receiver.notifications === "object"
-          ? receiver.notifications
-          : {};
-      requester.notifications =
-        requester.notifications && typeof requester.notifications === "object"
-          ? requester.notifications
-          : {};
+      const receiverMode = getFriendRelationshipMode(receiver, requesterId);
+      const requesterMode = getFriendRelationshipMode(requester, receiverId);
 
-      receiver.notifications.friend_requests = (
-        Array.isArray(receiver.notifications.friend_requests)
-          ? receiver.notifications.friend_requests
-          : []
-      ).filter((request) => String(request?.id || "") !== requesterId);
-      receiver.notifications.rejected_users = (
-        Array.isArray(receiver.notifications.rejected_users)
-          ? receiver.notifications.rejected_users
-          : []
-      ).filter((entry) => String(entry?.id || "") !== requesterId);
-      requester.notifications.sent_friend_requests = (
-        Array.isArray(requester.notifications.sent_friend_requests)
-          ? requester.notifications.sent_friend_requests
-          : []
-      ).filter((request) => String(request?.id || "") !== receiverId);
-
-      if (
-        !(receiver.friends || []).some(
-          (friend) => String(friend) === requesterId,
-        )
-      ) {
-        receiver.friends.push(requester._id);
+      if (receiverMode === "friend" && requesterMode === "friend") {
+        return res.status(409).json({
+          message: "You're already friends.",
+        });
       }
 
-      if (
-        !(requester.friends || []).some(
-          (friend) => String(friend) === receiverId,
-        )
-      ) {
-        requester.friends.push(receiver._id);
+      if (receiverMode === "blocked" || requesterMode === "blocked") {
+        return res.status(409).json({
+          message: "This relationship is currently blocked.",
+        });
       }
+
+      ensureFriendRelationship(receiver, requesterId, "friend");
+      ensureFriendRelationship(requester, receiverId, "friend");
 
       await Promise.all([receiver.save(), requester.save()]);
 
@@ -3291,18 +3337,7 @@ UserRouter.delete(
     const io = req.app.locals.io;
     const { my_id, friend_id } = req.params;
 
-    Promise.all([
-      UserModel.findByIdAndUpdate(
-        my_id,
-        { $pull: { friends: friend_id } },
-        { new: true },
-      ),
-      UserModel.findByIdAndUpdate(
-        friend_id,
-        { $pull: { friends: my_id } },
-        { new: true },
-      ),
-    ])
+    Promise.all([UserModel.findById(my_id), UserModel.findById(friend_id)])
       .then(([me, friend]) => {
         if (!me || !friend) {
           return res.status(404).json({
@@ -3310,12 +3345,58 @@ UserRouter.delete(
           });
         }
 
-        emitUserRefresh(io, [my_id, friend_id], "friends:updated");
-        return res.status(200).json({
-          message: "Friend removed.",
+        removeFriendRelationship(me, friend_id);
+        removeFriendRelationship(friend, my_id);
+
+        return Promise.all([me.save(), friend.save()]).then(() => {
+          emitUserRefresh(io, [my_id, friend_id], "friends:updated");
+          return res.status(200).json({
+            message: "Friend removed.",
+          });
         });
       })
       .catch(next);
+  },
+);
+
+UserRouter.delete(
+  "/unblockFriend/:my_id/:friend_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    const io = req.app.locals.io;
+    const myId = String(req.params.my_id || "").trim();
+    const friendId = String(req.params.friend_id || "").trim();
+
+    try {
+      const [user, targetUser] = await Promise.all([
+        UserModel.findById(myId),
+        UserModel.findById(friendId),
+      ]);
+
+      if (!user || !targetUser) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const relationshipMode = getFriendRelationshipMode(user, friendId);
+      if (relationshipMode !== "blocked") {
+        return res.status(409).json({
+          message: "User is not blocked.",
+        });
+      }
+
+      removeFriendRelationship(user, friendId);
+      await user.save();
+
+      emitUserRefresh(io, [myId, friendId], "friends:updated");
+      return res.status(200).json({
+        message: "User unblocked.",
+      });
+    } catch (error) {
+      return next(error);
+    }
   },
 );
 

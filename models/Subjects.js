@@ -5,6 +5,14 @@ import SettingsSchema from "./Settings.js";
 
 const { Schema } = mongoose;
 
+const ClinicalRealitySchema = new Schema(
+  {
+    html: { type: String, default: "" },
+    updatedAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
 // Profile Sub-Schema
 const ProfileSchema = new Schema(
   {
@@ -95,6 +103,7 @@ const SubjectsSchema = new Schema(
     profile: { type: ProfileSchema, default: () => ({}) },
     connections: { type: [ConnectionsSchema], default: [] },
     memory: { type: MemorySchema, default: () => ({}) },
+    clinicalReality: { type: ClinicalRealitySchema, default: () => ({}) },
     settings: { type: SettingsSchema, default: () => ({}) },
     status: {
       value: {
