@@ -20,6 +20,11 @@ const TraceMediaMetadataSchema = new Schema(
     bytes: { type: Number, default: null },
     duration: { type: Number, default: null },
     totalPages: { type: Number, default: null },
+    visibility: {
+      type: String,
+      enum: ["public", "me", "hidden"],
+      default: "public",
+    },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
   },

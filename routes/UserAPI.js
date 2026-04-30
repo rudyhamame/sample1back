@@ -863,6 +863,20 @@ const createLiveKitToken = async ({
   };
 };
 
+const normalizeGalleryVisibility = (visibility) => {
+  const normalizedVisibility = String(visibility || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalizedVisibility === "private") {
+    return "me";
+  }
+
+  return ["public", "me", "hidden"].includes(normalizedVisibility)
+    ? normalizedVisibility
+    : "public";
+};
+
 const normalizeStoredGalleryImage = (image) => {
   if (!image) {
     return null;
@@ -916,6 +930,9 @@ const normalizeStoredGalleryImage = (image) => {
     format: String(image?.format || "").trim(),
     bytes: Number(image?.bytes) || 0,
     duration: Number(image?.duration) || 0,
+    visibility: normalizeGalleryVisibility(
+      image?.visibility || identity?.visibility,
+    ),
     createdAt:
       image?.createdAt || identity?.createdAt
         ? new Date(image?.createdAt || identity?.createdAt)
@@ -985,6 +1002,7 @@ const buildHumanTraceMediaItem = (media, resourceType = "image") => ({
     totalPages: Number.isFinite(Number(media?.totalPages))
       ? Number(media.totalPages)
       : null,
+    visibility: normalizeGalleryVisibility(media?.visibility),
     createdAt: media?.createdAt || new Date(),
     updatedAt: media?.updatedAt || new Date(),
   },
@@ -1064,6 +1082,7 @@ const getHumanTraceMediaBucket = (trace, resourceType = "image") => {
     totalPages: Number.isFinite(Number(item?.metadata?.totalPages))
       ? Number(item.metadata.totalPages)
       : null,
+    visibility: normalizeGalleryVisibility(item?.metadata?.visibility),
     createdAt: item?.metadata?.createdAt || new Date(),
     updatedAt: item?.metadata?.updatedAt || new Date(),
   }));
@@ -2119,12 +2138,20 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           "profile.firstname",
           "profile.lastname",
           "profile.bio",
+          "profile.email",
+          "profile.phone",
+          "profile.dob",
+          "profile.hometown.Country",
+          "profile.hometown.City",
           "profile.studying.program",
           "profile.studying.university",
           "profile.studying.faculty",
+          "profile.studying.language",
           "profile.studying.time.currentAcademicYear",
           "profile.studying.time.currentDate.year",
           "profile.studying.time.currentDate.term",
+          "profile.working.company",
+          "profile.working.position",
           "profile.picture.profilePic.viewport",
         ].join(" "),
       )
@@ -2192,6 +2219,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       req.body?.university ?? bio?.studying?.university ?? "",
     ).trim();
     const nextFaculty = String(req.body?.faculty ?? bio?.studying?.faculty ?? "").trim();
+    const nextLanguage = String(
+      req.body?.language ?? bio?.studying?.language ?? "",
+    ).trim();
     const nextCurrentAcademicYear = String(
       req.body?.currentAcademicYear ??
         bio?.studying?.time?.currentAcademicYear ??
@@ -2204,6 +2234,21 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       req.body?.term ?? bio?.studying?.time?.currentDate?.term ?? "",
     ).trim();
     const nextBio = String(req.body?.bio ?? bio?.bio ?? "").trim();
+    const nextEmail = String(req.body?.email ?? bio?.email ?? "").trim();
+    const nextPhone = String(req.body?.phone ?? bio?.phone ?? "").trim();
+    const nextDob = req.body?.dob ? new Date(req.body.dob) : null;
+    const nextHometownCountry = String(
+      req.body?.hometownCountry ?? bio?.hometown?.Country ?? "",
+    ).trim();
+    const nextHometownCity = String(
+      req.body?.hometownCity ?? bio?.hometown?.City ?? "",
+    ).trim();
+    const nextCompany = String(
+      req.body?.company ?? bio?.working?.company ?? "",
+    ).trim();
+    const nextPosition = String(
+      req.body?.position ?? bio?.working?.position ?? "",
+    ).trim();
     const nextCurrentAcademicYearNumber = Number(nextCurrentAcademicYear);
     const nextStudyYearNumber = Number(nextStudyYear);
 
@@ -2211,10 +2256,19 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       "profile.firstname": nextFirstname,
       "profile.lastname": nextLastname,
       "profile.bio": nextBio,
+      "profile.email": nextEmail,
+      "profile.phone": nextPhone,
+      "profile.dob":
+        nextDob instanceof Date && !Number.isNaN(nextDob.getTime())
+          ? nextDob
+          : null,
+      "profile.hometown.Country": nextHometownCountry,
+      "profile.hometown.City": nextHometownCity,
       "auth.username": nextUsername,
       "profile.studying.program": nextProgram,
       "profile.studying.university": nextUniversity,
       "profile.studying.faculty": nextFaculty,
+      "profile.studying.language": nextLanguage,
       "profile.studying.time.currentAcademicYear":
         nextCurrentAcademicYear === "" ||
         !Number.isFinite(nextCurrentAcademicYearNumber)
@@ -2225,6 +2279,8 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           ? null
           : nextStudyYearNumber,
       "profile.studying.time.currentDate.term": nextTerm || null,
+      "profile.working.company": nextCompany,
+      "profile.working.position": nextPosition,
     };
 
     let nextProfilePictureViewport = getLegacyProfilePictureViewport(user) || {
@@ -2351,12 +2407,23 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       lastname: nextLastname,
       username: nextUsername,
       bio: nextBio,
+      email: nextEmail,
+      phone: nextPhone,
+      dob:
+        nextDob instanceof Date && !Number.isNaN(nextDob.getTime())
+          ? nextDob.toISOString()
+          : null,
+      hometownCountry: nextHometownCountry,
+      hometownCity: nextHometownCity,
       faculty: nextFaculty,
       program: nextProgram,
       university: nextUniversity,
+      language: nextLanguage,
       currentAcademicYear: nextCurrentAcademicYear,
       studyYear: nextStudyYear,
       term: nextTerm,
+      company: nextCompany,
+      position: nextPosition,
       aiProvider: nextAiProvider,
     };
 
@@ -2598,6 +2665,7 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       format: req.body?.format,
       bytes: req.body?.bytes,
       duration: req.body?.duration,
+      visibility: req.body?.visibility,
       createdAt: req.body?.createdAt || new Date(),
     });
 
@@ -2966,6 +3034,45 @@ UserRouter.put("/change-password", checkAuth, async function (req, res, next) {
 
     return res.status(200).json({
       message: "Password changed successfully.",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post("/verify-password", checkAuth, async function (req, res, next) {
+  try {
+    const password = String(req.body?.password || "");
+
+    if (!password) {
+      return res.status(400).json({
+        message: "Password is required.",
+      });
+    }
+
+    const user = await UserModel.findById(req.authentication.userId).select(
+      "auth.password",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user.auth?.password || "",
+    );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        message: "Password is not correct.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Password verified.",
     });
   } catch (error) {
     return next(error);

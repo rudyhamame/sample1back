@@ -1,3 +1,17 @@
+const normalizeGalleryVisibility = (visibility) => {
+  const normalizedVisibility = String(visibility || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalizedVisibility === "private") {
+    return "me";
+  }
+
+  return ["public", "me", "hidden"].includes(normalizedVisibility)
+    ? normalizedVisibility
+    : "public";
+};
+
 const normalizeStoredGalleryImage = (image) => {
   if (!image) {
     return null;
@@ -47,6 +61,9 @@ const normalizeStoredGalleryImage = (image) => {
     format: String(image?.format || "").trim(),
     bytes: Number(image?.bytes) || 0,
     duration: Number(image?.duration) || 0,
+    visibility: normalizeGalleryVisibility(
+      image?.visibility || identity?.visibility,
+    ),
     createdAt:
       image?.createdAt || identity?.createdAt
         ? new Date(image?.createdAt || identity?.createdAt)
