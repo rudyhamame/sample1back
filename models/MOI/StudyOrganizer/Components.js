@@ -39,6 +39,7 @@ const WeeklyScheduleEntrySchema = new Schema(
 
 const StudyTimeSchema = new Schema(
   {
+    programYear: { type: Number, default: null, min: 0 },
     academicYear: { type: String, default: null },
     term: { type: String, enum: ["First", "Second", "Third"], default: null },
   },

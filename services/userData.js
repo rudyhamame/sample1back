@@ -73,6 +73,52 @@ const toPlainValue = (value) => {
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(toPlainValue(value)));
 
+const normalizeTelegramMemory = (telegram) => {
+  const groups = telegram?.groups;
+  const info = groups?.info;
+  const primaryContent = Array.isArray(groups?.content) ? groups.content[0] : null;
+
+  return {
+    groups: {
+      info: {
+        name: typeof info?.name === "string" ? info.name : "",
+        groupReference:
+          typeof info?.groupReference === "string" ? info.groupReference : "",
+        memberCount:
+          typeof info?.memberCount === "number" && Number.isFinite(info.memberCount)
+            ? info.memberCount
+            : 0,
+        description:
+          typeof info?.description === "string" ? info.description : "",
+        messageCount:
+          typeof info?.messageCount === "number" && Number.isFinite(info.messageCount)
+            ? info.messageCount
+            : 0,
+        pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
+      },
+      content: [
+        {
+          texts: Array.isArray(primaryContent?.texts)
+            ? cloneValue(primaryContent.texts)
+            : [],
+          photos: Array.isArray(primaryContent?.photos)
+            ? cloneValue(primaryContent.photos)
+            : [],
+          videos: Array.isArray(primaryContent?.videos)
+            ? cloneValue(primaryContent.videos)
+            : [],
+          audios: Array.isArray(primaryContent?.audios)
+            ? cloneValue(primaryContent.audios)
+            : [],
+          documents: Array.isArray(primaryContent?.documents)
+            ? cloneValue(primaryContent.documents)
+            : [],
+        },
+      ],
+    },
+  };
+};
+
 const normalizeMemoryPayload = (memory) => ({
   traces: Array.isArray(memory?.traces) ? cloneValue(memory.traces) : [],
   studyPlanner:
@@ -103,6 +149,10 @@ const normalizeMemoryPayload = (memory) => ({
               ? cloneValue(memory.studyPlanAid)
               : {},
         },
+  telegram:
+    memory?.telegram && typeof memory.telegram === "object"
+      ? normalizeTelegramMemory(memory.telegram)
+      : normalizeTelegramMemory({}),
 });
 
 class EmbeddedMemoryDocument {
@@ -143,7 +193,13 @@ export const ensureUserMemoryDoc = async (user) => {
     !Array.isArray(user?.memory?.traces) ||
     currentMemoryKeys.some(
       (key) =>
-        !["traces", "studyPlanner", "studyOrganizer", "studyPlanAid"].includes(key),
+        ![
+          "traces",
+          "studyPlanner",
+          "studyOrganizer",
+          "studyPlanAid",
+          "telegram",
+        ].includes(key),
     );
 
   if (needsInitialization) {

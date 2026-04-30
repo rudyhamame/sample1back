@@ -2122,6 +2122,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           "profile.studying.program",
           "profile.studying.university",
           "profile.studying.faculty",
+          "profile.studying.time.currentAcademicYear",
           "profile.studying.time.currentDate.year",
           "profile.studying.time.currentDate.term",
           "profile.picture.profilePic.viewport",
@@ -2191,6 +2192,11 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       req.body?.university ?? bio?.studying?.university ?? "",
     ).trim();
     const nextFaculty = String(req.body?.faculty ?? bio?.studying?.faculty ?? "").trim();
+    const nextCurrentAcademicYear = String(
+      req.body?.currentAcademicYear ??
+        bio?.studying?.time?.currentAcademicYear ??
+        "",
+    ).trim();
     const nextStudyYear = String(
       req.body?.studyYear ?? bio?.studying?.time?.currentDate?.year ?? "",
     ).trim();
@@ -2198,6 +2204,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       req.body?.term ?? bio?.studying?.time?.currentDate?.term ?? "",
     ).trim();
     const nextBio = String(req.body?.bio ?? bio?.bio ?? "").trim();
+    const nextCurrentAcademicYearNumber = Number(nextCurrentAcademicYear);
     const nextStudyYearNumber = Number(nextStudyYear);
 
     const updateSet = {
@@ -2208,6 +2215,11 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       "profile.studying.program": nextProgram,
       "profile.studying.university": nextUniversity,
       "profile.studying.faculty": nextFaculty,
+      "profile.studying.time.currentAcademicYear":
+        nextCurrentAcademicYear === "" ||
+        !Number.isFinite(nextCurrentAcademicYearNumber)
+          ? null
+          : nextCurrentAcademicYearNumber,
       "profile.studying.time.currentDate.year":
         nextStudyYear === "" || !Number.isFinite(nextStudyYearNumber)
           ? null
@@ -2342,6 +2354,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       faculty: nextFaculty,
       program: nextProgram,
       university: nextUniversity,
+      currentAcademicYear: nextCurrentAcademicYear,
       studyYear: nextStudyYear,
       term: nextTerm,
       aiProvider: nextAiProvider,
@@ -3661,6 +3674,7 @@ UserRouter.post(
       const shouldCreateComponent = Boolean(
         String(req.body?.course_class || "").trim() ||
         String(req.body?.course_component || "").trim() ||
+        String(req.body?.programYear ?? "").trim() ||
         String(req.body?.academicYear || "").trim() ||
         String(req.body?.course_year || "").trim() ||
         String(req.body?.term || "").trim() ||

@@ -4,6 +4,44 @@ import StudyPlannerSchema from "./MOI/StudyPlanner/StudyPlanner.js";
 
 const { Schema } = mongoose;
 
+const TelegramGroupInfoSchema = new Schema(
+  {
+    name: { type: String, default: "" },
+    groupReference: { type: String, default: "" },
+    memberCount: { type: Number, default: 0 },
+    description: { type: String, default: "" },
+    messageCount: { type: Number, default: 0 },
+    pageUrl: { type: String, default: "" },
+  },
+  { _id: false, strict: "throw" },
+);
+
+const TelegramGroupContentBucketSchema = new Schema(
+  {
+    texts: { type: [Schema.Types.Mixed], default: [] },
+    photos: { type: [Schema.Types.Mixed], default: [] },
+    videos: { type: [Schema.Types.Mixed], default: [] },
+    audios: { type: [Schema.Types.Mixed], default: [] },
+    documents: { type: [Schema.Types.Mixed], default: [] },
+  },
+  { _id: false, strict: "throw" },
+);
+
+const TelegramGroupsSchema = new Schema(
+  {
+    info: { type: TelegramGroupInfoSchema, default: () => ({}) },
+    content: { type: [TelegramGroupContentBucketSchema], default: [] },
+  },
+  { _id: false, strict: "throw" },
+);
+
+const TelegramMemorySchema = new Schema(
+  {
+    groups: { type: TelegramGroupsSchema, default: () => ({}) },
+  },
+  { _id: false, strict: "throw" },
+);
+
 const normalizeTracesArray = (value) => {
   if (Array.isArray(value)) {
     return value.filter((entry) => entry && typeof entry === "object");
@@ -27,6 +65,7 @@ const MemorySchema = new Schema(
     // - connections to other subjects, with associated metadata and context
     traces: { type: [TraceSchema], default: [] },
     studyPlanner: { type: StudyPlannerSchema, default: () => ({}) },
+    telegram: { type: TelegramMemorySchema, default: () => ({}) },
   },
   { strict: "throw" },
 );

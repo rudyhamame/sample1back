@@ -291,12 +291,20 @@ const sanitizeWeeklyScheduleEntry = (value = {}) => ({
   location: sanitizeStudyLocation(value?.location || {}),
 });
 
-const sanitizeStudyTime = (value = {}) => ({
+const sanitizeStudyTime = (value = {}) => {
+  const normalizedProgramYear = toFiniteNumber(value?.programYear, null);
+
+  return {
+    programYear:
+      Number.isFinite(normalizedProgramYear) && normalizedProgramYear >= 0
+        ? Math.trunc(normalizedProgramYear)
+        : null,
   academicYear: trimString(value?.academicYear) || null,
   term: normalizeStudyTerm(value?.term) || null,
   startsAt: value?.startsAt ? new Date(value.startsAt) : null,
   endsAt: value?.endsAt ? new Date(value.endsAt) : null,
-});
+  };
+};
 
 const sanitizeStudyWeight = (value = {}) => ({
   value: toFiniteNumber(value?.value, 0),
@@ -910,6 +918,11 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
     normalizedPreviousComponent?.time && typeof normalizedPreviousComponent.time === "object"
       ? normalizedPreviousComponent.time
       : {};
+  const rawProgramYear =
+    payload?.programYear !== null && payload?.programYear !== undefined
+      ? payload.programYear
+      : normalizedPreviousTime?.programYear;
+  const normalizedProgramYear = toFiniteNumber(rawProgramYear, null);
   const academicYear =
     normalizeOptionalPlannerString(payload?.academicYear) ||
     normalizeOptionalPlannerString(payload?.course_year);
@@ -925,6 +938,10 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
       "-",
     time: {
       ...normalizedPreviousTime,
+      programYear:
+        Number.isFinite(normalizedProgramYear) && normalizedProgramYear >= 0
+          ? Math.trunc(normalizedProgramYear)
+          : normalizedPreviousTime?.programYear ?? null,
       academicYear:
         academicYear ||
         normalizeOptionalPlannerString(normalizedPreviousTime?.academicYear) ||
@@ -1061,6 +1078,7 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
             building: "",
             room: "",
           },
+          programYear: "-",
           course_year: "-",
           course_term: "-",
           course_class: "-",
@@ -1116,6 +1134,11 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
                 room: trimString(normalizedComponent.location.room),
               }
             : {},
+        programYear:
+          Number.isFinite(Number(componentTime?.programYear)) &&
+          Number(componentTime.programYear) >= 0
+            ? String(Math.trunc(Number(componentTime.programYear)))
+            : "-",
         course_year: trimString(componentTime?.academicYear) || "-",
         course_term: trimString(componentTime?.term) || "-",
         course_class:

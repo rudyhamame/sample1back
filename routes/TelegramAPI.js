@@ -54,6 +54,36 @@ const telegramSyncPromisesByUser = new Map();
 let telegramSyncWorkerStarted = false;
 let telegramSyncWorkerIntervalId = null;
 
+const getPendingTelegramAuth = (userId) =>
+  pendingTelegramAuthByUser.get(String(userId || "").trim()) || null;
+
+const setPendingTelegramAuth = (userId, value) => {
+  const normalizedUserId = String(userId || "").trim();
+
+  if (!normalizedUserId) {
+    return;
+  }
+
+  pendingTelegramAuthByUser.set(normalizedUserId, value);
+};
+
+const clearPendingTelegramAuth = async (userId) => {
+  const normalizedUserId = String(userId || "").trim();
+
+  if (!normalizedUserId) {
+    return;
+  }
+
+  const pending = pendingTelegramAuthByUser.get(normalizedUserId);
+  pendingTelegramAuthByUser.delete(normalizedUserId);
+
+  if (pending?.client && typeof pending.client.disconnect === "function") {
+    try {
+      await pending.client.disconnect();
+    } catch {}
+  }
+};
+
 const normalizeString = (value) => String(value || "").trim();
 const toArray = (value) => (Array.isArray(value) ? value : []);
 
@@ -242,10 +272,11 @@ const getUserTelegramConfig = (telegramSettings) => {
 
 const getTelegramSyncEligibility = (user, telegramSettings) => {
   const config = getUserTelegramConfig(telegramSettings);
+  const requiresHistoryStartDate = config.syncMode === "live";
   const canSync = Boolean(
     config.syncEnabled &&
     config.groupReference &&
-    config.historyStartDate &&
+    (!requiresHistoryStartDate || config.historyStartDate) &&
     config.apiId &&
     config.apiHash &&
     config.stringSession,
@@ -266,6 +297,7 @@ const ensureTelegramClient = async (config) => {
     config.apiId,
     config.apiHash,
     {
+      autoReconnect: false,
       connectionRetries: 1,
       requestRetries: 1,
       retryDelay: 500,
@@ -273,7 +305,7 @@ const ensureTelegramClient = async (config) => {
     },
   );
 
-  client.setLogLevel(LogLevel.ERROR);
+  client.setLogLevel(LogLevel.NONE);
   await runWithTimeout(client.connect(), TELEGRAM_CONNECT_TIMEOUT_MS);
 
   return client;
@@ -383,11 +415,16 @@ const listStoredTelegramMessages = (memoryDoc, groupReference = "") => {
     );
 };
 
-const getStoredMessageCountForUser = async (memoryDoc, user) =>
-  listStoredTelegramMessages(
-    memoryDoc,
-    user?.settings?.telegram?.status?.groupReference,
-  ).length;
+const getStoredMessageCountForUser = async (memoryDoc, configSource) => {
+  const groupReference = normalizeGroupReference(
+    typeof configSource === "string"
+      ? configSource
+      : configSource?.status?.groupReference ||
+          configSource?.settings?.telegram?.status?.groupReference,
+  );
+
+  return listStoredTelegramMessages(memoryDoc, groupReference).length;
+};
 
 const buildStoredTelegramGroupSummary = (user, memoryDoc) => {
   const groups = ensureTelegramGroupMemory(memoryDoc);
@@ -566,11 +603,33 @@ const resolveTelegramGroupEntity = async (client, groupReference) => {
   try {
     return await client.getEntity(normalizedReference);
   } catch (firstError) {
-    if (/^\d+$/.test(normalizedReference)) {
+    if (/^-?\d+$/.test(normalizedReference)) {
       try {
         return await client.getEntity(Number(normalizedReference));
       } catch {}
     }
+
+    try {
+      const dialogs = await collectTelegramDialogs(client);
+      const matchingDialog = dialogs.find((dialog) => {
+        const entity = dialog?.entity;
+        const username = normalizeString(entity?.username);
+        const title = normalizeString(entity?.title || dialog?.title);
+        const entityReference = normalizeGroupReference(
+          username || entity?.id || dialog?.id,
+        );
+
+        return (
+          entityReference === normalizedReference ||
+          username === normalizedReference ||
+          title === normalizedReference
+        );
+      });
+
+      if (matchingDialog?.entity) {
+        return matchingDialog.entity;
+      }
+    } catch {}
 
     const error = new Error(
       "Unable to resolve the Telegram group/channel from the saved reference.",
@@ -826,9 +885,10 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
     let client = null;
 
     try {
-      const user = await UserModel.findById(userId).select(
-        "settings.telegram.status memory",
-      );
+      const [user, telegramSettings] = await Promise.all([
+        UserModel.findById(userId).select("settings.telegram.status memory"),
+        findTelegramSettings(userId),
+      ]);
 
       if (!user) {
         const error = new Error("User not found.");
@@ -843,7 +903,10 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         throw error;
       }
 
-      const { config, canSync } = getTelegramSyncEligibility(user);
+      const { config, canSync } = getTelegramSyncEligibility(
+        user,
+        telegramSettings,
+      );
 
       if (!canSync) {
         return {
@@ -954,7 +1017,7 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         user.settings.telegram.status.syncEnabled = false;
       }
 
-      await Promise.all([memoryDoc.save(), user.save()]);
+      await memoryDoc.save();
 
       return {
         synced: true,
@@ -1266,7 +1329,7 @@ TelegramRouter.get("/config", checkAuth, async (req, res, next) => {
 
     return res.status(200).json({
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(memoryDoc, user),
+      storedCount: await getStoredMessageCountForUser(memoryDoc, telegramSettings),
     });
   } catch (error) {
     next(error);
@@ -1289,7 +1352,7 @@ TelegramRouter.get("/status", checkAuth, async (req, res, next) => {
 
     return res.status(200).json({
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(memoryDoc, user),
+      storedCount: await getStoredMessageCountForUser(memoryDoc, telegramSettings),
       storedGroups: buildStoredTelegramGroupSummary(user, memoryDoc) ? 1 : 0,
     });
   } catch (error) {
@@ -1395,7 +1458,9 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
     );
 
     telegramStatus.syncEnabled = Boolean(
-      nextGroupReference && nextHistoryStartDate && hasCredentials,
+      nextGroupReference &&
+        hasCredentials &&
+        (nextSyncMode === "one-time" || nextHistoryStartDate),
     );
     telegramStatus.updatedAt = new Date();
 
@@ -1405,18 +1470,41 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
 
     await Promise.all([telegramSettings.save(), memoryDoc?.save?.()]);
 
+    let responseMessage = "Telegram settings saved for this user.";
+    let syncResult = null;
+
     if (telegramStatus.syncEnabled) {
-      syncTelegramMessagesForUser(user._id, {
-        force: true,
-      }).catch(() => {});
+      try {
+        syncResult = await syncTelegramMessagesForUser(user._id, {
+          force: true,
+        });
+
+        responseMessage =
+          normalizeString(syncResult?.message) ||
+          "Telegram settings saved and sync started.";
+      } catch (error) {
+        responseMessage = `Telegram settings were saved, but the initial sync failed: ${normalizeString(
+          error?.message || "Unknown Telegram sync error.",
+        )}`;
+      }
     }
 
+    const responseMemoryDoc = telegramStatus.syncEnabled
+      ? await findUserMemoryLean(user._id)
+      : memoryDoc;
+
     return res.status(200).json({
-      message: telegramStatus.syncEnabled
-        ? "Telegram settings saved and sync started."
-        : "Telegram settings saved for this user.",
+      message: responseMessage,
+      syncStarted: Boolean(telegramStatus.syncEnabled),
+      syncSucceeded: Boolean(syncResult?.synced),
+      syncReason: normalizeString(syncResult?.reason),
+      importedCount: Number(syncResult?.importedCount || 0),
+      scannedCount: Number(syncResult?.scannedCount || 0),
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(memoryDoc, user),
+      storedCount: await getStoredMessageCountForUser(
+        responseMemoryDoc,
+        telegramSettings,
+      ),
     });
   } catch (error) {
     next(error);
@@ -1437,30 +1525,44 @@ TelegramRouter.post("/auth/start", checkAuth, async (req, res, next) => {
     await clearPendingTelegramAuth(req.authentication.userId);
 
     const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
+      autoReconnect: false,
       connectionRetries: 5,
+      timeout: TELEGRAM_CONNECT_TIMEOUT_MS,
     });
+    client.setLogLevel(LogLevel.NONE);
 
-    await client.connect();
-    const sendCodeResult = await client.sendCode(
-      { apiId, apiHash },
-      phoneNumber,
-      false,
-    );
+    try {
+      await runWithTimeout(
+        client.connect(),
+        TELEGRAM_CONNECT_TIMEOUT_MS,
+        "Telegram connection timed out while starting login.",
+      );
+      const sendCodeResult = await runWithTimeout(
+        client.sendCode({ apiId, apiHash }, phoneNumber, false),
+        TELEGRAM_CONNECT_TIMEOUT_MS,
+        "Telegram took too long to send the login code.",
+      );
 
-    setPendingTelegramAuth(req.authentication.userId, {
-      client,
-      apiId,
-      apiHash,
-      phoneNumber,
-      phoneCodeHash: sendCodeResult.phoneCodeHash,
-      isCodeViaApp: Boolean(sendCodeResult.isCodeViaApp),
-    });
+      setPendingTelegramAuth(req.authentication.userId, {
+        client,
+        apiId,
+        apiHash,
+        phoneNumber,
+        phoneCodeHash: sendCodeResult.phoneCodeHash,
+        isCodeViaApp: Boolean(sendCodeResult.isCodeViaApp),
+      });
 
-    return res.status(200).json({
-      message: "Telegram login code sent.",
-      isCodeViaApp: Boolean(sendCodeResult.isCodeViaApp),
-      requiresPassword: false,
-    });
+      return res.status(200).json({
+        message: "Telegram login code sent.",
+        isCodeViaApp: Boolean(sendCodeResult.isCodeViaApp),
+        requiresPassword: false,
+      });
+    } catch (error) {
+      try {
+        await client.disconnect();
+      } catch {}
+      throw error;
+    }
   } catch (error) {
     next(error);
   }
