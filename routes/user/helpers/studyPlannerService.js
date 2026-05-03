@@ -120,6 +120,34 @@ const normalizeStudyTerm = (value) => {
   return termAliases[normalizedLowerValue] || normalizedValue;
 };
 
+const normalizeComponentStatus = (value) => {
+  const normalizedValue = trimString(value).toLowerCase();
+  const statusAliases = {
+    new: "new",
+    failed: "failed",
+    passed: "passed",
+    "not started": "new",
+    "in progress": "new",
+    completed: "passed",
+  };
+
+  return statusAliases[normalizedValue] || "new";
+};
+
+const normalizeCourseStatus = (value) => {
+  const normalizedValue = trimString(value).toLowerCase();
+  const statusAliases = {
+    new: "new",
+    failed: "failed",
+    incomplete: "incomplete",
+    passed: "passed",
+    "not started": "new",
+    completed: "passed",
+  };
+
+  return statusAliases[normalizedValue] || "new";
+};
+
 const normalizeStringArray = (value) =>
   (Array.isArray(value) ? value : [value])
     .map((entry) => trimString(entry))
@@ -218,13 +246,62 @@ const stripComponentFromCourseLabel = (courseName = "", componentName = "") => {
   return normalizedCourseName;
 };
 
+const getComponentTimingStatus = (component = {}) => {
+  const normalizedComponent = toPlainObject(component) || {};
+  const componentTime =
+    normalizedComponent?.time && typeof normalizedComponent.time === "object"
+      ? normalizedComponent.time
+      : {};
+  const normativeYearNum = toFiniteNumber(
+    normalizedComponent?.normativeCourseYearNum ??
+      componentTime?.Normative?.courseYearNum,
+    null,
+  );
+  const actualYearNum = toFiniteNumber(
+    normalizedComponent?.actualCourseYearNum ??
+      componentTime?.actual?.courseYearNum,
+    null,
+  );
+  const normativeTerm = normalizeStudyTerm(
+    normalizedComponent?.normativeCourseTerm ||
+      componentTime?.Normative?.courseTerm,
+  );
+  const actualTerm = normalizeStudyTerm(
+    normalizedComponent?.actualCourseTerm ||
+      componentTime?.actual?.courseTerm,
+  );
+
+  if (Number.isFinite(actualYearNum) && Number.isFinite(normativeYearNum)) {
+    if (actualYearNum > normativeYearNum) {
+      return "failed";
+    }
+
+    if (
+      actualYearNum === normativeYearNum &&
+      normativeTerm &&
+      actualTerm &&
+      normativeTerm !== actualTerm
+    ) {
+      return "failed";
+    }
+
+    if (actualYearNum === normativeYearNum && normativeTerm && actualTerm) {
+      return normativeTerm === actualTerm ? "ongoing" : "failed";
+    }
+  }
+
+  return "-";
+};
+
 const buildWeight = (value, previousWeight = {}) => {
   const parsedValue = Number(value);
+  const parsedTotal = Number(previousWeight?.total);
 
   return {
     value: Number.isFinite(parsedValue)
       ? parsedValue
       : Number(previousWeight?.value) || 0,
+    total: Number.isFinite(parsedTotal) ? parsedTotal : 100,
     unit: trimString(previousWeight?.unit) || "percent",
   };
 };
@@ -293,21 +370,46 @@ const sanitizeWeeklyScheduleEntry = (value = {}) => ({
 
 const sanitizeStudyTime = (value = {}) => {
   const normalizedProgramYear = toFiniteNumber(value?.programYear, null);
+  const normalizedNormativeYear = toFiniteNumber(
+    value?.Normative?.courseYearNum,
+    null,
+  );
+  const normalizedActualYear = toFiniteNumber(
+    value?.actual?.courseYearNum,
+    null,
+  );
 
   return {
     programYear:
       Number.isFinite(normalizedProgramYear) && normalizedProgramYear >= 0
         ? Math.trunc(normalizedProgramYear)
         : null,
-  academicYear: trimString(value?.academicYear) || null,
-  term: normalizeStudyTerm(value?.term) || null,
-  startsAt: value?.startsAt ? new Date(value.startsAt) : null,
-  endsAt: value?.endsAt ? new Date(value.endsAt) : null,
+    academicYear: trimString(value?.academicYear) || null,
+    term: normalizeStudyTerm(value?.term) || null,
+    Normative: {
+      courseYearNum:
+        Number.isFinite(normalizedNormativeYear) && normalizedNormativeYear >= 0
+          ? Math.trunc(normalizedNormativeYear)
+          : null,
+      courseYearInterval: trimString(value?.Normative?.courseYearInterval) || null,
+      courseTerm: normalizeStudyTerm(value?.Normative?.courseTerm) || null,
+    },
+    actual: {
+      courseYearNum:
+        Number.isFinite(normalizedActualYear) && normalizedActualYear >= 0
+          ? Math.trunc(normalizedActualYear)
+          : null,
+      courseYearInterval: trimString(value?.actual?.courseYearInterval) || null,
+      courseTerm: normalizeStudyTerm(value?.actual?.courseTerm) || null,
+    },
+    startsAt: value?.startsAt ? new Date(value.startsAt) : null,
+    endsAt: value?.endsAt ? new Date(value.endsAt) : null,
   };
 };
 
 const sanitizeStudyWeight = (value = {}) => ({
   value: toFiniteNumber(value?.value, 0),
+  total: toFiniteNumber(value?.total, 100),
   unit: trimString(value?.unit) || "percent",
 });
 
@@ -397,6 +499,7 @@ const sanitizeStudyLecture = (value = {}) => ({
 const sanitizeStudyComponent = (value = {}) => ({
   ...(normalizeObjectIdValue(value?._id) ? { _id: normalizeObjectIdValue(value?._id) } : {}),
   class: trimString(value?.class),
+  status: normalizeComponentStatus(value?.status),
   time: sanitizeStudyTime(value?.time || {}),
   location: sanitizeStudyLocation(value?.location || {}),
   schedule: Array.isArray(value?.schedule)
@@ -412,6 +515,7 @@ const sanitizeStudyCourse = (value = {}) => ({
   ...(normalizeObjectIdValue(value?._id) ? { _id: normalizeObjectIdValue(value?._id) } : {}),
   code: trimString(value?.code),
   name: trimString(value?.name) || "-",
+  status: normalizeCourseStatus(value?.status),
   components: Array.isArray(value?.components)
     ? value.components.map((entry) => sanitizeStudyComponent(toPlainObject(entry) || {}))
     : [],
@@ -754,14 +858,81 @@ const normalizePlannerExamPayloads = (
   return candidateEntries
     .map((entry, index) => {
       const previousExam = toPlainObject(previousExams[index]) || {};
-      const normalizedWeight = trimString(entry?.course_grade);
-      const normalizedGrade = trimString(entry?.course_fullGrade);
+      const normalizedWeight = trimString(
+        entry?.course_grade ??
+          entry?.weight?.value ??
+          previousExam?.weight?.value,
+      );
+      const normalizedGrade = trimString(
+        entry?.course_fullGrade ??
+          entry?.grade?.max ??
+          previousExam?.grade?.max,
+      );
       const normalizedDate = trimString(entry?.exam_date);
       const normalizedTime = trimString(entry?.exam_time);
-      const normalizedTitle = trimString(entry?.exam_type);
+      const normalizedTitle = trimString(entry?.type ?? entry?.exam_type);
       const nextLectureIds = normalizeReferenceIds(entry?.lectures).filter((lectureId) =>
         existingLectureIds.has(lectureId),
       );
+      const nextLocation = sanitizeStudyLocation(
+        entry?.location ||
+          {
+            building: entry?.course_locationBuilding,
+            room: entry?.course_locationRoom,
+          } ||
+          previousExam?.location ||
+          {},
+      );
+      const nextVolume = sanitizeStudyVolume(
+        entry?.volume || previousExam?.volume || {},
+      );
+      const nextWeight =
+        entry?.weight && typeof entry.weight === "object"
+          ? sanitizeStudyWeight({
+              ...(previousExam?.weight || {}),
+              ...entry.weight,
+            })
+          : buildWeight(normalizedWeight, previousExam?.weight || {});
+      const nextPassGrade =
+        entry?.passGrade && typeof entry.passGrade === "object"
+          ? sanitizeStudyGrade({
+              ...(previousExam?.passGrade || {}),
+              ...entry.passGrade,
+            })
+          : buildGrade(
+              previousExam?.passGrade?.value,
+              previousExam?.passGrade || {},
+              { assignTo: "value" },
+            );
+      const nextGrade =
+        entry?.grade && typeof entry.grade === "object"
+          ? sanitizeStudyGrade({
+              ...(previousExam?.grade || {}),
+              ...entry.grade,
+            })
+          : buildGrade(normalizedGrade, previousExam?.grade || {}, {
+              assignTo: "max",
+            });
+      const nextStudyRecommendation = sanitizeStudyRecommendation({
+        ...(previousExam?.studyRecommendation || {}),
+        ...(entry?.studyRecommendation && typeof entry.studyRecommendation === "object"
+          ? entry.studyRecommendation
+          : {}),
+      });
+      const nextTimeBase =
+        entry?.time && typeof entry.time === "object"
+          ? sanitizeStudyTime({
+              ...(previousExam?.time || {}),
+              ...entry.time,
+            })
+          : sanitizeStudyTime(previousExam?.time || {});
+      const nextTime =
+        normalizedDate || normalizedTime
+          ? {
+              ...nextTimeBase,
+              ...buildExamTime(normalizedDate, normalizedTime, previousExam?.time || {}),
+            }
+          : nextTimeBase;
 
       if (
         !normalizedWeight &&
@@ -770,7 +941,22 @@ const normalizePlannerExamPayloads = (
         !normalizedTime &&
         !normalizedTitle &&
         nextLectureIds.length === 0 &&
-        !trimString(previousExam?.title)
+        !trimString(previousExam?.title) &&
+        !trimString(nextLocation?.building) &&
+        !trimString(nextLocation?.room) &&
+        !toFiniteNumber(nextVolume?.value, 0) &&
+        !trimString(nextVolume?.scope) &&
+        !trimString(nextVolume?.note) &&
+        !toFiniteNumber(nextWeight?.value, 0) &&
+        !toFiniteNumber(nextPassGrade?.value, null) &&
+        !toFiniteNumber(nextPassGrade?.min, null) &&
+        !toFiniteNumber(nextPassGrade?.max, null) &&
+        !toFiniteNumber(nextGrade?.value, null) &&
+        !toFiniteNumber(nextGrade?.min, null) &&
+        !toFiniteNumber(nextGrade?.max, null) &&
+        !trimString(nextStudyRecommendation?.reason) &&
+        !trimString(nextStudyRecommendation?.note) &&
+        !toFiniteNumber(nextStudyRecommendation?.suggestedHours, 0)
       ) {
         return null;
       }
@@ -780,35 +966,19 @@ const normalizePlannerExamPayloads = (
         componentId: previousExam?.componentId || componentId || null,
         title: normalizedTitle || trimString(previousExam?.title),
         type: normalizedTitle || trimString(previousExam?.type),
-        time: buildExamTime(normalizedDate, normalizedTime, previousExam?.time || {}),
-        location:
-          previousExam?.location && typeof previousExam.location === "object"
-            ? previousExam.location
-            : {},
-        volume:
-          previousExam?.volume && typeof previousExam.volume === "object"
-            ? previousExam.volume
-            : { value: 0, unit: "pages", scope: "", note: "" },
+        time: nextTime,
+        location: nextLocation,
+        volume: nextVolume,
         lectures:
           nextLectureIds.length > 0
             ? nextLectureIds
             : normalizeReferenceIds(previousExam?.lectures).filter((lectureId) =>
                 existingLectureIds.has(lectureId),
               ),
-        weight: buildWeight(normalizedWeight, previousExam?.weight || {}),
-        passGrade: buildGrade(
-          previousExam?.passGrade?.value,
-          previousExam?.passGrade || {},
-          { assignTo: "value" },
-        ),
-        grade: buildGrade(normalizedGrade, previousExam?.grade || {}, {
-          assignTo: "max",
-        }),
-        studyRecommendation:
-          previousExam?.studyRecommendation &&
-          typeof previousExam.studyRecommendation === "object"
-            ? previousExam.studyRecommendation
-            : {},
+        weight: nextWeight,
+        passGrade: nextPassGrade,
+        grade: nextGrade,
+        studyRecommendation: nextStudyRecommendation,
       };
     })
     .filter(Boolean);
@@ -889,7 +1059,13 @@ const buildCoursePayloadForUpdate = (payload = {}, previousCourse = {}) => {
             : Array.isArray(previousComponent?.schedule)
               ? previousComponent.schedule
               : [],
-        weight: buildWeight(payload?.course_grade, previousComponent?.weight || {}),
+        weight: buildWeight(payload?.course_grade, {
+          ...(previousComponent?.weight || {}),
+          total:
+            Number.isFinite(Number(payload?.course_weightTotal))
+              ? Number(payload.course_weightTotal)
+              : previousComponent?.weight?.total,
+        }),
         lectures: previousLectures,
       },
     ],
@@ -906,6 +1082,7 @@ export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
       normalizeObjectIdValue(normalizedPreviousCourse?._id) || new Types.ObjectId(),
     code: trimString(payload?.course_code) || trimString(normalizedPreviousCourse?.code),
     name: trimString(payload?.course_name) || trimString(normalizedPreviousCourse?.name) || "-",
+    status: normalizeCourseStatus(payload?.course_status || normalizedPreviousCourse?.status),
     components: Array.isArray(normalizedPreviousCourse?.components)
       ? normalizedPreviousCourse.components.map((component) => toPlainObject(component))
       : [],
@@ -923,9 +1100,40 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
       ? payload.programYear
       : normalizedPreviousTime?.programYear;
   const normalizedProgramYear = toFiniteNumber(rawProgramYear, null);
+  const rawNormativeProgramYear =
+    payload?.normativeCourseYearNum !== null &&
+    payload?.normativeCourseYearNum !== undefined
+      ? payload.normativeCourseYearNum
+      : normalizedPreviousTime?.Normative?.courseYearNum;
+  const normalizedNormativeProgramYear = toFiniteNumber(
+    rawNormativeProgramYear,
+    null,
+  );
+  const normativeAcademicYear =
+    normalizeOptionalPlannerString(payload?.normativeCourseYearInterval) ||
+    normalizeOptionalPlannerString(
+      normalizedPreviousTime?.Normative?.courseYearInterval,
+    );
+  const normativeTerm = normalizeStudyTerm(
+    payload?.normativeCourseTerm || normalizedPreviousTime?.Normative?.courseTerm,
+  );
   const academicYear =
     normalizeOptionalPlannerString(payload?.academicYear) ||
     normalizeOptionalPlannerString(payload?.course_year);
+  const rawActualYear =
+    payload?.actualCourseYearNum !== null &&
+    payload?.actualCourseYearNum !== undefined
+      ? payload.actualCourseYearNum
+      : normalizedPreviousTime?.actual?.courseYearNum;
+  const normalizedActualYear = toFiniteNumber(rawActualYear, null);
+  const actualAcademicYear =
+    normalizeOptionalPlannerString(payload?.actualCourseYearInterval) ||
+    normalizeOptionalPlannerString(
+      normalizedPreviousTime?.actual?.courseYearInterval,
+    );
+  const actualTerm = normalizeStudyTerm(
+    payload?.actualCourseTerm || normalizedPreviousTime?.actual?.courseTerm,
+  );
   const term = normalizeStudyTerm(payload?.term || payload?.course_term);
 
   return {
@@ -936,6 +1144,9 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
       trimString(payload?.course_class) ||
       trimString(normalizedPreviousComponent?.class) ||
       "-",
+    status: normalizeComponentStatus(
+      payload?.course_status || normalizedPreviousComponent?.status,
+    ),
     time: {
       ...normalizedPreviousTime,
       programYear:
@@ -950,6 +1161,25 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
         term ||
         normalizeStudyTerm(normalizedPreviousTime?.term) ||
         null,
+      Normative: {
+        ...(normalizedPreviousTime?.Normative || {}),
+        courseYearNum:
+          Number.isFinite(normalizedNormativeProgramYear) &&
+          normalizedNormativeProgramYear >= 0
+            ? Math.trunc(normalizedNormativeProgramYear)
+            : normalizedPreviousTime?.Normative?.courseYearNum ?? null,
+        courseYearInterval: normativeAcademicYear || null,
+        courseTerm: normativeTerm || null,
+      },
+      actual: {
+        ...(normalizedPreviousTime?.actual || {}),
+        courseYearNum:
+          Number.isFinite(normalizedActualYear) && normalizedActualYear >= 0
+            ? Math.trunc(normalizedActualYear)
+            : normalizedPreviousTime?.actual?.courseYearNum ?? null,
+        courseYearInterval: actualAcademicYear || null,
+        courseTerm: actualTerm || null,
+      },
     },
     location: buildLocation(payload, normalizedPreviousComponent?.location || {}),
     schedule:
@@ -958,7 +1188,13 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
         : Array.isArray(normalizedPreviousComponent?.schedule)
           ? normalizedPreviousComponent.schedule
           : [],
-    weight: buildWeight(payload?.course_grade, normalizedPreviousComponent?.weight || {}),
+    weight: buildWeight(payload?.course_grade, {
+      ...(normalizedPreviousComponent?.weight || {}),
+      total:
+        Number.isFinite(Number(payload?.course_weightTotal))
+          ? Number(payload.course_weightTotal)
+          : normalizedPreviousComponent?.weight?.total,
+    }),
     lectures: Array.isArray(normalizedPreviousComponent?.lectures)
       ? normalizedPreviousComponent.lectures.map((lecture) => toPlainObject(lecture))
       : [],
@@ -1064,40 +1300,7 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
       ? normalizedCourse.components
       : [];
 
-    if (components.length === 0) {
-      return [
-        {
-          _id: normalizedCourse?._id || null,
-          parentCourseId: normalizedCourse?._id || null,
-          primaryComponentId: "",
-          course_code: trimString(normalizedCourse?.code) || "",
-          course_name: trimString(normalizedCourse?.name) || "-",
-          course_component: "-",
-          course_dayAndTime: [],
-          course_location: {
-            building: "",
-            room: "",
-          },
-          programYear: "-",
-          course_year: "-",
-          course_term: "-",
-          course_class: "-",
-          course_status: "-",
-          course_instructors: [],
-          course_grade: "-",
-          course_fullGrade: "-",
-          course_length: 0,
-          course_progress: 0,
-          course_exams: [],
-          exam_type: "-",
-          exam_date: "-",
-          exam_time: "-",
-          course_partOfPlan: true,
-        },
-      ];
-    }
-
-    return components.map((component) => {
+    const buildFlattenedComponentEntry = (component = {}) => {
       const normalizedComponent = toPlainObject(component) || {};
       const componentTime =
         normalizedComponent?.time && typeof normalizedComponent.time === "object"
@@ -1113,6 +1316,9 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
         );
       const primaryExam = exams[0] || {};
       const primaryExamTime = mapExamTimeForPlanner(primaryExam);
+      const componentStatus = normalizeComponentStatus(
+        normalizedComponent?.status,
+      );
 
       return {
         _id: normalizedComponent?._id || normalizedCourse?._id,
@@ -1120,6 +1326,8 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
         primaryComponentId: normalizedComponent?._id || "",
         course_code: trimString(normalizedCourse?.code) || "",
         course_name: trimString(normalizedCourse?.name) || "-",
+        course_status: normalizeCourseStatus(normalizedCourse?.status),
+        component_status: componentStatus,
         course_component:
           trimString(normalizedComponent?.class) ||
           trimString(normalizedComponent?.name) ||
@@ -1134,6 +1342,66 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
                 room: trimString(normalizedComponent.location.room),
               }
             : {},
+        normativeCourseYearNum:
+          Number.isFinite(
+            Number(
+              normalizedComponent?.normativeCourseYearNum ??
+                componentTime?.Normative?.courseYearNum,
+            ),
+          ) &&
+          Number(
+            normalizedComponent?.normativeCourseYearNum ??
+              componentTime?.Normative?.courseYearNum,
+          ) >= 0
+            ? String(
+                Math.trunc(
+                  Number(
+                    normalizedComponent?.normativeCourseYearNum ??
+                      componentTime?.Normative?.courseYearNum,
+                  ),
+                ),
+              )
+            : "-",
+        normativeCourseYearInterval:
+          trimString(
+            normalizedComponent?.normativeCourseYearInterval ||
+              componentTime?.Normative?.courseYearInterval,
+          ) || "-",
+        normativeCourseTerm:
+          trimString(
+            normalizedComponent?.normativeCourseTerm ||
+              componentTime?.Normative?.courseTerm,
+          ) || "-",
+        actualCourseYearNum:
+          Number.isFinite(
+            Number(
+              normalizedComponent?.actualCourseYearNum ??
+                componentTime?.actual?.courseYearNum,
+            ),
+          ) &&
+          Number(
+            normalizedComponent?.actualCourseYearNum ??
+              componentTime?.actual?.courseYearNum,
+          ) >= 0
+            ? String(
+                Math.trunc(
+                  Number(
+                    normalizedComponent?.actualCourseYearNum ??
+                      componentTime?.actual?.courseYearNum,
+                  ),
+                ),
+              )
+            : "-",
+        actualCourseYearInterval:
+          trimString(
+            normalizedComponent?.actualCourseYearInterval ||
+              componentTime?.actual?.courseYearInterval,
+          ) || "-",
+        actualCourseTerm:
+          trimString(
+            normalizedComponent?.actualCourseTerm ||
+              componentTime?.actual?.courseTerm,
+          ) || "-",
         programYear:
           Number.isFinite(Number(componentTime?.programYear)) &&
           Number(componentTime.programYear) >= 0
@@ -1145,10 +1413,11 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
           trimString(normalizedComponent?.class) ||
           trimString(normalizedComponent?.name) ||
           "-",
-        course_status: "-",
         course_instructors: [],
         course_grade:
           String(toFiniteNumber(normalizedComponent?.weight?.value, 0) || "-"),
+        course_weightTotal:
+          String(toFiniteNumber(normalizedComponent?.weight?.total, 100) || "100"),
         course_fullGrade:
           Number.isFinite(Number(primaryExam?.grade?.max))
             ? String(primaryExam.grade.max)
@@ -1159,13 +1428,48 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
           const plannerExamTime = mapExamTimeForPlanner(exam);
 
           return {
+            _id: exam?._id || null,
+            componentId: normalizeIdString(exam?.componentId) || null,
+            type: trimString(exam?.type) || "-",
             exam_type: trimString(exam?.type) || "-",
             exam_date: plannerExamTime.exam_date,
             exam_time: plannerExamTime.exam_time,
+            time:
+              exam?.time && typeof exam.time === "object"
+                ? toPlainObject(exam.time)
+                : {},
+            location:
+              exam?.location && typeof exam.location === "object"
+                ? {
+                    building: trimString(exam.location.building),
+                    room: trimString(exam.location.room),
+                  }
+                : {},
             course_grade:
               Number.isFinite(Number(exam?.weight?.value))
                 ? String(exam.weight.value)
                 : "-",
+            weight:
+              exam?.weight && typeof exam.weight === "object"
+                ? toPlainObject(exam.weight)
+                : {},
+            volume:
+              exam?.volume && typeof exam.volume === "object"
+                ? toPlainObject(exam.volume)
+                : {},
+            passGrade:
+              exam?.passGrade && typeof exam.passGrade === "object"
+                ? toPlainObject(exam.passGrade)
+                : {},
+            grade:
+              exam?.grade && typeof exam.grade === "object"
+                ? toPlainObject(exam.grade)
+                : {},
+            studyRecommendation:
+              exam?.studyRecommendation &&
+              typeof exam.studyRecommendation === "object"
+                ? toPlainObject(exam.studyRecommendation)
+                : {},
             course_fullGrade:
               Number.isFinite(Number(exam?.grade?.max))
                 ? String(exam.grade.max)
@@ -1178,7 +1482,54 @@ export const flattenMemoryCoursesForPlanner = (entries = [], plannerExams = []) 
         exam_time: primaryExamTime.exam_time,
         course_partOfPlan: true,
       };
-    });
+    };
+
+    if (components.length === 0) {
+      return [
+        {
+          _id: normalizedCourse?._id || null,
+          parentCourseId: normalizedCourse?._id || null,
+          primaryComponentId: "",
+          course_code: trimString(normalizedCourse?.code) || "",
+          course_name: trimString(normalizedCourse?.name) || "-",
+          course_status: normalizeCourseStatus(normalizedCourse?.status),
+          component_status: "-",
+          course_component: "-",
+          course_dayAndTime: [],
+          course_location: {
+            building: "",
+            room: "",
+          },
+          programYear: "-",
+          course_year: "-",
+          course_term: "-",
+          course_class: "-",
+          course_instructors: [],
+          course_grade: "-",
+          course_weightTotal: "100",
+          course_fullGrade: "-",
+          course_length: 0,
+          course_progress: 0,
+          course_exams: [],
+          exam_type: "-",
+          exam_date: "-",
+          exam_time: "-",
+          course_partOfPlan: true,
+          components: [],
+        },
+      ];
+    }
+
+    const componentEntries = components.map((component) =>
+      buildFlattenedComponentEntry(component),
+    );
+
+    return componentEntries.map((entry) => ({
+      ...entry,
+      components: componentEntries.map((componentEntry) => ({
+        ...componentEntry,
+      })),
+    }));
   });
 
 export const flattenMemoryLecturesForPlanner = (entries = []) =>

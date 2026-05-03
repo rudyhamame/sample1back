@@ -18,6 +18,9 @@ const DEFAULT_OPENAI_MODEL =
   process.env.OPENAI_MODEL ||
   process.env.GROQ_MODEL ||
   "gpt-5-mini";
+const VALID_AI_PROVIDERS = ["openai", "groq", "gemini"];
+const DEFAULT_NO_PROVIDER_MESSAGE =
+  "Missing GROQ_API_KEY, GEMINI_API_KEY, and OPENAI_API_KEY in the backend environment.";
 const DEFAULT_INSTRUCTIONS =
   "You are a helpful assistant for MCTOSH. Answer website enquiries clearly, professionally, and concisely. If a question is missing details, say what information is needed.";
 const DEFAULT_GREETING_INSTRUCTIONS =
@@ -74,27 +77,93 @@ const getOpenAIClient = () => {
 };
 
 const getGeminiApiKey = () => String(process.env.GEMINI_API_KEY || "").trim();
+const getConfiguredAiProviders = (groqClient = null, openAiClient = null) => {
+  const providers = [];
 
-const getPreferredAiProvider = (userPreferredProvider = "") => {
-  const preferredProvider = String(
-    userPreferredProvider || process.env.APP_AI_PROVIDER || "",
-  )
-    .trim()
-    .toLowerCase();
-
-  if (["gemini", "openai", "groq"].includes(preferredProvider)) {
-    return preferredProvider;
-  }
-
-  if (getGroqClient()) {
-    return "groq";
+  if (groqClient || getGroqClient()) {
+    providers.push("groq");
   }
 
   if (getGeminiApiKey()) {
-    return "gemini";
+    providers.push("gemini");
   }
 
-  return "openai";
+  if (openAiClient || getOpenAIClient()) {
+    providers.push("openai");
+  }
+
+  return providers;
+};
+const getDefaultAiProvider = (groqClient = null, openAiClient = null) =>
+  getConfiguredAiProviders(groqClient, openAiClient)[0] || "openai";
+const normalizeAiProvider = (value = "", fallbackProvider = "openai") => {
+  const normalizedValue = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  return VALID_AI_PROVIDERS.includes(normalizedValue)
+    ? normalizedValue
+    : fallbackProvider;
+};
+const hasExplicitAiProviderSelection = (value = "") =>
+  VALID_AI_PROVIDERS.includes(String(value || "").trim().toLowerCase());
+const isProviderConfigured = (provider, groqClient, openAiClient) => {
+  if (provider === "groq") {
+    return Boolean(groqClient);
+  }
+
+  if (provider === "openai") {
+    return Boolean(openAiClient);
+  }
+
+  if (provider === "gemini") {
+    return Boolean(getGeminiApiKey());
+  }
+
+  return false;
+};
+const getMissingProviderConfigurationMessage = (provider) => {
+  if (provider === "groq") {
+    return "Missing GROQ_API_KEY in the backend environment.";
+  }
+
+  if (provider === "gemini") {
+    return "Missing GEMINI_API_KEY in the backend environment.";
+  }
+
+  return "Missing OPENAI_API_KEY in the backend environment.";
+};
+const isAiQuotaError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  const status = Number(error?.status || error?.code || 0);
+
+  return (
+    status === 429 ||
+    message.includes("quota") ||
+    message.includes("billing") ||
+    message.includes("rate limit")
+  );
+};
+const buildAiProviderFailureMessage = (
+  providerErrors = [],
+  fallbackMessage = "Unable to complete the AI request.",
+) => {
+  const firstQuotaError = providerErrors.find(({ message }) =>
+    isAiQuotaError({ message }),
+  );
+
+  if (firstQuotaError) {
+    return `The ${String(firstQuotaError.provider || "selected").toUpperCase()} AI provider is out of quota or rate-limited. Add quota or configure another provider key.`;
+  }
+
+  return providerErrors[0]?.message || fallbackMessage;
+};
+
+const getPreferredAiProvider = (userPreferredProvider = "") => {
+  return normalizeAiProvider(
+    userPreferredProvider || process.env.APP_AI_PROVIDER || "",
+    getDefaultAiProvider(),
+  );
 };
 
 const createGeminiResponse = async ({
@@ -191,19 +260,16 @@ const buildProviderAttemptOrder = (
   preferredProvider,
   groqClient,
   openAiClient,
+  { allowFallback = true } = {},
 ) => {
   const availableProviders = [];
 
-  if (preferredProvider === "groq" && groqClient) {
-    availableProviders.push("groq");
+  if (isProviderConfigured(preferredProvider, groqClient, openAiClient)) {
+    availableProviders.push(preferredProvider);
   }
 
-  if (preferredProvider === "gemini" && getGeminiApiKey()) {
-    availableProviders.push("gemini");
-  }
-
-  if (preferredProvider === "openai" && openAiClient) {
-    availableProviders.push("openai");
+  if (!allowFallback) {
+    return availableProviders;
   }
 
   if (groqClient && !availableProviders.includes("groq")) {
@@ -285,19 +351,49 @@ EnquiriesRouter.post("/", async function (req, res) {
   const context = normalizeTextField(req.body?.context);
   const instructions =
     normalizeTextField(req.body?.instructions) || DEFAULT_INSTRUCTIONS;
-  const preferredProvider = getPreferredAiProvider(req.body?.aiProvider);
+  const requestedProvider = normalizeTextField(req.body?.aiProvider);
+  const requestUserId = normalizeTextField(req.body?.userId);
+  const requestUsername = normalizeTextField(req.body?.username);
+  let storedProvider = "";
+
+  if (
+    !hasExplicitAiProviderSelection(requestedProvider) &&
+    (requestUserId || requestUsername)
+  ) {
+    const user = await UserModel.findOne(
+      requestUserId ? { _id: requestUserId } : { "auth.username": requestUsername },
+    )
+      .select("_id")
+      .lean();
+
+    if (user?._id) {
+      const aiSettingsDoc = await findAiSettingsLean(user._id, "settings.aiProvider");
+      storedProvider = normalizeTextField(aiSettingsDoc?.settings?.aiProvider);
+    }
+  }
+
+  const explicitProvider = hasExplicitAiProviderSelection(requestedProvider)
+    ? requestedProvider
+    : hasExplicitAiProviderSelection(storedProvider)
+      ? storedProvider
+      : "";
+  const preferredProvider = getPreferredAiProvider(explicitProvider);
   const groqClient = getGroqClient();
   const openAiClient = getOpenAIClient();
   const providerAttemptOrder = buildProviderAttemptOrder(
     preferredProvider,
     groqClient,
     openAiClient,
+    {
+      allowFallback: !hasExplicitAiProviderSelection(explicitProvider),
+    },
   );
 
   if (providerAttemptOrder.length === 0) {
     return res.status(500).json({
-      message:
-        "Missing GEMINI_API_KEY and OPENAI_API_KEY in the backend environment.",
+      message: hasExplicitAiProviderSelection(explicitProvider)
+        ? getMissingProviderConfigurationMessage(preferredProvider)
+        : DEFAULT_NO_PROVIDER_MESSAGE,
     });
   }
 
@@ -346,8 +442,7 @@ EnquiriesRouter.post("/", async function (req, res) {
 
     if (!provider) {
       return res.status(502).json({
-        message:
-          providerErrors[0]?.message || "Unable to complete the AI request.",
+        message: buildAiProviderFailureMessage(providerErrors),
         provider: preferredProvider,
         attemptedProviders: providerErrors.map(({ provider: name }) => name),
       });

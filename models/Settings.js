@@ -1,11 +1,30 @@
 import mongoose from "mongoose";
 
 const { Schema } = mongoose;
+const resolveDefaultAiProvider = () => {
+  const appProvider = String(process.env.APP_AI_PROVIDER || "")
+    .trim()
+    .toLowerCase();
+
+  if (["openai", "groq", "gemini"].includes(appProvider)) {
+    return appProvider;
+  }
+
+  if (String(process.env.GROQ_API_KEY || "").trim()) {
+    return "groq";
+  }
+
+  if (String(process.env.GEMINI_API_KEY || "").trim()) {
+    return "gemini";
+  }
+
+  return "openai";
+};
 
 const SettingsSchema = new Schema(
   {
     ai: {
-      aiProvider: { type: String, default: "openai" },
+      aiProvider: { type: String, default: resolveDefaultAiProvider },
       languageOfReply: { type: String, default: "english" },
       inputType: { type: String, default: "text" },
       outputType: { type: String, default: "text" },

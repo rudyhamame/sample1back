@@ -43,6 +43,25 @@ import {
   updateLectureInPlanner,
 } from "./user/helpers/studyPlannerService.js";
 const UserRouter = express.Router();
+const resolveDefaultAiProvider = () => {
+  const appProvider = String(process.env.APP_AI_PROVIDER || "")
+    .trim()
+    .toLowerCase();
+
+  if (["openai", "groq", "gemini"].includes(appProvider)) {
+    return appProvider;
+  }
+
+  if (String(process.env.GROQ_API_KEY || "").trim()) {
+    return "groq";
+  }
+
+  if (String(process.env.GEMINI_API_KEY || "").trim()) {
+    return "gemini";
+  }
+
+  return "openai";
+};
 
 const requireSelfParam = (paramName) => (req, res, next) => {
   const authenticatedUserId = String(req.authentication?.userId || "").trim();
@@ -67,6 +86,85 @@ const requireSelfParam = (paramName) => (req, res, next) => {
   }
 
   return next();
+};
+
+const normalizeAcademicYearInterval = (value = "") => {
+  const normalizedValue = String(value || "").trim();
+  const match = normalizedValue.match(/^(\d{4})\s*(?:-|\/)\s*(\d{4})$/);
+
+  if (!match) {
+    return "";
+  }
+
+  return `${match[1]} - ${match[2]}`;
+};
+
+const buildNormativeCourseYearIntervalFromProfile = (
+  startProgramYearInterval = "",
+  courseYearNum = "",
+) => {
+  const normalizedStartInterval = normalizeAcademicYearInterval(
+    startProgramYearInterval,
+  );
+  const parsedCourseYearNum = Number(String(courseYearNum || "").trim());
+  const startYearMatch = normalizedStartInterval.match(/^(\d{4})/);
+
+  if (!startYearMatch || !Number.isFinite(parsedCourseYearNum)) {
+    return "";
+  }
+
+  const nextStartYear =
+    Number(startYearMatch[1]) + Math.max(Math.trunc(parsedCourseYearNum) - 1, 0);
+
+  return `${nextStartYear} - ${nextStartYear + 1}`;
+};
+
+const withAutoNormativeCourseYearInterval = (user, payload = {}) => {
+  const nextPayload =
+    payload && typeof payload === "object" ? { ...payload } : {};
+  const generatedInterval = buildNormativeCourseYearIntervalFromProfile(
+    user?.profile?.studying?.time?.start?.programYearInterval || "",
+    nextPayload?.normativeCourseYearNum,
+  );
+
+  if (generatedInterval) {
+    nextPayload.normativeCourseYearInterval = generatedInterval;
+  }
+
+  return nextPayload;
+};
+
+const withAutoActualCourseTimingFromProfile = (user, payload = {}) => {
+  const nextPayload =
+    payload && typeof payload === "object" ? { ...payload } : {};
+  const currentStudyTime =
+    user?.profile?.studying?.time?.current &&
+    typeof user.profile.studying.time.current === "object"
+      ? user.profile.studying.time.current
+      : {};
+  const normalizedCurrentYearNum = Number(
+    String(currentStudyTime?.programYearNum || "").trim(),
+  );
+  const normalizedCurrentYearInterval = normalizeAcademicYearInterval(
+    currentStudyTime?.programYearInterval || "",
+  );
+  const normalizedCurrentProgramTerm = String(
+    currentStudyTime?.programTerm ||
+      user?.profile?.studying?.term ||
+      "",
+  ).trim();
+
+  nextPayload.actualCourseYearNum = Number.isFinite(normalizedCurrentYearNum)
+    ? normalizedCurrentYearNum
+    : null;
+  nextPayload.actualCourseYearInterval = normalizedCurrentYearInterval || "";
+  nextPayload.actualCourseTerm = normalizedCurrentProgramTerm || "";
+  nextPayload.course_year = normalizedCurrentYearInterval || "";
+  nextPayload.academicYear = normalizedCurrentYearInterval || "";
+  nextPayload.course_term = normalizedCurrentProgramTerm || "";
+  nextPayload.term = normalizedCurrentProgramTerm || "";
+
+  return nextPayload;
 };
 
 const getSubjectAuth = (user) =>
@@ -101,9 +199,9 @@ const isProfileComplete = (user) => {
   const working = profile.working;
   const studyingTime =
     studying?.time && typeof studying.time === "object" ? studying.time : {};
-  const currentDate =
-    studyingTime?.currentDate && typeof studyingTime.currentDate === "object"
-      ? studyingTime.currentDate
+  const current =
+    studyingTime?.current && typeof studyingTime.current === "object"
+      ? studyingTime.current
       : {};
 
   const hasStudyingInfo =
@@ -111,7 +209,7 @@ const isProfileComplete = (user) => {
     (studying.university?.trim() || studying.program?.trim()) &&
     studying.program?.trim() &&
     studying.university?.trim() &&
-    (currentDate.term?.trim() || studying.term?.trim());
+    (current.programTerm?.trim() || studying.term?.trim());
 
   const hasWorkingInfo =
     working &&
@@ -190,6 +288,14 @@ const buildLegacyIdentity = (user) => {
   const auth = getSubjectAuth(user);
   const bio = getSubjectBio(user);
   const status = getSubjectStatus(user);
+  const studyingTime =
+    bio?.studying?.time && typeof bio.studying.time === "object"
+      ? bio.studying.time
+      : {};
+  const current =
+    studyingTime?.current && typeof studyingTime.current === "object"
+      ? studyingTime.current
+      : {};
 
   return {
     atSignup: {
@@ -204,11 +310,9 @@ const buildLegacyIdentity = (user) => {
       faculty: String(bio?.studying?.faculty || "").trim(),
       program: String(bio?.studying?.program || "").trim(),
       university: String(bio?.studying?.university || "").trim(),
-      year: String(bio?.studying?.time?.currentDate?.year || "").trim(),
-      studyYear: String(bio?.studying?.time?.currentDate?.year || "").trim(),
-      term: String(
-        bio?.studying?.time?.currentDate?.term || bio?.studying?.term || "",
-      ).trim(),
+      year: String(current?.programYearNum || "").trim(),
+      studyYear: String(current?.programYearNum || "").trim(),
+      term: String(current?.programTerm || bio?.studying?.term || "").trim(),
       profession: "",
       profilePicture: {
         picture: getLegacyProfilePicture(user),
@@ -1655,18 +1759,15 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
     if (isStudying) {
       const studyingTime =
         studying?.time && typeof studying.time === "object" ? studying.time : {};
-      const startDate =
-        studyingTime?.startDate && typeof studyingTime.startDate === "object"
-          ? studyingTime.startDate
+      const start =
+        studyingTime?.start && typeof studyingTime.start === "object"
+          ? studyingTime.start
           : {};
-      const currentDate =
-        studyingTime?.currentDate &&
-        typeof studyingTime.currentDate === "object"
-          ? studyingTime.currentDate
+      const current =
+        studyingTime?.current && typeof studyingTime.current === "object"
+          ? studyingTime.current
           : {};
-      const hasCurrentTerm = Boolean(
-        String(currentDate.term || studying.term || "").trim(),
-      );
+      const hasCurrentTerm = Boolean(String(current.programTerm || "").trim());
 
       if (!studying.program || !studying.university || !hasCurrentTerm) {
         return res.status(400).json({
@@ -1676,20 +1777,24 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       }
 
       if (
-        (startDate.startYear !== undefined && startDate.startYear !== null) ||
-        String(startDate.startTerm || "").trim() ||
-        (currentDate.year !== undefined && currentDate.year !== null) ||
-        String(currentDate.term || "").trim()
+        String(studyingTime.totalYearsNum ?? "").trim() ||
+        String(start.programYearInterval || "").trim() ||
+        String(start.programTerm || "").trim() ||
+        String(current.programYearNum ?? "").trim() ||
+        String(current.programYearInterval || "").trim() ||
+        String(current.programTerm || "").trim()
       ) {
         if (
-          !normalizeNullableNumber(startDate.startYear, null) ||
-          !String(startDate.startTerm || "").trim() ||
-          !normalizeNullableNumber(currentDate.year, null) ||
-          !String(currentDate.term || "").trim()
+          !normalizeNullableNumber(studyingTime.totalYearsNum, null) ||
+          !String(start.programYearInterval || "").trim() ||
+          !String(start.programTerm || "").trim() ||
+          !normalizeNullableNumber(current.programYearNum, null) ||
+          !String(current.programYearInterval || "").trim() ||
+          !String(current.programTerm || "").trim()
         ) {
           return res.status(400).json({
             message:
-              "If studying time is provided, start year/term and current year/term are all required.",
+              "If education timing is provided, total years, start interval/term, and current year number/interval/term are all required.",
           });
         }
       }
@@ -1750,50 +1855,53 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
     if (isStudying) {
       const studyingTime =
         studying?.time && typeof studying.time === "object" ? studying.time : {};
-      const startDate =
-        studyingTime?.startDate && typeof studyingTime.startDate === "object"
-          ? studyingTime.startDate
+      const start =
+        studyingTime?.start && typeof studyingTime.start === "object"
+          ? studyingTime.start
           : {};
-      const currentDate =
-        studyingTime?.currentDate &&
-        typeof studyingTime.currentDate === "object"
-          ? studyingTime.currentDate
+      const current =
+        studyingTime?.current && typeof studyingTime.current === "object"
+          ? studyingTime.current
           : {};
-      const normalizedStartYear = normalizeNullableNumber(
-        startDate.startYear,
-        null,
+      const normalizedTotalYearsNum = normalizeNullableNumber(
+        studyingTime.totalYearsNum,
+        0,
       );
-      const normalizedCurrentYear = normalizeNullableNumber(
-        currentDate.year,
-        null,
-      );
-      const normalizedCurrentTerm = String(
-        currentDate.term || studying.term || "",
+      const normalizedStartProgramYearInterval = String(
+        start.programYearInterval || "",
       ).trim();
-      const normalizedStartTerm = String(startDate.startTerm || "").trim();
+      const normalizedStartProgramTerm = String(start.programTerm || "").trim();
+      const normalizedCurrentProgramYearNum = normalizeNullableNumber(
+        current.programYearNum,
+        null,
+      );
+      const normalizedCurrentProgramYearInterval = String(
+        current.programYearInterval || "",
+      ).trim();
+      const normalizedCurrentProgramTerm = String(
+        current.programTerm || studying.term || "",
+      ).trim();
 
       user.profile.studying = {
         university: studying.university,
         program: studying.program,
+        faculty: studying.faculty || "",
         programStartYear:
           studying.programStartYear ||
-          studying.academicYear ||
-          (normalizedStartYear ? `${normalizedStartYear}/${normalizedStartYear + 1}` : ""),
-        term: normalizedCurrentTerm,
+          normalizedStartProgramYearInterval ||
+          "",
+        term: normalizedCurrentProgramTerm,
         language: studying.language || "",
         time: {
-          totalYears: normalizeNullableNumber(studyingTime.totalYears, 0) || 0,
-          currentAcademicYear: normalizeNullableNumber(
-            studyingTime.currentAcademicYear,
-            null,
-          ),
-          startDate: {
-            startYear: normalizedStartYear,
-            startTerm: normalizedStartTerm,
+          totalYearsNum: normalizedTotalYearsNum || 0,
+          start: {
+            programYearInterval: normalizedStartProgramYearInterval || null,
+            programTerm: normalizedStartProgramTerm || null,
           },
-          currentDate: {
-            year: normalizedCurrentYear,
-            term: normalizedCurrentTerm,
+          current: {
+            programYearNum: normalizedCurrentProgramYearNum,
+            programYearInterval: normalizedCurrentProgramYearInterval || null,
+            programTerm: normalizedCurrentProgramTerm || null,
           },
         },
       };
@@ -1951,6 +2059,8 @@ UserRouter.get("/update/:id", async function (req, res, next) {
       });
     }
 
+    const subjectProfile = getSubjectBio(profile);
+
     const memoryDoc = await findUserMemoryLean(profile._id);
     const imageGallery = getMemoryLocalGallery(memoryDoc);
     const flattenedCourses = flattenMemoryCoursesForPlanner(
@@ -2075,6 +2185,8 @@ UserRouter.get("/update/:id", async function (req, res, next) {
 
     return res.status(200).json({
       identity: buildLegacyIdentity(profile),
+      profile: subjectProfile,
+      bio: subjectProfile,
       friends: friends,
       settings: profile.settings || {},
       memory: {
@@ -2147,9 +2259,12 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
           "profile.studying.university",
           "profile.studying.faculty",
           "profile.studying.language",
-          "profile.studying.time.currentAcademicYear",
-          "profile.studying.time.currentDate.year",
-          "profile.studying.time.currentDate.term",
+          "profile.studying.time.totalYearsNum",
+          "profile.studying.time.start.programYearInterval",
+          "profile.studying.time.start.programTerm",
+          "profile.studying.time.current.programYearNum",
+          "profile.studying.time.current.programYearInterval",
+          "profile.studying.time.current.programTerm",
           "profile.working.company",
           "profile.working.position",
           "profile.picture.profilePic.viewport",
@@ -2201,7 +2316,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
 
     const requestedAiProvider = String(
-      req.body?.aiProvider ?? aiSettings.aiProvider ?? "openai",
+      req.body?.aiProvider ??
+        aiSettings.aiProvider ??
+        resolveDefaultAiProvider(),
     )
       .trim()
       .toLowerCase();
@@ -2210,7 +2327,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       requestedAiProvider,
     )
       ? requestedAiProvider
-      : "openai";
+      : resolveDefaultAiProvider();
 
     const nextProgram = String(
       req.body?.program ?? bio?.studying?.program ?? "",
@@ -2222,16 +2339,33 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const nextLanguage = String(
       req.body?.language ?? bio?.studying?.language ?? "",
     ).trim();
-    const nextCurrentAcademicYear = String(
-      req.body?.currentAcademicYear ??
-        bio?.studying?.time?.currentAcademicYear ??
+    const nextTotalYearsNum = String(
+      req.body?.totalYearsNum ?? bio?.studying?.time?.totalYearsNum ?? "",
+    ).trim();
+    const nextStartProgramYearInterval = String(
+      req.body?.startProgramYearInterval ??
+        bio?.studying?.time?.start?.programYearInterval ??
         "",
     ).trim();
-    const nextStudyYear = String(
-      req.body?.studyYear ?? bio?.studying?.time?.currentDate?.year ?? "",
+    const nextStartProgramTerm = String(
+      req.body?.startProgramTerm ??
+        bio?.studying?.time?.start?.programTerm ??
+        "",
     ).trim();
-    const nextTerm = String(
-      req.body?.term ?? bio?.studying?.time?.currentDate?.term ?? "",
+    const nextCurrentProgramYearNum = String(
+      req.body?.currentProgramYearNum ??
+        bio?.studying?.time?.current?.programYearNum ??
+        "",
+    ).trim();
+    const nextCurrentProgramYearInterval = String(
+      req.body?.currentProgramYearInterval ??
+        bio?.studying?.time?.current?.programYearInterval ??
+        "",
+    ).trim();
+    const nextCurrentProgramTerm = String(
+      req.body?.currentProgramTerm ??
+        bio?.studying?.time?.current?.programTerm ??
+        "",
     ).trim();
     const nextBio = String(req.body?.bio ?? bio?.bio ?? "").trim();
     const nextEmail = String(req.body?.email ?? bio?.email ?? "").trim();
@@ -2249,8 +2383,8 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const nextPosition = String(
       req.body?.position ?? bio?.working?.position ?? "",
     ).trim();
-    const nextCurrentAcademicYearNumber = Number(nextCurrentAcademicYear);
-    const nextStudyYearNumber = Number(nextStudyYear);
+    const nextTotalYearsNumNumber = Number(nextTotalYearsNum);
+    const nextCurrentProgramYearNumNumber = Number(nextCurrentProgramYearNum);
 
     const updateSet = {
       "profile.firstname": nextFirstname,
@@ -2269,16 +2403,22 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       "profile.studying.university": nextUniversity,
       "profile.studying.faculty": nextFaculty,
       "profile.studying.language": nextLanguage,
-      "profile.studying.time.currentAcademicYear":
-        nextCurrentAcademicYear === "" ||
-        !Number.isFinite(nextCurrentAcademicYearNumber)
+      "profile.studying.time.totalYearsNum":
+        nextTotalYearsNum === "" || !Number.isFinite(nextTotalYearsNumNumber)
           ? null
-          : nextCurrentAcademicYearNumber,
-      "profile.studying.time.currentDate.year":
-        nextStudyYear === "" || !Number.isFinite(nextStudyYearNumber)
+          : nextTotalYearsNumNumber,
+      "profile.studying.time.start.programYearInterval":
+        nextStartProgramYearInterval || null,
+      "profile.studying.time.start.programTerm": nextStartProgramTerm || null,
+      "profile.studying.time.current.programYearNum":
+        nextCurrentProgramYearNum === "" ||
+        !Number.isFinite(nextCurrentProgramYearNumNumber)
           ? null
-          : nextStudyYearNumber,
-      "profile.studying.time.currentDate.term": nextTerm || null,
+          : nextCurrentProgramYearNumNumber,
+      "profile.studying.time.current.programYearInterval":
+        nextCurrentProgramYearInterval || null,
+      "profile.studying.time.current.programTerm":
+        nextCurrentProgramTerm || null,
       "profile.working.company": nextCompany,
       "profile.working.position": nextPosition,
     };
@@ -2419,9 +2559,15 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       program: nextProgram,
       university: nextUniversity,
       language: nextLanguage,
-      currentAcademicYear: nextCurrentAcademicYear,
-      studyYear: nextStudyYear,
-      term: nextTerm,
+      currentAcademicYear: nextCurrentProgramYearInterval,
+      studyYear: nextCurrentProgramYearNum,
+      term: nextCurrentProgramTerm,
+      totalYearsNum: nextTotalYearsNum,
+      startProgramYearInterval: nextStartProgramYearInterval,
+      startProgramTerm: nextStartProgramTerm,
+      currentProgramYearNum: nextCurrentProgramYearNum,
+      currentProgramYearInterval: nextCurrentProgramYearInterval,
+      currentProgramTerm: nextCurrentProgramTerm,
       company: nextCompany,
       position: nextPosition,
       aiProvider: nextAiProvider,
@@ -3736,7 +3882,10 @@ UserRouter.post(
       const createdComponent = addComponentToPlanner(
         memoryDoc,
         req.params.courseID,
-        req.body,
+        withAutoActualCourseTimingFromProfile(
+          user,
+          withAutoNormativeCourseYearInterval(user, req.body),
+        ),
       );
 
       if (!createdComponent) {
@@ -3778,9 +3927,24 @@ UserRouter.post(
         course_name: req.body?.course_name,
       });
 
+      const normalizedCourseComponents = Array.isArray(req.body?.course_components)
+        ? req.body.course_components
+            .map((entry) => String(entry || "").trim())
+            .filter(Boolean)
+        : [];
+      const fallbackCourseComponent = String(
+        req.body?.course_component || "",
+      ).trim();
+      const courseComponentsToCreate =
+        normalizedCourseComponents.length > 0
+          ? normalizedCourseComponents
+          : fallbackCourseComponent
+            ? [fallbackCourseComponent]
+            : [];
+
       const shouldCreateComponent = Boolean(
         String(req.body?.course_class || "").trim() ||
-        String(req.body?.course_component || "").trim() ||
+        courseComponentsToCreate.length > 0 ||
         String(req.body?.programYear ?? "").trim() ||
         String(req.body?.academicYear || "").trim() ||
         String(req.body?.course_year || "").trim() ||
@@ -3794,11 +3958,21 @@ UserRouter.post(
       );
 
       if (shouldCreateComponent && createdPlannerCourse?._id) {
-        addComponentToPlanner(memoryDoc, createdPlannerCourse._id, {
-          ...req.body,
-          course_class:
-            String(req.body?.course_class || "").trim() ||
-            String(req.body?.course_component || "").trim(),
+        const baseCourseClass = String(req.body?.course_class || "").trim();
+        const componentPayloads =
+          courseComponentsToCreate.length > 0
+            ? courseComponentsToCreate
+            : [String(req.body?.course_component || "").trim()];
+
+        componentPayloads.forEach((componentName) => {
+          addComponentToPlanner(memoryDoc, createdPlannerCourse._id, {
+            ...withAutoActualCourseTimingFromProfile(
+              user,
+              withAutoNormativeCourseYearInterval(user, req.body),
+            ),
+            course_component: componentName,
+            course_class: baseCourseClass || componentName,
+          });
         });
       }
 
@@ -3961,7 +4135,10 @@ UserRouter.post(
       const updatedPlannerCourse = updateCourseInPlanner(
         memoryDoc,
         req.params.courseID,
-        req.body,
+        withAutoActualCourseTimingFromProfile(
+          user,
+          withAutoNormativeCourseYearInterval(user, req.body),
+        ),
       );
 
       await memoryDoc.save();

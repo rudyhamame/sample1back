@@ -20,6 +20,7 @@ const TelegramGroupContentBucketSchema = new Schema(
   {
     texts: { type: [Schema.Types.Mixed], default: [] },
     photos: { type: [Schema.Types.Mixed], default: [] },
+    images: { type: [Schema.Types.Mixed], default: [] },
     videos: { type: [Schema.Types.Mixed], default: [] },
     audios: { type: [Schema.Types.Mixed], default: [] },
     documents: { type: [Schema.Types.Mixed], default: [] },
@@ -38,6 +39,7 @@ const TelegramGroupsSchema = new Schema(
 const TelegramMemorySchema = new Schema(
   {
     groups: { type: TelegramGroupsSchema, default: () => ({}) },
+    predictions: { type: Schema.Types.Mixed, default: () => ({}) },
   },
   { _id: false, strict: "throw" },
 );

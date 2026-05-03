@@ -19,14 +19,9 @@ const ExamSchema = new Schema(
     time: { type: StudyTimeSchema, default: createEmptyObject },
     location: { type: StudyLocationSchema, default: createEmptyObject },
     lectures: { type: [Schema.Types.ObjectId], default: [] },
-    volume: { type: StudyVolumeSchema, default: createEmptyObject },
     weight: { type: StudyWeightSchema, default: createEmptyObject },
     passGrade: { type: StudyGradeSchema, default: createEmptyObject },
     grade: { type: StudyGradeSchema, default: createEmptyObject },
-    studyRecommendation: {
-      type: StudyRecommendationSchema,
-      default: createEmptyObject,
-    },
   },
   { _id: true },
 );

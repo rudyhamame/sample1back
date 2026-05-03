@@ -2,6 +2,10 @@ import mongoose from "mongoose";
 import UserModel from "../compat/UserModel.js";
 import AiSettingsModel from "../compat/AiSettingsModel.js";
 import TelegramSettingsModel from "../compat/TelegramSettingsModel.js";
+import {
+  flattenMemoryCoursesForPlanner,
+  flattenMemoryLecturesForPlanner,
+} from "../routes/user/helpers/studyPlannerService.js";
 
 const { Types } = mongoose;
 
@@ -73,10 +77,72 @@ const toPlainValue = (value) => {
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(toPlainValue(value)));
 
+const normalizePlannerComponentStatus = (value) => {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  const aliases = {
+    new: "new",
+    failed: "failed",
+    passed: "passed",
+    "not started": "new",
+    "in progress": "new",
+    completed: "passed",
+  };
+
+  return aliases[normalizedValue] || "new";
+};
+
+const normalizePlannerCourseStatus = (value) => {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  const aliases = {
+    new: "new",
+    failed: "failed",
+    incomplete: "incomplete",
+    passed: "passed",
+    "not started": "new",
+    "in progress": "incomplete",
+    completed: "passed",
+  };
+
+  return aliases[normalizedValue] || "new";
+};
+
+const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
+  if (!studyOrganizer || typeof studyOrganizer !== "object") {
+    return {};
+  }
+
+  const normalizedStudyOrganizer = cloneValue(studyOrganizer);
+  normalizedStudyOrganizer.courses = (Array.isArray(normalizedStudyOrganizer.courses)
+    ? normalizedStudyOrganizer.courses
+    : []
+  ).map((course) => {
+    if (!course || typeof course !== "object") {
+      return course;
+    }
+
+    return {
+      ...course,
+      status: normalizePlannerCourseStatus(course.status),
+      components: (Array.isArray(course.components) ? course.components : []).map(
+        (component) => ({
+          ...component,
+          status: normalizePlannerComponentStatus(component?.status),
+        }),
+      ),
+    };
+  });
+
+  return normalizedStudyOrganizer;
+};
+
 const normalizeTelegramMemory = (telegram) => {
   const groups = telegram?.groups;
   const info = groups?.info;
-  const primaryContent = Array.isArray(groups?.content) ? groups.content[0] : null;
+  const contentEntries = Array.isArray(groups?.content) ? groups.content : [];
+  const predictions =
+    telegram?.predictions && typeof telegram.predictions === "object"
+      ? cloneValue(telegram.predictions)
+      : {};
 
   return {
     groups: {
@@ -96,26 +162,16 @@ const normalizeTelegramMemory = (telegram) => {
             : 0,
         pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
       },
-      content: [
-        {
-          texts: Array.isArray(primaryContent?.texts)
-            ? cloneValue(primaryContent.texts)
-            : [],
-          photos: Array.isArray(primaryContent?.photos)
-            ? cloneValue(primaryContent.photos)
-            : [],
-          videos: Array.isArray(primaryContent?.videos)
-            ? cloneValue(primaryContent.videos)
-            : [],
-          audios: Array.isArray(primaryContent?.audios)
-            ? cloneValue(primaryContent.audios)
-            : [],
-          documents: Array.isArray(primaryContent?.documents)
-            ? cloneValue(primaryContent.documents)
-            : [],
-        },
-      ],
+      content: (contentEntries.length > 0 ? contentEntries : [{}]).map((entry) => ({
+        texts: Array.isArray(entry?.texts) ? cloneValue(entry.texts) : [],
+        photos: Array.isArray(entry?.photos) ? cloneValue(entry.photos) : [],
+        images: Array.isArray(entry?.images) ? cloneValue(entry.images) : [],
+        videos: Array.isArray(entry?.videos) ? cloneValue(entry.videos) : [],
+        audios: Array.isArray(entry?.audios) ? cloneValue(entry.audios) : [],
+        documents: Array.isArray(entry?.documents) ? cloneValue(entry.documents) : [],
+      })),
     },
+    predictions,
   };
 };
 
@@ -127,9 +183,9 @@ const normalizeMemoryPayload = (memory) => ({
           studyOrganizer:
             memory?.studyPlanner?.studyOrganizer &&
             typeof memory.studyPlanner.studyOrganizer === "object"
-              ? cloneValue(memory.studyPlanner.studyOrganizer)
+              ? normalizeStudyOrganizerStatuses(memory.studyPlanner.studyOrganizer)
               : memory?.studyOrganizer && typeof memory.studyOrganizer === "object"
-                ? cloneValue(memory.studyOrganizer)
+                ? normalizeStudyOrganizerStatuses(memory.studyOrganizer)
                 : {},
           studyPlanAid:
             memory?.studyPlanner?.studyPlanAid &&
@@ -142,7 +198,7 @@ const normalizeMemoryPayload = (memory) => ({
       : {
           studyOrganizer:
             memory?.studyOrganizer && typeof memory.studyOrganizer === "object"
-              ? cloneValue(memory.studyOrganizer)
+              ? normalizeStudyOrganizerStatuses(memory.studyOrganizer)
               : {},
           studyPlanAid:
             memory?.studyPlanAid && typeof memory.studyPlanAid === "object"
@@ -220,7 +276,23 @@ export const findUserMemoryLean = async (userId) => {
     return null;
   }
 
-  return normalizeMemoryPayload(user.memory);
+  const normalizedMemory = normalizeMemoryPayload(user.memory);
+  const plannerCourses = Array.isArray(
+    normalizedMemory?.studyPlanner?.studyOrganizer?.courses,
+  )
+    ? normalizedMemory.studyPlanner.studyOrganizer.courses
+    : [];
+  const plannerExams = Array.isArray(
+    normalizedMemory?.studyPlanner?.studyOrganizer?.exams,
+  )
+    ? normalizedMemory.studyPlanner.studyOrganizer.exams
+    : [];
+
+  return {
+    ...normalizedMemory,
+    courses: flattenMemoryCoursesForPlanner(plannerCourses, plannerExams),
+    lectures: flattenMemoryLecturesForPlanner(plannerCourses),
+  };
 };
 
 export const findAiSettingsLean = async (subjectId, select = "") => {

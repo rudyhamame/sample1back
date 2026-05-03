@@ -30,19 +30,19 @@ const ProfileSchema = new Schema(
       program: { type: String, default: "" },
       faculty: { type: String, default: "" },
       time: {
-        totalYears: { type: Number, default: 0, min: 0 },
-        currentAcademicYear: { type: Number, default: null, min: 0 },
-        startDate: {
-          startYear: { type: Number, default: null },
-          startTerm: {
+        totalYearsNum: { type: Number, default: 0, min: 0 },
+        start: {
+          programYearInterval: { type: String, default: null },
+          programTerm: {
             type: String,
             enum: ["First", "Second", "Third"],
             default: null,
           },
         },
-        currentDate: {
-          year: { type: Number, default: null },
-          term: {
+        current: {
+          programYearNum: { type: Number, default: null, min: 0 },
+          programYearInterval: { type: String, default: null },
+          programTerm: {
             type: String,
             enum: ["First", "Second", "Third"],
             default: null,

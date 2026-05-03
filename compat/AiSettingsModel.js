@@ -1,5 +1,25 @@
 import UserModel from "./UserModel.js";
 
+const resolveDefaultAiProvider = () => {
+  const appProvider = String(process.env.APP_AI_PROVIDER || "")
+    .trim()
+    .toLowerCase();
+
+  if (["openai", "groq", "gemini"].includes(appProvider)) {
+    return appProvider;
+  }
+
+  if (String(process.env.GROQ_API_KEY || "").trim()) {
+    return "groq";
+  }
+
+  if (String(process.env.GEMINI_API_KEY || "").trim()) {
+    return "gemini";
+  }
+
+  return "openai";
+};
+
 const cloneValue = (value) =>
   typeof structuredClone === "function"
     ? structuredClone(value)
@@ -24,7 +44,7 @@ const buildQuery = (executor) => ({
 const normalizeAiSettings = (user) => ({
   subject: user?._id || null,
   settings: {
-    aiProvider: String(user?.settings?.aiProvider || "openai"),
+    aiProvider: String(user?.settings?.aiProvider || resolveDefaultAiProvider()),
     languageOfReply: String(user?.settings?.languageOfReply || "english"),
     inputType: String(user?.settings?.inputType || "text"),
     outputType: String(user?.settings?.outputType || "text"),

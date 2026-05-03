@@ -18,6 +18,8 @@ const NON_TEXT_KIND_VALUES = [
 const EXTRACTED_TEXT_STATUS_VALUES = ["none", "pending", "converted"];
 const STUDY_TIMING_VALUES = ["now", "soon", "later", "review"];
 const STUDY_INTENSITY_VALUES = ["low", "medium", "high"];
+const COMPONENT_STATUS_VALUES = ["new", "failed", "passed"];
+const COURSE_STATUS_VALUES = ["new", "failed", "incomplete", "passed"];
 
 const StudyLocationSchema = new Schema(
   {
@@ -39,9 +41,24 @@ const WeeklyScheduleEntrySchema = new Schema(
 
 const StudyTimeSchema = new Schema(
   {
-    programYear: { type: Number, default: null, min: 0 },
-    academicYear: { type: String, default: null },
-    term: { type: String, enum: ["First", "Second", "Third"], default: null },
+    Normative: {
+      courseYearNum: { type: Number, default: null, min: 0 }, //the original year number of the course in program years, e.g., 1, 2, 3, 4
+      courseYearInterval: { type: String, default: null }, //the actual year interval of the course in program years, e.g., "2020-2024"
+      courseTerm: {
+        type: String,
+        enum: ["First", "Second", "Third"],
+        default: null,
+      }, //the original term of the course in the courseYearInterval, e.g., "First", "Second", "Third"
+    },
+    actual: {
+      courseYearNum: { type: Number, default: null, min: 0 }, //the actual year number of the course in program years, e.g., 1, 2, 3, 4
+      courseYearInterval: { type: String, default: null }, //the actual year interval of the course in program years, e.g., "2020-2024"
+      courseTerm: {
+        type: String,
+        enum: ["First", "Second", "Third"],
+        default: null,
+      },
+    },
   },
   { _id: false },
 );
@@ -59,7 +76,7 @@ const StudyVolumeSchema = new Schema(
 const StudyWeightSchema = new Schema(
   {
     value: { type: Number, default: 0, min: 0 },
-    unit: { type: String, default: "percent" },
+    total: { type: Number, default: 100 },
   },
   { _id: false },
 );
@@ -162,6 +179,11 @@ const ComponentSchema = new Schema(
     class: { type: String, default: "" },
     time: { type: StudyTimeSchema, default: createEmptyObject },
     location: { type: StudyLocationSchema, default: createEmptyObject },
+    status: {
+      type: String,
+      enum: COMPONENT_STATUS_VALUES,
+      default: "new",
+    },
     schedule: { type: [WeeklyScheduleEntrySchema], default: [] },
     weight: { type: StudyWeightSchema, default: createEmptyObject },
     lectures: { type: [StudyLectureSchema], default: [] },
@@ -173,6 +195,11 @@ const CourseSchema = new Schema(
   {
     code: { type: String, default: "" },
     name: { type: String, default: "" },
+    status: {
+      type: String,
+      enum: COURSE_STATUS_VALUES,
+      default: "new",
+    },
     components: { type: [ComponentSchema], default: [] },
   },
   { _id: true },
@@ -187,6 +214,8 @@ export {
   EXTRACTED_TEXT_STATUS_VALUES,
   STUDY_TIMING_VALUES,
   STUDY_INTENSITY_VALUES,
+  COMPONENT_STATUS_VALUES,
+  COURSE_STATUS_VALUES,
   WeeklyScheduleEntrySchema,
   StudyTimeSchema,
   StudyLocationSchema,
