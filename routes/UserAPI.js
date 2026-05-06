@@ -23,6 +23,7 @@ import { emitUserRefresh } from "../helpers/realtime.js";
 import { setUserConnectionState } from "../helpers/connectionStatus.js";
 import {
   findAiSettingsLean,
+  buildUserMemoryLean,
   findUserMemoryLean,
   ensureUserMemoryDoc,
   upsertAiSettings,
@@ -36,6 +37,7 @@ import {
   getStudyPlanAid,
   recalculateCourseLectureTotals,
   removeCourseOrComponentFromPlanner,
+  replaceCourseBundleInPlanner,
   removeLectureFromPlanner,
   updateCourseInPlanner,
   updateCoursePagesInPlanner,
@@ -171,53 +173,48 @@ const getSubjectAuth = (user) =>
   user?.auth && typeof user.auth === "object" ? user.auth : {};
 
 const getSubjectBio = (user) => {
-  if (user?.profile && typeof user.profile === "object") {
-    return user.profile;
-  }
+  const profile =
+    user?.profile && typeof user.profile === "object" ? user.profile : {};
+  const bio = user?.bio && typeof user.bio === "object" ? user.bio : {};
 
-  return user?.bio && typeof user.bio === "object" ? user.bio : {};
+  // Some legacy users still have richer data in `bio`.
+  // Prefer `profile` but fill missing fields from `bio`.
+  const mergedStudying = {
+    ...(bio?.studying && typeof bio.studying === "object" ? bio.studying : {}),
+    ...(profile?.studying && typeof profile.studying === "object"
+      ? profile.studying
+      : {}),
+  };
+  const mergedWorking = {
+    ...(bio?.working && typeof bio.working === "object" ? bio.working : {}),
+    ...(profile?.working && typeof profile.working === "object"
+      ? profile.working
+      : {}),
+  };
+  const mergedHometown = {
+    ...(bio?.hometown && typeof bio.hometown === "object" ? bio.hometown : {}),
+    ...(profile?.hometown && typeof profile.hometown === "object"
+      ? profile.hometown
+      : {}),
+  };
+
+  return {
+    ...bio,
+    ...profile,
+    hometown: mergedHometown,
+    studying: mergedStudying,
+    working: mergedWorking,
+  };
 };
 
 const isProfileComplete = (user) => {
   const profile = getSubjectBio(user);
-
-  // Check required fields
-  if (
-    !profile.firstname?.trim() ||
-    !profile.lastname?.trim() ||
-    !profile.email?.trim() ||
-    !profile.phone?.trim() ||
-    !profile.dob ||
-    !profile.hometown?.Country?.trim() ||
-    !profile.hometown?.City?.trim()
-  ) {
+  const firstname = String(profile?.firstname || "").trim();
+  const lastname = String(profile?.lastname || "").trim();
+  if (!firstname || !lastname) {
     return false;
   }
-
-  // Check if user has either studying or working info
-  const studying = profile.studying;
-  const working = profile.working;
-  const studyingTime =
-    studying?.time && typeof studying.time === "object" ? studying.time : {};
-  const current =
-    studyingTime?.current && typeof studyingTime.current === "object"
-      ? studyingTime.current
-      : {};
-
-  const hasStudyingInfo =
-    studying &&
-    (studying.university?.trim() || studying.program?.trim()) &&
-    studying.program?.trim() &&
-    studying.university?.trim() &&
-    (current.programTerm?.trim() || studying.term?.trim());
-
-  const hasWorkingInfo =
-    working &&
-    (working.company?.trim() || working.position?.trim()) &&
-    working.company?.trim() &&
-    working.position?.trim();
-
-  return hasStudyingInfo || hasWorkingInfo;
+  return true;
 };
 
 const getSubjectStatus = (user) =>
@@ -1514,71 +1511,123 @@ UserRouter.post("/login", function (req, res, next) {
   UserModel.findOne({
     "auth.username": req.body.username,
   })
+    .select(
+      [
+        "auth.username",
+        "auth.password",
+        "profile.firstname",
+        "profile.lastname",
+        "profile.email",
+        "profile.phone",
+        "profile.dob",
+        "profile.hometown",
+        "profile.studying",
+        "profile.working",
+        "profile.bio",
+        "profile.picture.profilePic.index",
+        "profile.picture.profilePic.viewport",
+        "connections",
+        "friends",
+        "status",
+      ].join(" "),
+    )
+    .lean()
     .exec()
     .then((user) => {
       if (user) {
         bcrypt.compare(
           req.body.password,
           user.auth?.password || "",
-          (err, result) => {
+          async (err, result) => {
             if (result) {
-              const now = new Date();
-              setUserConnectionState(user, {
-                isConnected: true,
-                at: now,
-                markLogin: true,
-              });
-
-              user
-                .save()
-                .then((updatedUser) => {
-                  emitUserRefresh(
-                    io,
-                    getUserAndFriendIds(updatedUser),
-                    "connection:changed",
-                    {
-                      isConnected: true,
-                      targetUserId: String(updatedUser._id),
+              try {
+                const now = new Date();
+                const updatedUser = await UserModel.findByIdAndUpdate(
+                  user._id,
+                  {
+                    $set: {
+                      "status.value": "online",
+                      "status.updatedAt": now,
                     },
-                  );
+                  },
+                  {
+                    returnDocument: "after",
+                  },
+                )
+                  .select(
+                    [
+                      "auth.username",
+                      "profile.firstname",
+                      "profile.lastname",
+                      "profile.email",
+                      "profile.phone",
+                      "profile.dob",
+                      "profile.hometown",
+                      "profile.studying",
+                      "profile.working",
+                      "profile.bio",
+                      "profile.picture.profilePic.index",
+                      "profile.picture.profilePic.viewport",
+                      "connections",
+                      "friends",
+                      "status",
+                    ].join(" "),
+                  )
+                  .lean();
 
-                  const profileComplete = isProfileComplete(updatedUser);
+                if (!updatedUser) {
+                  return res.status(404).json({
+                    message: "User not found.",
+                  });
+                }
 
-                  if (!profileComplete) {
-                    // Return 202 (Accepted) to indicate profile completion is required
-                    return res.status(202).json({
-                      message: "Profile completion required",
-                      requiresProfileCompletion: true,
-                      token: jwt.sign(
-                        {
-                          username: updatedUser.auth?.username || "",
-                          userId: updatedUser._id,
-                        },
-                        process.env.JWT_KEY,
-                        {
-                          expiresIn: process.env.JWT_EXPIRES_IN || "30d",
-                        },
-                      ),
-                      user: updatedUser,
-                    });
-                  }
+                emitUserRefresh(
+                  io,
+                  getUserAndFriendIds(updatedUser),
+                  "connection:changed",
+                  {
+                    isConnected: true,
+                    targetUserId: String(updatedUser._id),
+                  },
+                );
 
-                  const token = jwt.sign(
-                    {
-                      username: updatedUser.auth?.username || "",
-                      userId: updatedUser._id,
-                    },
-                    process.env.JWT_KEY,
-                    {
-                      expiresIn: process.env.JWT_EXPIRES_IN || "30d",
-                    },
-                  );
-                  res.status(201).json({
-                    token: token,
+                const profileComplete = isProfileComplete(updatedUser);
+
+                if (!profileComplete) {
+                  return res.status(202).json({
+                    message: "Profile completion required",
+                    requiresProfileCompletion: true,
+                    token: jwt.sign(
+                      {
+                        username: updatedUser.auth?.username || "",
+                        userId: updatedUser._id,
+                      },
+                      process.env.JWT_KEY,
+                      {
+                        expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+                      },
+                    ),
                     user: updatedUser,
                   });
-                })
-                .catch(next);
+                }
+
+                const token = jwt.sign(
+                  {
+                    username: updatedUser.auth?.username || "",
+                    userId: updatedUser._id,
+                  },
+                  process.env.JWT_KEY,
+                  {
+                    expiresIn: process.env.JWT_EXPIRES_IN || "30d",
+                  },
+                );
+                return res.status(201).json({
+                  token: token,
+                  user: updatedUser,
+                });
+              } catch (error) {
+                return next(error);
+              }
             } else {
               res.status(401).json({
                 message: "Authorized failed",
@@ -1725,7 +1774,8 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       .trim()
       .toLowerCase();
     const phone = String(req.body?.phone || "").trim();
-    const dobInput = String(req.body?.dob || "").trim();
+    const rawDobInput = req.body?.dob;
+    const dobInput = String(rawDobInput || "").trim();
     const hometown = req.body?.hometown;
     const studying = req.body?.studying;
     const working = req.body?.working;
@@ -1739,16 +1789,10 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
 
     if (
       !firstname ||
-      !lastname ||
-      !email ||
-      !phone ||
-      !dobInput ||
-      !hometown?.Country ||
-      !hometown?.City
+      !lastname
     ) {
       return res.status(400).json({
-        message:
-          "First name, last name, email, phone, date of birth, country, and city are required.",
+        message: "First name and last name are required.",
       });
     }
 
@@ -1809,28 +1853,27 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       }
     }
 
-    if (!isStudying && !isWorking) {
-      return res.status(400).json({
-        message: "Please provide either education or professional information.",
-      });
+    let parsedDob = null;
+    if (rawDobInput !== null && rawDobInput !== undefined && dobInput) {
+      parsedDob = new Date(dobInput);
     }
-
-    const parsedDob = new Date(dobInput);
-    if (Number.isNaN(parsedDob.getTime())) {
+    if (parsedDob && Number.isNaN(parsedDob.getTime())) {
       return res.status(400).json({
         message: "Please provide a valid date of birth.",
       });
     }
 
-    const existingEmailUser = await UserModel.findOne({
-      "profile.email": email,
-      _id: { $ne: req.authentication.userId },
-    }).select("_id");
+    if (email) {
+      const existingEmailUser = await UserModel.findOne({
+        "profile.email": email,
+        _id: { $ne: req.authentication.userId },
+      }).select("_id");
 
-    if (existingEmailUser) {
-      return res.status(409).json({
-        message: "That email address is already in use.",
-      });
+      if (existingEmailUser) {
+        return res.status(409).json({
+          message: "That email address is already in use.",
+        });
+      }
     }
 
     const user = await UserModel.findById(req.authentication.userId);
@@ -1846,10 +1889,13 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
     user.profile.lastname = lastname;
     user.profile.email = email;
     user.profile.phone = phone;
-    user.profile.dob = parsedDob;
+    user.profile.dob =
+      parsedDob instanceof Date && !Number.isNaN(parsedDob.getTime())
+        ? parsedDob
+        : null;
     user.profile.hometown = {
-      Country: hometown.Country,
-      City: hometown.City,
+      Country: String(hometown?.Country || "").trim(),
+      City: String(hometown?.City || "").trim(),
     };
 
     if (isStudying) {
@@ -2026,7 +2072,7 @@ UserRouter.patch(
             },
           },
         },
-        { new: true },
+        { returnDocument: "after" },
       ).select("ui.startMenuLayout");
 
       if (!user) {
@@ -2049,7 +2095,25 @@ UserRouter.get("/update/:id", async function (req, res, next) {
   try {
     const profile = await UserModel.findById(req.params.id)
       .select(
-        "auth profile bio settings connections friends status clinicalReality memory",
+        [
+          "auth.username",
+          "profile.firstname",
+          "profile.lastname",
+          "profile.bio",
+          "profile.email",
+          "profile.phone",
+          "profile.dob",
+          "profile.hometown",
+          "profile.studying",
+          "profile.working",
+          "profile.picture.profilePic.index",
+          "profile.picture.profilePic.viewport",
+          "settings",
+          "connections",
+          "friends",
+          "status",
+          "bio",
+        ].join(" "),
       )
       .lean();
 
@@ -2061,15 +2125,31 @@ UserRouter.get("/update/:id", async function (req, res, next) {
 
     const subjectProfile = getSubjectBio(profile);
 
-    const memoryDoc = await findUserMemoryLean(profile._id);
+    const memoryUser = await UserModel.findById(req.params.id)
+      .select(
+        [
+          "memory.studyPlanner",
+          "memory.traces.user.images",
+          "memory.traces.user.videos",
+          "memory.traces.human.images",
+          "memory.traces.human.videos",
+          "memory.files.local.images",
+          "memory.files.local.videos",
+        ].join(" "),
+      )
+      .lean();
+    const memoryDoc = buildUserMemoryLean(memoryUser?.memory, {
+      includeCourses: true,
+      includeLectures: true,
+    });
+
     const imageGallery = getMemoryLocalGallery(memoryDoc);
-    const flattenedCourses = flattenMemoryCoursesForPlanner(
-      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
-      memoryDoc?.studyPlanner?.studyOrganizer?.exams,
-    );
-    const flattenedLectures = flattenMemoryLecturesForPlanner(
-      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
-    );
+    const flattenedCourses = Array.isArray(memoryDoc?.courses)
+      ? memoryDoc.courses
+      : [];
+    const flattenedLectures = Array.isArray(memoryDoc?.lectures)
+      ? memoryDoc.lectures
+      : [];
 
     const profilePicture = getLegacyProfilePicture(profile);
     const profilePictureViewport = getLegacyProfilePictureViewport(profile);
@@ -2183,7 +2263,7 @@ UserRouter.get("/update/:id", async function (req, res, next) {
       })
       .filter(Boolean);
 
-    return res.status(200).json({
+    const responsePayload = {
       identity: buildLegacyIdentity(profile),
       profile: subjectProfile,
       bio: subjectProfile,
@@ -2194,18 +2274,129 @@ UserRouter.get("/update/:id", async function (req, res, next) {
         courses: flattenedCourses,
         lectures: flattenedLectures,
       },
-      clinicalReality: profile.clinicalReality,
       media: {
         profilePicture,
         profilePictureViewport,
         imageGallery,
         homeDrawing,
       },
-    });
+    };
+    return res.status(200).json(responsePayload);
   } catch (error) {
     return next(error);
   }
 });
+
+UserRouter.get(
+  "/planner-snapshot/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const requestStart = Date.now();
+      const memoryUser = await UserModel.findById(req.params.my_id)
+        .select("memory.studyPlanner")
+        .lean();
+
+      const memoryDoc = memoryUser
+        ? buildUserMemoryLean(memoryUser.memory, {
+            includeCourses: true,
+            includeLectures: true,
+          })
+        : null;
+
+      if (!memoryDoc) {
+        return res.status(404).json({
+          message: "User memory not found.",
+        });
+      }
+
+      const courses = Array.isArray(memoryDoc?.courses) ? memoryDoc.courses : [];
+      const lectures = Array.isArray(memoryDoc?.lectures) ? memoryDoc.lectures : [];
+      const totalMs = Date.now() - requestStart;
+
+      if (totalMs >= 300) {
+        console.warn(
+          `[UserAPI:planner-snapshot] slow request ${req.params.my_id} total=${totalMs}ms counts=${JSON.stringify(
+            {
+              courses: courses.length,
+              lectures: lectures.length,
+            },
+          )}`,
+        );
+      }
+
+      return res.status(200).json({
+        courses,
+        lectures,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get(
+  "/planner-courses/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const memoryUser = await UserModel.findById(req.params.my_id)
+        .select("memory.studyPlanner")
+        .lean();
+      const memoryDoc = memoryUser
+        ? buildUserMemoryLean(memoryUser.memory, {
+            includeCourses: true,
+            includeLectures: false,
+          })
+        : null;
+
+      if (!memoryDoc) {
+        return res.status(404).json({
+          message: "User memory not found.",
+        });
+      }
+
+      return res.status(200).json({
+        courses: Array.isArray(memoryDoc?.courses) ? memoryDoc.courses : [],
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get(
+  "/planner-lectures/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const memoryUser = await UserModel.findById(req.params.my_id)
+        .select("memory.studyPlanner")
+        .lean();
+      const memoryDoc = memoryUser
+        ? buildUserMemoryLean(memoryUser.memory, {
+            includeCourses: false,
+            includeLectures: true,
+          })
+        : null;
+
+      if (!memoryDoc) {
+        return res.status(404).json({
+          message: "User memory not found.",
+        });
+      }
+
+      return res.status(200).json({
+        lectures: Array.isArray(memoryDoc?.lectures) ? memoryDoc.lectures : [],
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 UserRouter.post(
   "/editStudyPlanAid/:my_id",
@@ -2243,58 +2434,14 @@ UserRouter.post(
 
 UserRouter.put("/profile", checkAuth, async function (req, res, next) {
   try {
-    const user = await UserModel.findById(req.authentication.userId)
-      .select(
-        [
-          "auth.username",
-          "profile.firstname",
-          "profile.lastname",
-          "profile.bio",
-          "profile.email",
-          "profile.phone",
-          "profile.dob",
-          "profile.hometown.Country",
-          "profile.hometown.City",
-          "profile.studying.program",
-          "profile.studying.university",
-          "profile.studying.faculty",
-          "profile.studying.language",
-          "profile.studying.time.totalYearsNum",
-          "profile.studying.time.start.programYearInterval",
-          "profile.studying.time.start.programTerm",
-          "profile.studying.time.current.programYearNum",
-          "profile.studying.time.current.programYearInterval",
-          "profile.studying.time.current.programTerm",
-          "profile.working.company",
-          "profile.working.position",
-          "profile.picture.profilePic.viewport",
-        ].join(" "),
-      )
-      .lean();
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const hasField = (fieldName) =>
+      Object.prototype.hasOwnProperty.call(body, fieldName);
+    const currentUsername = String(req.authentication?.username || "").trim();
 
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found.",
-      });
-    }
-
-    const auth = getSubjectAuth(user);
-    const bio = getSubjectBio(user);
-    const aiSettingsDoc = await findAiSettingsLean(
-      req.authentication.userId,
-      "settings.aiProvider settings.languageOfReply settings.inputType settings.outputType",
-    );
-    const aiSettings = aiSettingsDoc?.settings || {};
-
-    const nextFirstname = String(
-      req.body?.firstname ?? bio.firstname ?? "",
-    ).trim();
-    const nextLastname = String(
-      req.body?.lastname ?? bio.lastname ?? "",
-    ).trim();
-    const nextUsername = String(
-      req.body?.username ?? auth.username ?? "",
-    ).trim();
+    const nextFirstname = String(body?.firstname ?? "").trim();
+    const nextLastname = String(body?.lastname ?? "").trim();
+    const nextUsername = String(body?.username ?? currentUsername).trim();
 
     if (!nextFirstname || !nextLastname || !nextUsername) {
       return res.status(400).json({
@@ -2302,7 +2449,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       });
     }
 
-    if (nextUsername !== String(auth.username || "").trim()) {
+    if (nextUsername !== currentUsername) {
       const existingUsernameUser = await UserModel.findOne({
         "auth.username": nextUsername,
         _id: { $ne: req.authentication.userId },
@@ -2316,9 +2463,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
 
     const requestedAiProvider = String(
-      req.body?.aiProvider ??
-        aiSettings.aiProvider ??
-        resolveDefaultAiProvider(),
+      body?.aiProvider ?? resolveDefaultAiProvider(),
     )
       .trim()
       .toLowerCase();
@@ -2329,108 +2474,127 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       ? requestedAiProvider
       : resolveDefaultAiProvider();
 
-    const nextProgram = String(
-      req.body?.program ?? bio?.studying?.program ?? "",
-    ).trim();
-    const nextUniversity = String(
-      req.body?.university ?? bio?.studying?.university ?? "",
-    ).trim();
-    const nextFaculty = String(req.body?.faculty ?? bio?.studying?.faculty ?? "").trim();
-    const nextLanguage = String(
-      req.body?.language ?? bio?.studying?.language ?? "",
-    ).trim();
-    const nextTotalYearsNum = String(
-      req.body?.totalYearsNum ?? bio?.studying?.time?.totalYearsNum ?? "",
-    ).trim();
+    const nextProgram = String(body?.program ?? "").trim();
+    const nextUniversity = String(body?.university ?? "").trim();
+    const nextFaculty = String(body?.faculty ?? "").trim();
+    const nextLanguage = String(body?.language ?? "").trim();
+    const nextTotalYearsNum = String(body?.totalYearsNum ?? "").trim();
     const nextStartProgramYearInterval = String(
-      req.body?.startProgramYearInterval ??
-        bio?.studying?.time?.start?.programYearInterval ??
-        "",
+      body?.startProgramYearInterval ?? "",
     ).trim();
-    const nextStartProgramTerm = String(
-      req.body?.startProgramTerm ??
-        bio?.studying?.time?.start?.programTerm ??
-        "",
-    ).trim();
+    const nextStartProgramTerm = String(body?.startProgramTerm ?? "").trim();
     const nextCurrentProgramYearNum = String(
-      req.body?.currentProgramYearNum ??
-        bio?.studying?.time?.current?.programYearNum ??
-        "",
+      body?.currentProgramYearNum ?? body?.studyYear ?? "",
     ).trim();
     const nextCurrentProgramYearInterval = String(
-      req.body?.currentProgramYearInterval ??
-        bio?.studying?.time?.current?.programYearInterval ??
-        "",
+      body?.currentProgramYearInterval ?? body?.currentAcademicYear ?? "",
     ).trim();
     const nextCurrentProgramTerm = String(
-      req.body?.currentProgramTerm ??
-        bio?.studying?.time?.current?.programTerm ??
-        "",
+      body?.currentProgramTerm ?? body?.term ?? "",
     ).trim();
-    const nextBio = String(req.body?.bio ?? bio?.bio ?? "").trim();
-    const nextEmail = String(req.body?.email ?? bio?.email ?? "").trim();
-    const nextPhone = String(req.body?.phone ?? bio?.phone ?? "").trim();
-    const nextDob = req.body?.dob ? new Date(req.body.dob) : null;
-    const nextHometownCountry = String(
-      req.body?.hometownCountry ?? bio?.hometown?.Country ?? "",
-    ).trim();
-    const nextHometownCity = String(
-      req.body?.hometownCity ?? bio?.hometown?.City ?? "",
-    ).trim();
-    const nextCompany = String(
-      req.body?.company ?? bio?.working?.company ?? "",
-    ).trim();
-    const nextPosition = String(
-      req.body?.position ?? bio?.working?.position ?? "",
-    ).trim();
+    const nextBio = String(body?.bio ?? "").trim();
+    const nextEmail = String(body?.email ?? "").trim();
+    const nextPhone = String(body?.phone ?? "").trim();
+    const rawDobInput = body?.dob;
+    let nextDob = null;
+    if (rawDobInput !== undefined) {
+      if (rawDobInput === null) {
+        nextDob = null;
+      } else {
+        const normalizedDobText = String(rawDobInput || "").trim();
+        if (normalizedDobText) {
+          const parsedDob = new Date(normalizedDobText);
+          if (!Number.isNaN(parsedDob.getTime())) {
+            nextDob = parsedDob;
+          }
+        }
+      }
+    }
+    const nextHometownCountry = String(body?.hometownCountry ?? "").trim();
+    const nextHometownCity = String(body?.hometownCity ?? "").trim();
+    const nextCompany = String(body?.company ?? "").trim();
+    const nextPosition = String(body?.position ?? "").trim();
     const nextTotalYearsNumNumber = Number(nextTotalYearsNum);
     const nextCurrentProgramYearNumNumber = Number(nextCurrentProgramYearNum);
 
     const updateSet = {
       "profile.firstname": nextFirstname,
       "profile.lastname": nextLastname,
-      "profile.bio": nextBio,
-      "profile.email": nextEmail,
-      "profile.phone": nextPhone,
-      "profile.dob":
+      "auth.username": nextUsername,
+    };
+
+    if (hasField("bio")) {
+      updateSet["profile.bio"] = nextBio;
+    }
+    if (hasField("email")) {
+      updateSet["profile.email"] = nextEmail;
+    }
+    if (hasField("phone")) {
+      updateSet["profile.phone"] = nextPhone;
+    }
+    if (hasField("dob")) {
+      updateSet["profile.dob"] =
         nextDob instanceof Date && !Number.isNaN(nextDob.getTime())
           ? nextDob
-          : null,
-      "profile.hometown.Country": nextHometownCountry,
-      "profile.hometown.City": nextHometownCity,
-      "auth.username": nextUsername,
-      "profile.studying.program": nextProgram,
-      "profile.studying.university": nextUniversity,
-      "profile.studying.faculty": nextFaculty,
-      "profile.studying.language": nextLanguage,
-      "profile.studying.time.totalYearsNum":
+          : null;
+    }
+    if (hasField("hometownCountry")) {
+      updateSet["profile.hometown.Country"] = nextHometownCountry;
+    }
+    if (hasField("hometownCity")) {
+      updateSet["profile.hometown.City"] = nextHometownCity;
+    }
+    if (hasField("program")) {
+      updateSet["profile.studying.program"] = nextProgram;
+    }
+    if (hasField("university")) {
+      updateSet["profile.studying.university"] = nextUniversity;
+    }
+    if (hasField("faculty")) {
+      updateSet["profile.studying.faculty"] = nextFaculty;
+    }
+    if (hasField("language")) {
+      updateSet["profile.studying.language"] = nextLanguage;
+    }
+    if (hasField("totalYearsNum")) {
+      updateSet["profile.studying.time.totalYearsNum"] =
         nextTotalYearsNum === "" || !Number.isFinite(nextTotalYearsNumNumber)
           ? null
-          : nextTotalYearsNumNumber,
-      "profile.studying.time.start.programYearInterval":
-        nextStartProgramYearInterval || null,
-      "profile.studying.time.start.programTerm": nextStartProgramTerm || null,
-      "profile.studying.time.current.programYearNum":
+          : nextTotalYearsNumNumber;
+    }
+    if (hasField("startProgramYearInterval")) {
+      updateSet["profile.studying.time.start.programYearInterval"] =
+        nextStartProgramYearInterval || null;
+    }
+    if (hasField("startProgramTerm")) {
+      updateSet["profile.studying.time.start.programTerm"] =
+        nextStartProgramTerm || null;
+    }
+    if (hasField("currentProgramYearNum") || hasField("studyYear")) {
+      updateSet["profile.studying.time.current.programYearNum"] =
         nextCurrentProgramYearNum === "" ||
         !Number.isFinite(nextCurrentProgramYearNumNumber)
           ? null
-          : nextCurrentProgramYearNumNumber,
-      "profile.studying.time.current.programYearInterval":
-        nextCurrentProgramYearInterval || null,
-      "profile.studying.time.current.programTerm":
-        nextCurrentProgramTerm || null,
-      "profile.working.company": nextCompany,
-      "profile.working.position": nextPosition,
-    };
+          : nextCurrentProgramYearNumNumber;
+    }
+    if (hasField("currentProgramYearInterval") || hasField("currentAcademicYear")) {
+      updateSet["profile.studying.time.current.programYearInterval"] =
+        nextCurrentProgramYearInterval || null;
+    }
+    if (hasField("currentProgramTerm") || hasField("term")) {
+      updateSet["profile.studying.time.current.programTerm"] =
+        nextCurrentProgramTerm || null;
+    }
+    if (hasField("company")) {
+      updateSet["profile.working.company"] = nextCompany;
+    }
+    if (hasField("position")) {
+      updateSet["profile.working.position"] = nextPosition;
+    }
 
-    let nextProfilePictureViewport = getLegacyProfilePictureViewport(user) || {
-      scale: 1,
-      offsetX: 0,
-      offsetY: 0,
-      updatedAt: null,
-    };
+    let nextProfilePictureViewport = null;
 
-    const requestedViewport = req.body?.profilePictureViewport;
+    const requestedViewport = body?.profilePictureViewport;
     if (requestedViewport && typeof requestedViewport === "object") {
       const rawScale = Number(requestedViewport?.scale);
       const rawOffsetX = Number(requestedViewport?.offsetX);
@@ -2454,14 +2618,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       };
     }
 
-    let nextHomeDrawing = {
-      draftPaths: [],
-      appliedPaths: [],
-      textItems: [],
-      updatedAt: null,
-    };
+    let nextHomeDrawing = null;
 
-    const requestedHomeDrawing = req.body?.homeDrawing;
+    const requestedHomeDrawing = body?.homeDrawing;
     if (requestedHomeDrawing && typeof requestedHomeDrawing === "object") {
       const sanitizeDrawingPaths = (requestedPaths) =>
         (Array.isArray(requestedPaths) ? requestedPaths : [])
@@ -2537,10 +2696,12 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       { $set: updateSet },
     );
 
-    await upsertAiSettings(req.authentication.userId, {
-      aiProvider: nextAiProvider,
-      updatedAt: new Date(),
-    });
+    if (hasField("aiProvider")) {
+      await upsertAiSettings(req.authentication.userId, {
+        aiProvider: nextAiProvider,
+        updatedAt: new Date(),
+      });
+    }
 
     const responseInfo = {
       firstname: nextFirstname,
@@ -2574,8 +2735,10 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     };
 
     const responseMedia = {
-      profilePictureViewport: nextProfilePictureViewport,
-      homeDrawing: nextHomeDrawing,
+      ...(nextProfilePictureViewport
+        ? { profilePictureViewport: nextProfilePictureViewport }
+        : {}),
+      ...(nextHomeDrawing ? { homeDrawing: nextHomeDrawing } : {}),
     };
 
     return res.status(200).json({
@@ -2590,7 +2753,21 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
 
 UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
   try {
-    const user = await UserModel.findById(req.authentication.userId);
+    const user = await UserModel.findById(req.authentication.userId)
+      .select(
+        [
+          "memory.traces.user.images",
+          "memory.traces.user.videos",
+          "memory.traces.human.images",
+          "memory.traces.human.videos",
+          "memory.files.local.images",
+          "memory.files.local.videos",
+          "profile.picture.profilePic.index",
+          "profile.picture.profilePic.viewport",
+          "profile.profilePic",
+        ].join(" "),
+      )
+      .lean();
 
     if (!user) {
       return res.status(404).json({
@@ -2598,8 +2775,7 @@ UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
       });
     }
 
-    const memoryDoc = await ensureUserMemoryDoc(user);
-    const imageGallery = getMemoryLocalGallery(memoryDoc);
+    const imageGallery = getMemoryLocalGallery(user.memory || {});
     const legacyProfilePicture = getLegacyProfilePicture(user);
     const profilePicture = normalizeStoredGalleryImage(legacyProfilePicture)
       ? {
@@ -3106,7 +3282,7 @@ UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
         },
       },
       {
-        new: true,
+        returnDocument: "after",
       },
     ).select("clinicalReality");
 
@@ -3832,6 +4008,101 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
     .catch(next);
 });
 UserRouter.post(
+  "/studyOrganizer/settings/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const nextSettings =
+        req.body &&
+        typeof req.body === "object" &&
+        req.body.settings &&
+        typeof req.body.settings === "object"
+          ? req.body.settings
+          : req.body && typeof req.body === "object"
+            ? req.body
+            : {};
+
+      const updatedUser = await UserModel.findByIdAndUpdate(
+        req.params.my_id,
+        {
+          $set: {
+            "memory.studyPlanner.studyOrganizer.settings": nextSettings,
+          },
+          $unset: {
+            "memory.studyPlanner.studyOrganizer.selectOptions": 1,
+            "memory.studyPlanner.studyOrganizer.fieldsRelationships": 1,
+          },
+        },
+        {
+          new: true,
+          select: "memory.studyPlanner.studyOrganizer.settings",
+        },
+      ).lean();
+
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        settings:
+          updatedUser?.memory?.studyPlanner?.studyOrganizer?.settings || {},
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/studyOrganizer/selectOptions/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const nextSelectOptions =
+        req.body &&
+        typeof req.body === "object" &&
+        req.body.selectOptions &&
+        typeof req.body.selectOptions === "object"
+          ? req.body.selectOptions
+          : req.body && typeof req.body === "object"
+            ? req.body
+            : {};
+
+      const updatedUser = await UserModel.findByIdAndUpdate(
+        req.params.my_id,
+        {
+          $set: {
+            "memory.studyPlanner.studyOrganizer.settings.selectOptions":
+              nextSelectOptions,
+          },
+          $unset: {
+            "memory.studyPlanner.studyOrganizer.selectOptions": 1,
+          },
+        },
+        {
+          new: true,
+          select: "memory.studyPlanner.studyOrganizer.settings.selectOptions",
+        },
+      ).lean();
+
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        selectOptions:
+          updatedUser?.memory?.studyPlanner?.studyOrganizer?.settings
+            ?.selectOptions || {},
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
   "/addCourseInfo/:my_id",
   checkAuth,
   requireSelfParam("my_id"),
@@ -3980,9 +4251,12 @@ UserRouter.post(
 
       const createdCourse =
         flattenMemoryCoursesForPlanner(
-          [createdPlannerCourse || null],
-          memoryDoc.studyPlanner.studyOrganizer.exams,
-        )[0] || null;
+          memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+        ).find(
+          (course) =>
+            String(course?.parentCourseId || course?._id || "") ===
+            String(createdPlannerCourse?._id || ""),
+        ) || null;
 
       return res.status(201).json({
         course: createdCourse,
@@ -4074,7 +4348,6 @@ UserRouter.delete(
       memoryDoc.studyPlanner.studyOrganizer =
         memoryDoc.studyPlanner.studyOrganizer || {};
       memoryDoc.studyPlanner.studyOrganizer.courses = [];
-      memoryDoc.studyPlanner.studyOrganizer.exams = [];
       await memoryDoc.save();
       return res.status(201).json();
     } catch (error) {
@@ -4115,6 +4388,62 @@ UserRouter.delete(
 
 //................Edit Course................
 UserRouter.post(
+  "/editCourseBundle/:my_id/:courseID",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const normalizedComponents = Array.isArray(req.body?.components)
+        ? req.body.components.map((componentEntry) =>
+            withAutoActualCourseTimingFromProfile(
+              user,
+              withAutoNormativeCourseYearInterval(user, componentEntry),
+            ),
+          )
+        : [];
+      const updatedPlannerCourse = replaceCourseBundleInPlanner(
+        memoryDoc,
+        req.params.courseID,
+        {
+          course_name: req.body?.course_name,
+          course_code: req.body?.course_code,
+          components: normalizedComponents,
+        },
+      );
+
+      if (!updatedPlannerCourse) {
+        return res.status(404).json({ message: "Course not found." });
+      }
+
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        course:
+          flattenMemoryCoursesForPlanner([updatedPlannerCourse]).find(
+            (course) =>
+              String(course?.parentCourseId || course?._id || "") ===
+              String(updatedPlannerCourse?._id || ""),
+          ) || null,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
   "/editCourse/:my_id/:courseID",
   checkAuth,
   requireSelfParam("my_id"),
@@ -4146,13 +4475,11 @@ UserRouter.post(
       const updatedCourse =
         flattenMemoryCoursesForPlanner(
           updatedPlannerCourse ? [updatedPlannerCourse] : [],
-          memoryDoc?.studyPlanner?.studyOrganizer?.exams,
         ).find(
           (course) => String(course?._id) === String(req.params.courseID),
         ) ||
         flattenMemoryCoursesForPlanner(
           memoryDoc?.studyPlanner?.studyOrganizer?.courses,
-          memoryDoc?.studyPlanner?.studyOrganizer?.exams,
         ).find(
           (course) => String(course?._id) === String(req.params.courseID),
         ) ||

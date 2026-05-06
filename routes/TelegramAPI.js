@@ -1059,11 +1059,7 @@ const getStoredPlannerCoursesPayload = (memoryDoc) => {
   const plannerCourses = Array.isArray(memoryDoc?.studyPlanner?.studyOrganizer?.courses)
     ? memoryDoc.studyPlanner.studyOrganizer.courses
     : [];
-  const plannerExams = Array.isArray(memoryDoc?.studyPlanner?.studyOrganizer?.exams)
-    ? memoryDoc.studyPlanner.studyOrganizer.exams
-    : [];
-
-  return flattenMemoryCoursesForPlanner(plannerCourses, plannerExams);
+  return flattenMemoryCoursesForPlanner(plannerCourses);
 };
 
 const removeStoredTelegramGroupMessages = (memoryDoc, groupReference = "") => {
@@ -2991,15 +2987,7 @@ TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
     )
       ? memoryDoc.studyPlanner.studyOrganizer.courses
       : [];
-    const plannerExams = Array.isArray(
-      memoryDoc?.studyPlanner?.studyOrganizer?.plan?.exams,
-    )
-      ? memoryDoc.studyPlanner.studyOrganizer.plan.exams
-      : [];
-    const flattenedCourses = flattenMemoryCoursesForPlanner(
-      plannerCourses,
-      plannerExams,
-    );
+    const flattenedCourses = flattenMemoryCoursesForPlanner(plannerCourses);
     const storedGroups = listStoredTelegramGroups(user, memoryDoc, telegramSettings);
 
     return res.status(200).json({

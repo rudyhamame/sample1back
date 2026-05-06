@@ -266,7 +266,32 @@ export const ensureUserMemoryDoc = async (user) => {
   return new EmbeddedMemoryDocument(user);
 };
 
-export const findUserMemoryLean = async (userId) => {
+export const buildUserMemoryLean = (
+  memory,
+  { includeCourses = true, includeLectures = true } = {},
+) => {
+  const normalizedMemory = normalizeMemoryPayload(memory);
+  const plannerCourses = Array.isArray(
+    normalizedMemory?.studyPlanner?.studyOrganizer?.courses,
+  )
+    ? normalizedMemory.studyPlanner.studyOrganizer.courses
+    : [];
+
+  return {
+    ...normalizedMemory,
+    courses: includeCourses
+      ? flattenMemoryCoursesForPlanner(plannerCourses)
+      : [],
+    lectures: includeLectures
+      ? flattenMemoryLecturesForPlanner(plannerCourses)
+      : [],
+  };
+};
+
+export const findUserMemoryLean = async (
+  userId,
+  { includeCourses = true, includeLectures = true } = {},
+) => {
   if (!userId) {
     return null;
   }
@@ -276,23 +301,10 @@ export const findUserMemoryLean = async (userId) => {
     return null;
   }
 
-  const normalizedMemory = normalizeMemoryPayload(user.memory);
-  const plannerCourses = Array.isArray(
-    normalizedMemory?.studyPlanner?.studyOrganizer?.courses,
-  )
-    ? normalizedMemory.studyPlanner.studyOrganizer.courses
-    : [];
-  const plannerExams = Array.isArray(
-    normalizedMemory?.studyPlanner?.studyOrganizer?.exams,
-  )
-    ? normalizedMemory.studyPlanner.studyOrganizer.exams
-    : [];
-
-  return {
-    ...normalizedMemory,
-    courses: flattenMemoryCoursesForPlanner(plannerCourses, plannerExams),
-    lectures: flattenMemoryLecturesForPlanner(plannerCourses),
-  };
+  return buildUserMemoryLean(user.memory, {
+    includeCourses,
+    includeLectures,
+  });
 };
 
 export const findAiSettingsLean = async (subjectId, select = "") => {

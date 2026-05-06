@@ -60,7 +60,7 @@ const AiSettingsModel = {
         return null;
       }
 
-      const user = await UserModel.findById(userId);
+      const user = await UserModel.findById(userId).select("settings").lean();
       return user ? normalizeAiSettings(user) : null;
     });
   },
@@ -71,32 +71,43 @@ const AiSettingsModel = {
       return null;
     }
 
-    const user = await UserModel.findById(userId);
-    if (!user) {
-      return null;
-    }
-
-    user.settings = user.settings || {};
-
     const setPayload = update?.$set || {};
+    const updateSet = {};
     Object.entries(setPayload).forEach(([key, value]) => {
       if (key.startsWith("settings.")) {
-        const nestedKey = key.slice("settings.".length);
-        user.settings[nestedKey] = value;
+        updateSet[key] = value;
       }
     });
 
-    if (options?.upsert && update?.$setOnInsert) {
-      const insertSettings = Object.fromEntries(
-        Object.entries(update.$setOnInsert).filter(([key]) => key !== "subject"),
-      );
-      user.settings = {
-        ...insertSettings,
-        ...user.settings,
-      };
+    const updateDoc = {};
+    if (Object.keys(updateSet).length > 0) {
+      updateDoc.$set = updateSet;
     }
 
-    await user.save();
+    if (options?.upsert && update?.$setOnInsert) {
+      const insertSettings = Object.fromEntries(
+        Object.entries(update.$setOnInsert)
+          .filter(([key]) => key !== "subject")
+          .map(([key, value]) => [`settings.${key}`, value]),
+      );
+      if (Object.keys(insertSettings).length > 0) {
+        updateDoc.$setOnInsert = insertSettings;
+      }
+    }
+
+    const user = await UserModel.findByIdAndUpdate(
+      userId,
+      updateDoc,
+      {
+        returnDocument: "after",
+      },
+    )
+      .select("settings")
+      .lean();
+
+    if (!user) {
+      return null;
+    }
     return normalizeAiSettings(user);
   },
 };
