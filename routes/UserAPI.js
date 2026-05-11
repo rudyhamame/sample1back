@@ -4206,6 +4206,11 @@ UserRouter.post(
             ? req.body
             : {};
       const storedSettings = serializeStudyOrganizerSettingsForStorage(nextSettings);
+      console.info("[studyOrganizer/settings] normalized settings", {
+        userId,
+        logoMotionEnabled: storedSettings?.logoMotionEnabled,
+        logoFixedClock: storedSettings?.logoFixedClock,
+      });
 
       const updateResult = await UserModel.updateOne(
         { _id: userId },
