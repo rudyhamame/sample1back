@@ -2543,10 +2543,22 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const hasField = (fieldName) =>
       Object.prototype.hasOwnProperty.call(body, fieldName);
-    const currentUsername = String(req.authentication?.username || "").trim();
+    const existingUser = await UserModel.findById(req.authentication.userId)
+      .select("auth.username profile.firstname profile.lastname")
+      .lean();
+    if (!existingUser?._id) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    const currentUsername = String(
+      existingUser?.auth?.username || req.authentication?.username || "",
+    ).trim();
 
-    const nextFirstname = String(body?.firstname ?? "").trim();
-    const nextLastname = String(body?.lastname ?? "").trim();
+    const nextFirstname = String(
+      body?.firstname ?? existingUser?.profile?.firstname ?? "",
+    ).trim();
+    const nextLastname = String(
+      body?.lastname ?? existingUser?.profile?.lastname ?? "",
+    ).trim();
     const nextUsername = String(body?.username ?? currentUsername).trim();
 
     if (!nextFirstname || !nextLastname || !nextUsername) {
