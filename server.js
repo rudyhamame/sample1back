@@ -191,6 +191,9 @@ app.get("/api/health", async function (req, res) {
   const geminiConnected = Boolean(
     String(process.env.GEMINI_API_KEY || "").trim(),
   );
+  const kimiConnected = Boolean(
+    String(process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY || "").trim(),
+  );
   const cloudinaryConnected = getCloudinaryHealthConfig().isReady;
   let telegramConnected = false;
 
@@ -222,6 +225,7 @@ app.get("/api/health", async function (req, res) {
       openai: openAiConnected ? "connected" : "offline",
       groq: groqConnected ? "connected" : "offline",
       gemini: geminiConnected ? "connected" : "offline",
+      kimi: kimiConnected ? "connected" : "offline",
       telegram: telegramConnected ? "connected" : "offline",
       cloudinary: cloudinaryConnected ? "connected" : "offline",
     },

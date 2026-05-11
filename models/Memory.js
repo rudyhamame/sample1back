@@ -1,48 +1,8 @@
 import mongoose from "mongoose";
-import TraceSchema from "./Trace.js";
-import StudyPlannerSchema from "./MOI/StudyPlanner/StudyPlanner.js";
+import MOASchema from "./MOA.js";
+import MOISchema from "./MOI/MOI.js";
 
 const { Schema } = mongoose;
-
-const TelegramGroupInfoSchema = new Schema(
-  {
-    name: { type: String, default: "" },
-    groupReference: { type: String, default: "" },
-    memberCount: { type: Number, default: 0 },
-    description: { type: String, default: "" },
-    messageCount: { type: Number, default: 0 },
-    pageUrl: { type: String, default: "" },
-  },
-  { _id: false, strict: "throw" },
-);
-
-const TelegramGroupContentBucketSchema = new Schema(
-  {
-    texts: { type: [Schema.Types.Mixed], default: [] },
-    photos: { type: [Schema.Types.Mixed], default: [] },
-    images: { type: [Schema.Types.Mixed], default: [] },
-    videos: { type: [Schema.Types.Mixed], default: [] },
-    audios: { type: [Schema.Types.Mixed], default: [] },
-    documents: { type: [Schema.Types.Mixed], default: [] },
-  },
-  { _id: false, strict: "throw" },
-);
-
-const TelegramGroupsSchema = new Schema(
-  {
-    info: { type: TelegramGroupInfoSchema, default: () => ({}) },
-    content: { type: [TelegramGroupContentBucketSchema], default: [] },
-  },
-  { _id: false, strict: "throw" },
-);
-
-const TelegramMemorySchema = new Schema(
-  {
-    groups: { type: TelegramGroupsSchema, default: () => ({}) },
-    predictions: { type: Schema.Types.Mixed, default: () => ({}) },
-  },
-  { _id: false, strict: "throw" },
-);
 
 const normalizeTracesArray = (value) => {
   if (Array.isArray(value)) {
@@ -65,15 +25,17 @@ const MemorySchema = new Schema(
     // - raw traces of data received through MOA channels
     // - processed and enriched memories derived from those traces
     // - connections to other subjects, with associated metadata and context
-    traces: { type: [TraceSchema], default: [] },
-    studyPlanner: { type: StudyPlannerSchema, default: () => ({}) },
-    telegram: { type: TelegramMemorySchema, default: () => ({}) },
+    MOA: { type: [MOASchema], default: [] },
+    MOI: { type: [MOISchema], default: [] },
   },
   { strict: "throw" },
 );
 
 MemorySchema.pre("validate", function () {
-  this.traces = normalizeTracesArray(this.traces);
+  this.MOA = normalizeTracesArray(this.MOA);
+  this.MOI = Array.isArray(this.MOI)
+    ? this.MOI.filter((entry) => entry && typeof entry === "object")
+    : [];
 });
 
 // Sub-schema only. Memory is embedded inside `subjects.memory`, not a standalone collection.

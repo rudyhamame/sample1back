@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import UserModel from "../compat/UserModel.js";
+import { normalizeStudyOrganizerSettings } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 import AiSettingsModel from "../compat/AiSettingsModel.js";
 import TelegramSettingsModel from "../compat/TelegramSettingsModel.js";
 import {
@@ -112,6 +113,9 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
   }
 
   const normalizedStudyOrganizer = cloneValue(studyOrganizer);
+  normalizedStudyOrganizer.settings = normalizeStudyOrganizerSettings(
+    normalizedStudyOrganizer?.settings,
+  );
   normalizedStudyOrganizer.courses = (Array.isArray(normalizedStudyOrganizer.courses)
     ? normalizedStudyOrganizer.courses
     : []
@@ -175,22 +179,89 @@ const normalizeTelegramMemory = (telegram) => {
   };
 };
 
-const normalizeMemoryPayload = (memory) => ({
-  traces: Array.isArray(memory?.traces) ? cloneValue(memory.traces) : [],
-  studyPlanner:
-    memory?.studyPlanner && typeof memory.studyPlanner === "object"
+const resolveTelegramMemorySource = (memory = {}) => {
+  if (memory?.telegram && typeof memory.telegram === "object") {
+    return memory.telegram;
+  }
+  const moaEntries = Array.isArray(memory?.MOA)
+    ? memory.MOA
+    : [];
+  const traceTelegram =
+    moaEntries.find((entry) => entry?.telegram && typeof entry.telegram === "object")
+      ?.telegram || null;
+  return traceTelegram || {};
+};
+
+const mergeTelegramIntoTraces = (memory = {}, normalizedTelegram = {}) => {
+  const traces = Array.isArray(memory?.MOA)
+    ? cloneValue(memory.MOA)
+    : [];
+  const traceIndex = traces.findIndex(
+    (entry) => entry?.telegram && typeof entry.telegram === "object",
+  );
+
+  if (traceIndex >= 0) {
+    traces[traceIndex] = {
+      ...(traces[traceIndex] && typeof traces[traceIndex] === "object"
+        ? traces[traceIndex]
+        : {}),
+      telegram: cloneValue(normalizedTelegram),
+    };
+    return traces;
+  }
+
+  traces.push({
+    telegram: cloneValue(normalizedTelegram),
+  });
+  return traces;
+};
+
+const resolveStudyPlannerSource = (memory = {}) => {
+  if (memory?.studyPlanner && typeof memory.studyPlanner === "object") {
+    return memory.studyPlanner;
+  }
+  const moiEntries = Array.isArray(memory?.MOI) ? memory.MOI : [];
+  const plannerFromMoi =
+    moiEntries.find(
+      (entry) => entry?.studyPlanner && typeof entry.studyPlanner === "object",
+    )?.studyPlanner || null;
+  return plannerFromMoi || {};
+};
+
+const mergeStudyPlannerIntoMoi = (memory = {}, studyPlanner = {}) => {
+  const moiEntries = Array.isArray(memory?.MOI) ? cloneValue(memory.MOI) : [];
+  if (moiEntries.length === 0) {
+    return [{ studyPlanner: cloneValue(studyPlanner) }];
+  }
+  const first = moiEntries[0] && typeof moiEntries[0] === "object" ? moiEntries[0] : {};
+  moiEntries[0] = {
+    ...first,
+    studyPlanner: cloneValue(studyPlanner),
+  };
+  return moiEntries;
+};
+
+const normalizeMemoryPayload = (memory) => {
+  const sourceMemory =
+    memory && typeof memory?.toObject === "function" ? memory.toObject() : memory;
+  const normalizedTelegram = normalizeTelegramMemory(
+    resolveTelegramMemorySource(sourceMemory),
+  );
+  const sourceStudyPlanner = resolveStudyPlannerSource(sourceMemory);
+  const studyPlanner =
+    sourceStudyPlanner && typeof sourceStudyPlanner === "object"
       ? {
           studyOrganizer:
-            memory?.studyPlanner?.studyOrganizer &&
-            typeof memory.studyPlanner.studyOrganizer === "object"
-              ? normalizeStudyOrganizerStatuses(memory.studyPlanner.studyOrganizer)
+            sourceStudyPlanner?.studyOrganizer &&
+            typeof sourceStudyPlanner.studyOrganizer === "object"
+              ? normalizeStudyOrganizerStatuses(sourceStudyPlanner.studyOrganizer)
               : memory?.studyOrganizer && typeof memory.studyOrganizer === "object"
                 ? normalizeStudyOrganizerStatuses(memory.studyOrganizer)
                 : {},
           studyPlanAid:
-            memory?.studyPlanner?.studyPlanAid &&
-            typeof memory.studyPlanner.studyPlanAid === "object"
-              ? cloneValue(memory.studyPlanner.studyPlanAid)
+            sourceStudyPlanner?.studyPlanAid &&
+            typeof sourceStudyPlanner.studyPlanAid === "object"
+              ? cloneValue(sourceStudyPlanner.studyPlanAid)
               : memory?.studyPlanAid && typeof memory.studyPlanAid === "object"
                 ? cloneValue(memory.studyPlanAid)
                 : {},
@@ -204,17 +275,21 @@ const normalizeMemoryPayload = (memory) => ({
             memory?.studyPlanAid && typeof memory.studyPlanAid === "object"
               ? cloneValue(memory.studyPlanAid)
               : {},
-        },
-  telegram:
-    memory?.telegram && typeof memory.telegram === "object"
-      ? normalizeTelegramMemory(memory.telegram)
-      : normalizeTelegramMemory({}),
-});
+        };
+
+  return {
+    MOA: mergeTelegramIntoTraces(sourceMemory, normalizedTelegram),
+    MOI: mergeStudyPlannerIntoMoi(sourceMemory, studyPlanner),
+  };
+};
 
 class EmbeddedMemoryDocument {
   constructor(user) {
     this._user = user;
-    Object.assign(this, normalizeMemoryPayload(user?.memory));
+    const normalizedPayload = normalizeMemoryPayload(user?.memory);
+    Object.assign(this, normalizedPayload);
+    this.telegram = normalizeTelegramMemory(resolveTelegramMemorySource(user?.memory));
+    this.studyPlanner = resolveStudyPlannerSource(normalizedPayload);
   }
 
   toObject() {
@@ -246,15 +321,15 @@ export const ensureUserMemoryDoc = async (user) => {
   const needsInitialization =
     !user.memory ||
     typeof user.memory !== "object" ||
-    !Array.isArray(user?.memory?.traces) ||
+    !Array.isArray(user?.memory?.MOA) ||
+    !Array.isArray(user?.memory?.MOI) ||
     currentMemoryKeys.some(
       (key) =>
         ![
-          "traces",
-          "studyPlanner",
+          "MOA",
+          "MOI",
           "studyOrganizer",
           "studyPlanAid",
-          "telegram",
         ].includes(key),
     );
 
@@ -271,14 +346,16 @@ export const buildUserMemoryLean = (
   { includeCourses = true, includeLectures = true } = {},
 ) => {
   const normalizedMemory = normalizeMemoryPayload(memory);
+  const studyPlanner = resolveStudyPlannerSource(normalizedMemory);
   const plannerCourses = Array.isArray(
-    normalizedMemory?.studyPlanner?.studyOrganizer?.courses,
+    studyPlanner?.studyOrganizer?.courses,
   )
-    ? normalizedMemory.studyPlanner.studyOrganizer.courses
+    ? studyPlanner.studyOrganizer.courses
     : [];
 
   return {
     ...normalizedMemory,
+    studyPlanner,
     courses: includeCourses
       ? flattenMemoryCoursesForPlanner(plannerCourses)
       : [],

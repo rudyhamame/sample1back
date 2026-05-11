@@ -49,18 +49,35 @@ const normalizeStoredGalleryImage = (image) => {
     return null;
   }
 
+  const width = Number(image?.width) || 0;
+  const height = Number(image?.height) || 0;
+  const bytes = Number(image?.bytes) || 0;
+  const duration = Number(image?.duration) || 0;
+  const aspectRatio = width > 0 && height > 0 ? width / height : null;
+  const bitrateBps =
+    resourceType === "video" && duration > 0 && bytes > 0
+      ? (bytes * 8) / duration
+      : null;
+
   return {
     url,
     publicId,
     assetId: String(image?.assetId || image?.asset_id || image?._id || "").trim(),
+    contentHash: String(
+      image?.contentHash || image?.etag || identity?.contentHash || "",
+    ).trim(),
     folder: String(image?.folder || "").trim(),
     resourceType,
     mimeType,
-    width: Number(image?.width) || 0,
-    height: Number(image?.height) || 0,
+    width,
+    height,
     format: String(image?.format || "").trim(),
-    bytes: Number(image?.bytes) || 0,
-    duration: Number(image?.duration) || 0,
+    bytes,
+    duration,
+    aspectRatio,
+    bitrateBps,
+    bitrateKbps:
+      bitrateBps !== null ? Number((bitrateBps / 1000).toFixed(2)) : null,
     visibility: normalizeGalleryVisibility(
       image?.visibility || identity?.visibility,
     ),
@@ -112,11 +129,83 @@ const buildMemoryLocalVideoFile = (media) => ({
   shared: false,
 });
 
+const getHumanTraceMediaBucket = (
+  trace,
+  resourceType = "image",
+  requiredModeOfIntervention = "",
+) => {
+  const userBucket =
+    trace?.user && typeof trace.user === "object" ? trace.user : null;
+  if (!userBucket) {
+    return [];
+  }
+
+  const bucket =
+    resourceType === "video"
+      ? Array.isArray(userBucket.videos)
+        ? userBucket.videos
+        : []
+      : Array.isArray(userBucket.images)
+        ? userBucket.images
+        : [];
+  const normalizedRequiredMode = String(requiredModeOfIntervention || "").trim();
+  const filteredBucket = normalizedRequiredMode
+    ? bucket.filter(
+        (item) =>
+          String(item?.index?.MOI || "").trim() === normalizedRequiredMode ||
+          String(item?.index?.MOI || "").trim() === "",
+      )
+    : bucket;
+
+  return filteredBucket.map((item) => ({
+    fileName: String(item?.index?.fileName || "").trim(),
+    url: String(item?.storageContext?.url || "").trim(),
+    publicId: String(item?.storageContext?.publicId || "").trim(),
+    mimeType: String(item?.index?.mimeType || "").trim(),
+    assetId: String(item?.storageContext?.assetId || "").trim(),
+    contentHash: String(item?.index?.contentHash || "").trim(),
+    folder: String(item?.storageContext?.folder || "").trim(),
+    resourceType:
+      String(item?.index?.resourceType || resourceType).trim() || resourceType,
+    width: Number.isFinite(Number(item?.metadata?.width))
+      ? Number(item.metadata.width)
+      : null,
+    height: Number.isFinite(Number(item?.metadata?.height))
+      ? Number(item.metadata.height)
+      : null,
+    format: String(item?.metadata?.format || "").trim(),
+    bytes: Number.isFinite(Number(item?.metadata?.bytes))
+      ? Number(item.metadata.bytes)
+      : null,
+    duration: Number.isFinite(Number(item?.metadata?.duration))
+      ? Number(item.metadata.duration)
+      : null,
+    totalPages: Number.isFinite(Number(item?.metadata?.totalPages))
+      ? Number(item.metadata.totalPages)
+      : null,
+    visibility: normalizeGalleryVisibility(item?.metadata?.visibility),
+    createdAt: item?.metadata?.createdAt || new Date(),
+    updatedAt: item?.metadata?.updatedAt || new Date(),
+  }));
+};
+
 const getMemoryLocalImages = (memoryDoc) =>
-  Array.isArray(memoryDoc?.files?.local?.images) ? memoryDoc.files.local.images : [];
+  Array.isArray(memoryDoc?.MOA)
+    ? memoryDoc.MOA.flatMap((trace) =>
+        getHumanTraceMediaBucket(trace, "image", "gallery"),
+      )
+    : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
+      ? getHumanTraceMediaBucket(memoryDoc.MOA, "image", "gallery")
+      : [];
 
 const getMemoryLocalVideos = (memoryDoc) =>
-  Array.isArray(memoryDoc?.files?.local?.videos) ? memoryDoc.files.local.videos : [];
+  Array.isArray(memoryDoc?.MOA)
+    ? memoryDoc.MOA.flatMap((trace) =>
+        getHumanTraceMediaBucket(trace, "video", "gallery"),
+      )
+    : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
+      ? getHumanTraceMediaBucket(memoryDoc.MOA, "video", "gallery")
+      : [];
 
 const sortGalleryImages = (images = []) =>
   images

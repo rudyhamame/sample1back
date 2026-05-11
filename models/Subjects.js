@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import ConnectionsSchema from "./Connections.js";
+import ConnectionsSchema from "./MOA/Connections.js";
 import { MemorySchema } from "./Memory.js";
 import SettingsSchema from "./Settings.js";
 

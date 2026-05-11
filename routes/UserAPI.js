@@ -44,6 +44,10 @@ import {
   updateStudyPlanAidInPlanner,
   updateLectureInPlanner,
 } from "./user/helpers/studyPlannerService.js";
+import {
+  normalizeStudyOrganizerSettings,
+  serializeStudyOrganizerSettingsForStorage,
+} from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 const UserRouter = express.Router();
 const resolveDefaultAiProvider = () => {
   const appProvider = String(process.env.APP_AI_PROVIDER || "")
@@ -384,7 +388,7 @@ UserRouter.post(
         fs.unlinkSync(uploadPath);
       }
 
-      // Build video object for user.memory.files.local.videos (flat identity)
+      // Build normalized gallery video payload (stored in memory.MOA.user.videos).
       const videoIdentity = {
         fileName: req.file.originalname,
         url: cloudinaryResult.secure_url,
@@ -404,7 +408,7 @@ UserRouter.post(
         shared: false,
       };
 
-      // Push to user.memory.files.local.videos
+      // Save into memory through MOA.user trace schema.
       const user = await UserModel.findById(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found." });
@@ -1017,20 +1021,37 @@ const normalizeStoredGalleryImage = (image) => {
     return null;
   }
 
+  const width = Number(image?.width) || 0;
+  const height = Number(image?.height) || 0;
+  const bytes = Number(image?.bytes) || 0;
+  const duration = Number(image?.duration) || 0;
+  const aspectRatio = width > 0 && height > 0 ? width / height : null;
+  const bitrateBps =
+    resourceType === "video" && duration > 0 && bytes > 0
+      ? (bytes * 8) / duration
+      : null;
+
   return {
     url,
     publicId,
     assetId: String(
       image?.assetId || image?.asset_id || image?._id || "",
     ).trim(),
+    contentHash: String(
+      image?.contentHash || image?.etag || identity?.contentHash || "",
+    ).trim(),
     folder: String(image?.folder || "").trim(),
     resourceType,
     mimeType,
-    width: Number(image?.width) || 0,
-    height: Number(image?.height) || 0,
+    width,
+    height,
     format: String(image?.format || "").trim(),
-    bytes: Number(image?.bytes) || 0,
-    duration: Number(image?.duration) || 0,
+    bytes,
+    duration,
+    aspectRatio,
+    bitrateBps,
+    bitrateKbps:
+      bitrateBps !== null ? Number((bitrateBps / 1000).toFixed(2)) : null,
     visibility: normalizeGalleryVisibility(
       image?.visibility || identity?.visibility,
     ),
@@ -1082,24 +1103,58 @@ const buildMemoryLocalVideoFile = (media) => ({
   shared: false,
 });
 
-const buildHumanTraceMediaItem = (media, resourceType = "image") => ({
+const buildHumanTraceMediaItem = (
+  media,
+  resourceType = "image",
+  modeOfIntervention = "gallery",
+) => ({
   index: {
     fileName: String(media?.fileName || media?.publicId || "").trim(),
     mimeType: String(media?.mimeType || "").trim(),
     contentHash: String(media?.contentHash || "").trim(),
     resourceType:
       String(media?.resourceType || resourceType).trim() || resourceType,
+    MOI: String(modeOfIntervention || "").trim(),
   },
   metadata: {
     width: Number.isFinite(Number(media?.width)) ? Number(media.width) : null,
     height: Number.isFinite(Number(media?.height))
       ? Number(media.height)
       : null,
+    aspectRatio:
+      Number.isFinite(Number(media?.aspectRatio))
+        ? Number(media.aspectRatio)
+        : Number.isFinite(Number(media?.width)) &&
+            Number.isFinite(Number(media?.height)) &&
+            Number(media.height) > 0
+          ? Number(media.width) / Number(media.height)
+          : null,
+    pixels:
+      Number.isFinite(Number(media?.pixels))
+        ? Number(media.pixels)
+        : Number.isFinite(Number(media?.width)) &&
+            Number.isFinite(Number(media?.height))
+          ? Number(media.width) * Number(media.height)
+          : null,
     format: String(media?.format || "").trim(),
     bytes: Number.isFinite(Number(media?.bytes)) ? Number(media.bytes) : null,
     duration: Number.isFinite(Number(media?.duration))
       ? Number(media.duration)
       : null,
+    bitrateBps: Number.isFinite(Number(media?.bitrateBps))
+      ? Number(media.bitrateBps)
+      : Number.isFinite(Number(media?.bytes)) &&
+          Number.isFinite(Number(media?.duration)) &&
+          Number(media.duration) > 0
+        ? (Number(media.bytes) * 8) / Number(media.duration)
+        : null,
+    bitrateKbps: Number.isFinite(Number(media?.bitrateKbps))
+      ? Number(media.bitrateKbps)
+      : Number.isFinite(Number(media?.bytes)) &&
+          Number.isFinite(Number(media?.duration)) &&
+          Number(media.duration) > 0
+        ? Number((((Number(media.bytes) * 8) / Number(media.duration)) / 1000).toFixed(2))
+        : null,
     totalPages: Number.isFinite(Number(media?.totalPages))
       ? Number(media.totalPages)
       : null,
@@ -1137,13 +1192,15 @@ const buildHumanMediaTrace = (media, resourceType = "image") => {
   };
 };
 
-const getHumanTraceMediaBucket = (trace, resourceType = "image") => {
+const getHumanTraceMediaBucket = (
+  trace,
+  resourceType = "image",
+  requiredModeOfIntervention = "",
+) => {
   const human =
     trace?.user && typeof trace.user === "object"
       ? trace.user
-      : trace?.human && typeof trace.human === "object"
-        ? trace.human
-        : null;
+      : null;
   if (!human) {
     return [];
   }
@@ -1157,7 +1214,16 @@ const getHumanTraceMediaBucket = (trace, resourceType = "image") => {
         ? human.images
         : [];
 
-  return bucket.map((item) => ({
+  const normalizedRequiredMode = String(requiredModeOfIntervention || "").trim();
+  const filteredBucket = normalizedRequiredMode
+    ? bucket.filter((item) => {
+        const itemMode = String(item?.index?.MOI || "").trim();
+        // Keep legacy gallery entries that were saved before MOI tagging.
+        return itemMode === normalizedRequiredMode || itemMode === "";
+      })
+    : bucket;
+
+  return filteredBucket.map((item) => ({
     fileName: String(item?.index?.fileName || "").trim(),
     url: String(item?.storageContext?.url || "").trim(),
     publicId: String(item?.storageContext?.publicId || "").trim(),
@@ -1189,23 +1255,27 @@ const getHumanTraceMediaBucket = (trace, resourceType = "image") => {
   }));
 };
 
-const getMemoryLocalImages = (memoryDoc) =>
-  Array.isArray(memoryDoc?.traces)
-    ? memoryDoc.traces.flatMap((trace) => getHumanTraceMediaBucket(trace, "image"))
-    : memoryDoc?.traces && typeof memoryDoc.traces === "object"
-      ? getHumanTraceMediaBucket(memoryDoc.traces, "image")
-      : Array.isArray(memoryDoc?.files?.local?.images)
-        ? memoryDoc.files.local.images
+const getMemoryLocalImages = (memoryDoc) => {
+  const traceImages = Array.isArray(memoryDoc?.MOA)
+    ? memoryDoc.MOA.flatMap((trace) =>
+        getHumanTraceMediaBucket(trace, "image", "gallery"),
+      )
+    : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
+        ? getHumanTraceMediaBucket(memoryDoc.MOA, "image", "gallery")
         : [];
+  return traceImages;
+};
 
-const getMemoryLocalVideos = (memoryDoc) =>
-  Array.isArray(memoryDoc?.traces)
-    ? memoryDoc.traces.flatMap((trace) => getHumanTraceMediaBucket(trace, "video"))
-    : memoryDoc?.traces && typeof memoryDoc.traces === "object"
-      ? getHumanTraceMediaBucket(memoryDoc.traces, "video")
-      : Array.isArray(memoryDoc?.files?.local?.videos)
-        ? memoryDoc.files.local.videos
+const getMemoryLocalVideos = (memoryDoc) => {
+  const traceVideos = Array.isArray(memoryDoc?.MOA)
+    ? memoryDoc.MOA.flatMap((trace) =>
+        getHumanTraceMediaBucket(trace, "video", "gallery"),
+      )
+    : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
+        ? getHumanTraceMediaBucket(memoryDoc.MOA, "video", "gallery")
         : [];
+  return traceVideos;
+};
 
 const getMemoryLocalGallery = (memoryDoc) =>
   sortGalleryImages([
@@ -1227,12 +1297,14 @@ const sortGalleryImages = (images = []) =>
     );
 
 const setMemoryLocalGallery = (memoryDoc, images = []) => {
-  const tracesArray = Array.isArray(memoryDoc?.traces) ? memoryDoc.traces : [];
+  const tracesArray = Array.isArray(memoryDoc?.MOA)
+    ? memoryDoc.MOA
+      : [];
   const traceRoot =
     tracesArray[0] && typeof tracesArray[0] === "object"
       ? tracesArray[0]
-      : memoryDoc?.traces && typeof memoryDoc.traces === "object"
-        ? memoryDoc.traces
+      : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
+        ? memoryDoc.MOA
         : {};
   const existingUserTrace =
     traceRoot?.user && typeof traceRoot.user === "object" ? traceRoot.user : {};
@@ -1265,15 +1337,15 @@ const setMemoryLocalGallery = (memoryDoc, images = []) => {
     chat: traceRoot?.chat || null,
   };
 
-  if (Array.isArray(memoryDoc?.traces)) {
-    memoryDoc.traces = [
+  if (Array.isArray(memoryDoc?.MOA)) {
+    memoryDoc.MOA = [
       nextRoot,
-      ...memoryDoc.traces.slice(1).filter((entry) => entry && typeof entry === "object"),
+      ...tracesArray.slice(1).filter((entry) => entry && typeof entry === "object"),
     ];
     return;
   }
 
-  memoryDoc.traces = [nextRoot];
+  memoryDoc.MOA = [nextRoot];
 };
 
 const deleteCloudinaryAsset = async ({
@@ -1326,6 +1398,44 @@ const deleteCloudinaryAsset = async ({
       .trim()
       .toLowerCase(),
   );
+};
+
+const resolveCloudinaryContentHash = async (media = {}) => {
+  const publicId = String(media?.publicId || "").trim();
+  const resourceType =
+    String(media?.resourceType || "").trim().toLowerCase() === "video"
+      ? "video"
+      : "image";
+
+  if (!publicId) {
+    return "";
+  }
+
+  try {
+    const resource = await cloudinary.api.resource(publicId, {
+      resource_type: resourceType,
+    });
+    return String(resource?.etag || "").trim();
+  } catch {
+    return "";
+  }
+};
+
+const buildFallbackMediaContentHash = (media = {}) => {
+  const parts = [
+    String(media?.publicId || "").trim(),
+    String(media?.assetId || "").trim(),
+    String(media?.url || "").trim(),
+    String(media?.resourceType || "").trim(),
+    String(media?.format || "").trim(),
+    String(Number(media?.bytes) || 0),
+    String(Number(media?.duration) || 0),
+  ];
+  const seed = parts.join("|");
+  if (!seed.replace(/\|/g, "").trim()) {
+    return "";
+  }
+  return crypto.createHash("sha1").update(seed).digest("hex");
 };
 
 const getRequestIp = (req) => {
@@ -2128,13 +2238,9 @@ UserRouter.get("/update/:id", async function (req, res, next) {
     const memoryUser = await UserModel.findById(req.params.id)
       .select(
         [
-          "memory.studyPlanner",
-          "memory.traces.user.images",
-          "memory.traces.user.videos",
-          "memory.traces.human.images",
-          "memory.traces.human.videos",
-          "memory.files.local.images",
-          "memory.files.local.videos",
+          "memory.MOI",
+          "memory.MOA.user.images",
+          "memory.MOA.user.videos",
         ].join(" "),
       )
       .lean();
@@ -2295,7 +2401,7 @@ UserRouter.get(
     try {
       const requestStart = Date.now();
       const memoryUser = await UserModel.findById(req.params.my_id)
-        .select("memory.studyPlanner")
+        .select("memory.MOI")
         .lean();
 
       const memoryDoc = memoryUser
@@ -2343,7 +2449,7 @@ UserRouter.get(
   async function (req, res, next) {
     try {
       const memoryUser = await UserModel.findById(req.params.my_id)
-        .select("memory.studyPlanner")
+        .select("memory.MOI")
         .lean();
       const memoryDoc = memoryUser
         ? buildUserMemoryLean(memoryUser.memory, {
@@ -2374,7 +2480,7 @@ UserRouter.get(
   async function (req, res, next) {
     try {
       const memoryUser = await UserModel.findById(req.params.my_id)
-        .select("memory.studyPlanner")
+        .select("memory.MOI")
         .lean();
       const memoryDoc = memoryUser
         ? buildUserMemoryLean(memoryUser.memory, {
@@ -2756,12 +2862,8 @@ UserRouter.get("/image-gallery", checkAuth, async function (req, res, next) {
     const user = await UserModel.findById(req.authentication.userId)
       .select(
         [
-          "memory.traces.user.images",
-          "memory.traces.user.videos",
-          "memory.traces.human.images",
-          "memory.traces.human.videos",
-          "memory.files.local.images",
-          "memory.files.local.videos",
+          "memory.MOA.user.images",
+          "memory.MOA.user.videos",
           "profile.picture.profilePic.index",
           "profile.picture.profilePic.viewport",
           "profile.profilePic",
@@ -2979,6 +3081,7 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
       url: req.body?.url || req.body?.secureUrl,
       publicId: req.body?.publicId,
       assetId: req.body?.assetId,
+      contentHash: req.body?.contentHash || req.body?.etag,
       folder: req.body?.folder,
       resourceType: req.body?.resourceType,
       mimeType: req.body?.mimeType,
@@ -2996,6 +3099,14 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
         message: "A valid uploaded media file is required.",
       });
     }
+    const cloudinaryHash =
+      String(normalizedImage.contentHash || "").trim() ||
+      (await resolveCloudinaryContentHash(normalizedImage)) ||
+      buildFallbackMediaContentHash(normalizedImage);
+    const normalizedImageWithHash = {
+      ...normalizedImage,
+      contentHash: cloudinaryHash,
+    };
 
     const user = await UserModel.findById(req.authentication.userId);
 
@@ -3012,10 +3123,10 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
 
     const existingGallery = getMemoryLocalGallery(memoryDoc);
     const dedupedImages = existingGallery.filter(
-      (image) => image.publicId !== normalizedImage.publicId,
+      (image) => image.publicId !== normalizedImageWithHash.publicId,
     );
     const nextImageGallery = sortGalleryImages([
-      normalizedImage,
+      normalizedImageWithHash,
       ...dedupedImages,
     ]);
     const existingProfilePicture = normalizeStoredGalleryImage(
@@ -3040,6 +3151,73 @@ UserRouter.put("/image-gallery", checkAuth, async function (req, res, next) {
     return next(error);
   }
 });
+
+UserRouter.post(
+  "/image-gallery/backfill-content-hash",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.authentication.userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res.status(500).json({ message: "Failed to access user memory." });
+      }
+
+      const imageGallery = getMemoryLocalGallery(memoryDoc);
+      if (!Array.isArray(imageGallery) || imageGallery.length === 0) {
+        return res.status(200).json({
+          message: "No gallery media found.",
+          scannedCount: 0,
+          updatedCount: 0,
+        });
+      }
+
+      let updatedCount = 0;
+      const nextImageGallery = [];
+      for (const media of imageGallery) {
+        const hasHash = String(media?.contentHash || "").trim();
+        if (hasHash) {
+          nextImageGallery.push(media);
+          continue;
+        }
+
+        const resolvedHash = await resolveCloudinaryContentHash(media);
+        const nextHash = resolvedHash || buildFallbackMediaContentHash(media);
+        if (nextHash) {
+          updatedCount += 1;
+          nextImageGallery.push({
+            ...media,
+            contentHash: nextHash,
+            updatedAt: new Date(),
+          });
+          continue;
+        }
+
+        nextImageGallery.push(media);
+      }
+
+      if (updatedCount > 0) {
+        setMemoryLocalGallery(memoryDoc, nextImageGallery);
+        await memoryDoc.save();
+      }
+
+      return res.status(200).json({
+        message:
+          updatedCount > 0
+            ? "Gallery contentHash backfill completed."
+            : "No missing contentHash values were resolved.",
+        scannedCount: imageGallery.length,
+        updatedCount,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 UserRouter.put(
   "/image-gallery/profile-picture",
@@ -4013,6 +4191,11 @@ UserRouter.post(
   requireSelfParam("my_id"),
   async function (req, res, next) {
     try {
+      const userId = String(req.params.my_id || "").trim();
+      const user = await UserModel.findById(userId).select("_id");
+      if (!user?._id) {
+        return res.status(404).json({ message: "User not found." });
+      }
       const nextSettings =
         req.body &&
         typeof req.body === "object" &&
@@ -4022,79 +4205,35 @@ UserRouter.post(
           : req.body && typeof req.body === "object"
             ? req.body
             : {};
+      const storedSettings = serializeStudyOrganizerSettingsForStorage(nextSettings);
 
-      const updatedUser = await UserModel.findByIdAndUpdate(
-        req.params.my_id,
+      const updateResult = await UserModel.updateOne(
+        { _id: userId },
         {
           $set: {
-            "memory.studyPlanner.studyOrganizer.settings": nextSettings,
+            "memory.MOI.0.studyPlanner.studyOrganizer.settings": storedSettings,
           },
           $unset: {
-            "memory.studyPlanner.studyOrganizer.selectOptions": 1,
-            "memory.studyPlanner.studyOrganizer.fieldsRelationships": 1,
+            "memory.MOI.0.studyPlanner.studyOrganizer.selectOptions": 1,
+            "memory.MOI.0.studyPlanner.studyOrganizer.fieldsRelationships": 1,
           },
         },
-        {
-          new: true,
-          select: "memory.studyPlanner.studyOrganizer.settings",
-        },
-      ).lean();
-
-      if (!updatedUser) {
-        return res.status(404).json({ message: "User not found." });
+      );
+      if (!updateResult?.acknowledged) {
+        return res.status(500).json({
+          message: "Settings update was not acknowledged by database.",
+        });
       }
+      const persistedSettings = normalizeStudyOrganizerSettings(storedSettings);
+      const noChangesApplied =
+        Number(updateResult?.matchedCount || 0) > 0 &&
+        Number(updateResult?.modifiedCount || 0) === 0;
 
       return res.status(200).json({
-        settings:
-          updatedUser?.memory?.studyPlanner?.studyOrganizer?.settings || {},
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.post(
-  "/studyOrganizer/selectOptions/:my_id",
-  checkAuth,
-  requireSelfParam("my_id"),
-  async function (req, res, next) {
-    try {
-      const nextSelectOptions =
-        req.body &&
-        typeof req.body === "object" &&
-        req.body.selectOptions &&
-        typeof req.body.selectOptions === "object"
-          ? req.body.selectOptions
-          : req.body && typeof req.body === "object"
-            ? req.body
-            : {};
-
-      const updatedUser = await UserModel.findByIdAndUpdate(
-        req.params.my_id,
-        {
-          $set: {
-            "memory.studyPlanner.studyOrganizer.settings.selectOptions":
-              nextSelectOptions,
-          },
-          $unset: {
-            "memory.studyPlanner.studyOrganizer.selectOptions": 1,
-          },
-        },
-        {
-          new: true,
-          select: "memory.studyPlanner.studyOrganizer.settings.selectOptions",
-        },
-      ).lean();
-
-      if (!updatedUser) {
-        return res.status(404).json({ message: "User not found." });
-      }
-
-      return res.status(200).json({
-        selectOptions:
-          updatedUser?.memory?.studyPlanner?.studyOrganizer?.settings
-            ?.selectOptions || {},
+        message: noChangesApplied
+          ? "No settings changes were applied."
+          : "Settings saved successfully.",
+        settings: persistedSettings,
       });
     } catch (error) {
       return next(error);

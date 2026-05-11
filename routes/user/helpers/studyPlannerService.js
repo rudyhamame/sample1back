@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
+import {
+  getDefaultStudyOrganizerSettings,
+  normalizeStudyOrganizerSettings,
+} from "../../../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 
 const DEFAULT_STUDY_ORGANIZER = {
   courses: [],
   exams: [],
-  settings: {
-    selectOptions: {},
-    fieldsRelationships: {},
-  },
+  settings: getDefaultStudyOrganizerSettings(),
 };
 
 const DEFAULT_STUDY_PLAN_AID = {
@@ -104,77 +105,49 @@ const normalizeObjectIdValue = (value, { allowNull = false } = {}) => {
 
 const trimString = (value) => String(value || "").trim();
 
-const normalizeOptionalPlannerString = (value) => {
+const repairArabicMojibake = (value) => {
   const normalizedValue = trimString(value);
+
+  if (!/[ØÙøù]/.test(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  try {
+    const repairedValue = Buffer.from(normalizedValue, "latin1").toString("utf8");
+    return /[\u0600-\u06FF]/.test(repairedValue) ? repairedValue.trim() : normalizedValue;
+  } catch {
+    return normalizedValue;
+  }
+};
+
+const normalizeOptionalPlannerString = (value) => {
+  const normalizedValue = repairArabicMojibake(value);
   return normalizedValue === "-" ? "" : normalizedValue;
 };
 
-const normalizeStudyTerm = (value) => {
-  const normalizedValue = normalizeOptionalPlannerString(value);
-  const normalizedLowerValue = normalizedValue.toLowerCase();
+const normalizeStudyTerm = (value) => normalizeOptionalPlannerString(value);
+
+const normalizeComponentStatus = (value) => normalizeOptionalPlannerString(value);
+
+const normalizeCourseStatus = (value) => normalizeOptionalPlannerString(value);
+
+const normalizeExamType = (value) => normalizeOptionalPlannerString(value);
+
+const classifyStudyTerm = (value) => {
+  const normalizedValue = normalizeOptionalPlannerString(value).toLowerCase();
   const termAliases = {
-    first: "الأول",
-    fall: "الأول",
-    second: "الثاني",
-    winter: "الثاني",
-    third: "الصيفي",
-    summer: "الصيفي",
-    "الأول": "الأول",
-    "الثاني": "الثاني",
-    "الصيفي": "الصيفي",
+    first: "first",
+    fall: "first",
+    "الأول": "first",
+    second: "second",
+    winter: "second",
+    "الثاني": "second",
+    third: "third",
+    summer: "third",
+    "الصيفي": "third",
   };
 
-  return termAliases[normalizedLowerValue] || normalizedValue;
-};
-
-const normalizeComponentStatus = (value) => {
-  const normalizedValue = trimString(value).toLowerCase();
-  const statusAliases = {
-    new: "أساسية",
-    failed: "راسبة",
-    passed: "ناجحة",
-    "not started": "أساسية",
-    "in progress": "أساسية",
-    completed: "ناجحة",
-    "أساسية": "أساسية",
-    "جديد": "أساسية",
-    "راسبة": "راسبة",
-    "ناجحة": "ناجحة",
-  };
-
-  return statusAliases[normalizedValue] || "أساسية";
-};
-
-const normalizeCourseStatus = (value) => {
-  const normalizedValue = trimString(value).toLowerCase();
-  const statusAliases = {
-    new: "أساسي",
-    failed: "راسب",
-    incomplete: "غير مكتمل",
-    passed: "ناجح",
-    "not started": "أساسي",
-    completed: "ناجح",
-    "أساسي": "أساسي",
-    "اساسي": "أساسي",
-    "راسب": "راسب",
-    "غير مكتمل": "غير مكتمل",
-    "ناجح": "ناجح",
-  };
-
-  return statusAliases[normalizedValue] || "أساسي";
-};
-
-const normalizeExamType = (value) => {
-  const normalizedValue = trimString(value).toLowerCase();
-  const examTypeAliases = {
-    quiz: "مذاكرة",
-    midterm: "امتحان نصفي",
-    final: "امتحان نهائي",
-    "مذاكرة": "مذاكرة",
-    "امتحان نصفي": "امتحان نصفي",
-    "امتحان نهائي": "امتحان نهائي",
-  };
-  return examTypeAliases[normalizedValue] || trimString(value);
+  return termAliases[normalizedValue] || normalizedValue;
 };
 
 const normalizeStringArray = (value) =>
@@ -302,7 +275,7 @@ const getComponentTimingStatus = (component = {}) => {
 
   if (Number.isFinite(actualYearNum) && Number.isFinite(normativeYearNum)) {
     if (actualYearNum > normativeYearNum) {
-      return "راسبة";
+      return "راسب";
     }
 
     if (
@@ -311,11 +284,11 @@ const getComponentTimingStatus = (component = {}) => {
       actualTerm &&
       normativeTerm !== actualTerm
     ) {
-      return "راسبة";
+      return "راسب";
     }
 
     if (actualYearNum === normativeYearNum && normativeTerm && actualTerm) {
-      return normativeTerm === actualTerm ? "أساسية" : "راسبة";
+      return normativeTerm === actualTerm ? "جديد" : "راسب";
     }
   }
 
@@ -346,11 +319,11 @@ const hasExactPlannerComponentTimingMatch = (component = {}) => {
     normalizedComponent?.actualCourseYearInterval ||
       componentTime?.actual?.courseYearInterval,
   );
-  const normativeTerm = normalizeStudyTerm(
+  const normativeTerm = classifyStudyTerm(
     normalizedComponent?.normativeCourseTerm ||
       componentTime?.Normative?.courseTerm,
   );
-  const actualTerm = normalizeStudyTerm(
+  const actualTerm = classifyStudyTerm(
     normalizedComponent?.actualCourseTerm || componentTime?.actual?.courseTerm,
   );
 
@@ -365,7 +338,13 @@ const hasExactPlannerComponentTimingMatch = (component = {}) => {
 
 const getComparableExamThreshold = (grade = {}) => {
   const candidate = grade && typeof grade === "object" ? grade : {};
-  const orderedValues = [candidate?.value, candidate?.min, candidate?.max];
+  const orderedValues = [
+    candidate?.value,
+    candidate?.passThreshold,
+    candidate?.min,
+    candidate?.maxGrade,
+    candidate?.max,
+  ];
 
   for (const value of orderedValues) {
     const parsedValue = Number(value);
@@ -377,12 +356,90 @@ const getComparableExamThreshold = (grade = {}) => {
   return null;
 };
 
+const classifyExamResultStatus = (value) => {
+  const normalizedValue = repairArabicMojibake(value).toLowerCase();
+  const statusAliases = {
+    passed: "ناجح",
+    pass: "ناجح",
+    success: "ناجح",
+    successful: "ناجح",
+    failed: "راسب",
+    fail: "راسب",
+    pending: "",
+    new: "",
+    "not started": "",
+    "in progress": "",
+    "ناجح": "ناجح",
+    "ناجحة": "ناجح",
+    "راسب": "راسب",
+    "راسبة": "راسب",
+  };
+
+  return statusAliases[normalizedValue] || "";
+};
+
+const deriveExamGradeStatusFromValues = (grade = {}, passGrade = {}) => {
+  const gradeValue = Number(
+    grade?.value ?? grade?.gradeValue ?? null,
+  );
+  const passThreshold = Number(
+    grade?.passThreshold ??
+      passGrade?.passThreshold ??
+      passGrade?.value ??
+      passGrade?.min ??
+      null,
+  );
+
+  if (!Number.isFinite(gradeValue) || !Number.isFinite(passThreshold)) {
+    return trimString(grade?.status || "");
+  }
+
+  return gradeValue < passThreshold ? "راسب" : "ناجح";
+};
+
 const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
   const normalizedComponent = toPlainObject(component) || {};
   void plannerExams;
+  const componentTime =
+    normalizedComponent?.time && typeof normalizedComponent.time === "object"
+      ? normalizedComponent.time
+      : {};
+  const normativeYearInterval = normalizeOptionalPlannerString(
+    normalizedComponent?.normativeCourseYearInterval ||
+      componentTime?.Normative?.courseYearInterval,
+  );
+  const normativeTerm = classifyStudyTerm(
+    normalizedComponent?.normativeCourseTerm ||
+      componentTime?.Normative?.courseTerm,
+  );
+
+  if (!normativeYearInterval || !normativeTerm) {
+    return "يحدّد لاحقاً";
+  }
+
+  if (hasExactPlannerComponentTimingMatch(normalizedComponent)) {
+    return "جديد";
+  }
+
   const componentExams = Array.isArray(normalizedComponent?.exams)
     ? normalizedComponent.exams.map((exam) => toPlainObject(exam) || {})
     : [];
+  const explicitExamStatuses = componentExams
+    .map((exam) =>
+      classifyExamResultStatus(
+        exam?.grade?.status || exam?.resultStatus || exam?.status,
+      ),
+    )
+    .filter(Boolean);
+
+  if (explicitExamStatuses.some((status) => status === "راسب")) {
+    return "راسب";
+  }
+
+  if (explicitExamStatuses.some((status) => status === "ناجح")) {
+    return "ناجح";
+  }
+
   const evaluatedExams = componentExams
     .map((exam) => ({
       gradeValue: getComparableExamThreshold(exam?.grade || {}),
@@ -397,13 +454,11 @@ const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
     return evaluatedExams.some(
       ({ gradeValue, passGradeValue }) => gradeValue < passGradeValue,
     )
-      ? "راسبة"
-      : "ناجحة";
+      ? "راسب"
+      : "ناجح";
   }
 
-  return hasExactPlannerComponentTimingMatch(normalizedComponent)
-    ? "أساسية"
-    : "أساسية";
+  return "جديد";
 };
 
 const derivePlannerCourseStatus = (components = [], plannerExams = []) => {
@@ -412,19 +467,27 @@ const derivePlannerCourseStatus = (components = [], plannerExams = []) => {
     .filter(Boolean);
 
   if (componentStatuses.length === 0) {
-    return "أساسي";
+    return "جديد";
   }
 
-  if (componentStatuses.every((status) => status === "أساسية")) {
-    return "أساسي";
+  if (componentStatuses.every((status) => status === "يحدّد لاحقاً")) {
+    return "يحدّد لاحقاً";
   }
 
-  if (componentStatuses.every((status) => status === "راسبة")) {
+  if (componentStatuses.every((status) => status === "جديد")) {
+    return "جديد";
+  }
+
+  if (componentStatuses.every((status) => status === "راسب")) {
     return "راسب";
   }
 
-  if (componentStatuses.every((status) => status === "ناجحة")) {
+  if (componentStatuses.every((status) => status === "ناجح")) {
     return "ناجح";
+  }
+
+  if (componentStatuses.some((status) => status === "ناجح")) {
+    return "غير مكتمل";
   }
 
   return "غير مكتمل";
@@ -464,29 +527,49 @@ const buildGrade = (
 ) => {
   const parsedValue = Number(value);
   const previousValue = Number(previousGrade?.value);
+  const previousPassThreshold = Number(
+    previousGrade?.passThreshold ?? previousGrade?.min,
+  );
   const previousMax = Number(previousGrade?.max);
+  const previousMaxGrade = Number(
+    previousGrade?.maxGrade ?? previousGrade?.max,
+  );
 
-  return {
-    value:
-      assignTo === "value"
-        ? Number.isFinite(parsedValue)
-          ? parsedValue
-          : Number.isFinite(previousValue)
-            ? previousValue
-            : null
+  const nextValue =
+    assignTo === "value"
+      ? Number.isFinite(parsedValue)
+        ? parsedValue
         : Number.isFinite(previousValue)
           ? previousValue
-          : null,
-    max:
-      assignTo === "max"
-        ? Number.isFinite(parsedValue)
-          ? parsedValue
+          : null
+      : Number.isFinite(previousValue)
+        ? previousValue
+        : null;
+  const nextMax =
+    assignTo === "max"
+      ? Number.isFinite(parsedValue)
+        ? parsedValue
+        : Number.isFinite(previousMaxGrade)
+          ? previousMaxGrade
           : Number.isFinite(previousMax)
             ? previousMax
             : null
+      : Number.isFinite(previousMaxGrade)
+        ? previousMaxGrade
         : Number.isFinite(previousMax)
           ? previousMax
-          : null,
+          : null;
+  const nextPassThreshold = Number.isFinite(previousPassThreshold)
+    ? previousPassThreshold
+    : null;
+
+  return {
+    value: nextValue,
+    passThreshold: nextPassThreshold,
+    min: nextPassThreshold,
+    maxGrade: nextMax,
+    max: nextMax,
+    status: trimString(previousGrade?.status),
     unit: trimString(previousGrade?.unit) || "points",
   };
 };
@@ -550,6 +633,13 @@ const sanitizeStudyWeight = (value = {}) => ({
   unit: trimString(value?.unit) || "percent",
 });
 
+const normalizeComponentWeightNumber = (value, fallbackValue = 0) => {
+  if (value && typeof value === "object") {
+    return toFiniteNumber(value?.value, fallbackValue);
+  }
+  return toFiniteNumber(value, fallbackValue);
+};
+
 const sanitizeStudyVolume = (value = {}) => ({
   value: toFiniteNumber(value?.value, 0),
   unit: trimString(value?.unit) || "pages",
@@ -562,14 +652,27 @@ const sanitizeStudyGrade = (value = {}) => ({
     value?.value === null || value?.value === undefined
       ? null
       : toFiniteNumber(value?.value, null),
+  passThreshold:
+    value?.passThreshold === null || value?.passThreshold === undefined
+      ? value?.min === null || value?.min === undefined
+        ? null
+        : toFiniteNumber(value?.min, null)
+      : toFiniteNumber(value?.passThreshold, null),
   min:
     value?.min === null || value?.min === undefined
       ? null
       : toFiniteNumber(value?.min, null),
+  maxGrade:
+    value?.maxGrade === null || value?.maxGrade === undefined
+      ? value?.max === null || value?.max === undefined
+        ? null
+        : toFiniteNumber(value?.max, null)
+      : toFiniteNumber(value?.maxGrade, null),
   max:
     value?.max === null || value?.max === undefined
       ? null
       : toFiniteNumber(value?.max, null),
+  status: trimString(value?.status),
   unit: trimString(value?.unit) || "points",
 });
 
@@ -619,8 +722,10 @@ const sanitizeStudyLecture = (value = {}) => ({
   weight: sanitizeStudyWeight(value?.weight || {}),
   textDensity: toFiniteNumber(value?.textDensity, 0),
   progress: toFiniteNumber(value?.progress, 0),
-  pages: Array.isArray(value?.pages)
-    ? value.pages.map((entry) => sanitizeStudyPage(toPlainObject(entry) || {}))
+  content: Array.isArray(value?.content)
+    ? value.content.map((entry) => sanitizeStudyPage(toPlainObject(entry) || {}))
+    : Array.isArray(value?.pages)
+      ? value.pages.map((entry) => sanitizeStudyPage(toPlainObject(entry) || {}))
     : [],
 });
 
@@ -634,7 +739,7 @@ const sanitizeStudyComponent = (value = {}) => ({
   schedule: Array.isArray(value?.schedule)
     ? value.schedule.map((entry) => sanitizeWeeklyScheduleEntry(entry))
     : [],
-  weight: sanitizeStudyWeight(value?.weight || {}),
+  weight: normalizeComponentWeightNumber(value?.weight, 0),
   lectures: Array.isArray(value?.lectures)
     ? value.lectures.map((entry) => sanitizeStudyLecture(toPlainObject(entry) || {}))
     : [],
@@ -648,7 +753,7 @@ const sanitizeStudyCourse = (value = {}) => ({
   code: trimString(value?.code),
   name: trimString(value?.name) || "-",
   status: normalizeCourseStatus(value?.status),
-  totalWeight: toFiniteNumber(value?.totalWeight, null),
+  weight: toFiniteNumber(value?.weight ?? value?.totalWeight, null),
   components: Array.isArray(value?.components)
     ? value.components.map((entry) => sanitizeStudyComponent(toPlainObject(entry) || {}))
     : [],
@@ -742,24 +847,7 @@ const ensureStudyOrganizer = (memoryDoc) => {
     exams: Array.isArray(currentOrganizer?.exams)
       ? currentOrganizer.exams.map((entry) => sanitizeStudyExam(toPlainObject(entry) || {}))
       : [],
-    settings: {
-      selectOptions:
-        currentOrganizer?.settings?.selectOptions &&
-        typeof currentOrganizer.settings.selectOptions === "object"
-          ? toPlainObject(currentOrganizer.settings.selectOptions) || {}
-          : currentOrganizer?.selectOptions &&
-              typeof currentOrganizer.selectOptions === "object"
-            ? toPlainObject(currentOrganizer.selectOptions) || {}
-            : {},
-      fieldsRelationships:
-        currentOrganizer?.settings?.fieldsRelationships &&
-        typeof currentOrganizer.settings.fieldsRelationships === "object"
-          ? toPlainObject(currentOrganizer.settings.fieldsRelationships) || {}
-          : currentOrganizer?.fieldsRelationships &&
-              typeof currentOrganizer.fieldsRelationships === "object"
-            ? toPlainObject(currentOrganizer.fieldsRelationships) || {}
-            : {},
-    },
+    settings: normalizeStudyOrganizerSettings(currentOrganizer?.settings),
   };
 
   return studyPlanner.studyOrganizer;
@@ -852,7 +940,11 @@ const countLectureFinishedPages = (lecture = {}) =>
   toPositiveInteger(lecture?.progress, 0);
 
 const countLecturePages = (lecture = {}) =>
-  Array.isArray(lecture?.pages) ? lecture.pages.length : 0;
+  Array.isArray(lecture?.content)
+    ? lecture.content.length
+    : Array.isArray(lecture?.pages)
+      ? lecture.pages.length
+      : 0;
 
 const getLecturePageStats = (lecture = {}) => ({
   totalPages: countLecturePages(lecture),
@@ -875,8 +967,10 @@ const getComponentPageStats = (component = {}) => {
 };
 
 const buildLecturePages = (payload = {}, previousLecture = {}) => {
-  const previousPages = Array.isArray(previousLecture?.pages)
-    ? previousLecture.pages.map((page) => ({ ...toPlainObject(page) }))
+  const previousPages = Array.isArray(previousLecture?.content)
+    ? previousLecture.content.map((page) => ({ ...toPlainObject(page) }))
+    : Array.isArray(previousLecture?.pages)
+      ? previousLecture.pages.map((page) => ({ ...toPlainObject(page) }))
     : [];
   const totalPages = Math.max(
     toPositiveInteger(payload?.lecture_length, previousPages.length),
@@ -1046,6 +1140,10 @@ const normalizePlannerExamPayloads = (
           : buildGrade(normalizedGrade, previousExam?.grade || {}, {
               assignTo: "max",
             });
+      const nextGradeStatus = deriveExamGradeStatusFromValues(
+        nextGrade,
+        nextPassGrade,
+      );
       const nextTimeBase =
         entry?.time && typeof entry.time === "object"
           ? sanitizeStudyTime({
@@ -1101,7 +1199,10 @@ const normalizePlannerExamPayloads = (
               ),
         weight: nextWeight,
         passGrade: nextPassGrade,
-        grade: nextGrade,
+        grade: {
+          ...nextGrade,
+          status: nextGradeStatus,
+        },
       };
     })
     .filter(Boolean);
@@ -1118,18 +1219,26 @@ const recalculateComponentAndCourseTotals = (course = {}) => {
         const exams = Array.isArray(normalizedComponent?.exams)
           ? normalizedComponent.exams.map((exam) => toPlainObject(exam) || {})
           : [];
+        const componentStatus = derivePlannerComponentStatus({
+          ...normalizedComponent,
+          lectures,
+          exams,
+        });
 
         return {
           ...normalizedComponent,
+          status: componentStatus,
           lectures,
           exams,
         };
       })
     : [];
+  const courseStatus = derivePlannerCourseStatus(components);
 
   return {
     ...normalizedCourse,
-    components,
+    status: courseStatus,
+    components: sortPlannerComponentsByOrder(components),
   };
 };
 
@@ -1203,10 +1312,13 @@ export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
     code: trimString(payload?.course_code) || trimString(normalizedPreviousCourse?.code),
     name: trimString(payload?.course_name) || trimString(normalizedPreviousCourse?.name) || "-",
     status: normalizeCourseStatus(normalizedPreviousCourse?.status),
-    totalWeight:
+    weight:
       payload?.course_totalWeight !== null && payload?.course_totalWeight !== undefined
         ? toFiniteNumber(payload?.course_totalWeight, null)
-        : toFiniteNumber(normalizedPreviousCourse?.totalWeight, null),
+        : toFiniteNumber(
+            normalizedPreviousCourse?.weight ?? normalizedPreviousCourse?.totalWeight,
+            null,
+          ),
     components: Array.isArray(normalizedPreviousCourse?.components)
       ? normalizedPreviousCourse.components.map((component) => toPlainObject(component))
       : [],
@@ -1274,23 +1386,24 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
     previousLectures,
     nextComponentId,
   );
-  const nextWeight =
-    payload?.weight && typeof payload.weight === "object"
-      ? sanitizeStudyWeight({
-          ...(normalizedPreviousComponent?.weight || {}),
-          ...payload.weight,
-        })
-      : buildWeight(
-          payload?.course_grade,
-          {
-            ...(normalizedPreviousComponent?.weight || {}),
-            total:
-              toFiniteNumber(
-                payload?.course_weightTotal,
-                normalizedPreviousComponent?.weight?.total,
-              ) || 100,
-          },
-        );
+  const nextWeight = (() => {
+    const previousWeight =
+      normalizedPreviousComponent?.weight && typeof normalizedPreviousComponent.weight === "object"
+        ? normalizedPreviousComponent.weight?.value
+        : normalizedPreviousComponent?.weight;
+
+    if (payload?.weight && typeof payload.weight === "object") {
+      return normalizeComponentWeightNumber(
+        payload.weight?.value,
+        normalizeComponentWeightNumber(previousWeight, 0),
+      );
+    }
+
+    return normalizeComponentWeightNumber(
+      payload?.course_grade,
+      normalizeComponentWeightNumber(previousWeight, 0),
+    );
+  })();
 
   return {
     _id: nextComponentId,
@@ -1414,7 +1527,7 @@ export const addComponentToPlanner = (memoryDoc, courseId = "", payload = {}) =>
 
 export const buildManualLecturePayload = (payload = {}, previousLecture = {}) => {
   const normalizedPreviousLecture = toPlainObject(previousLecture) || {};
-  const pages = buildLecturePages(payload, normalizedPreviousLecture);
+  const content = buildLecturePages(payload, normalizedPreviousLecture);
   const instructors = normalizeDelimitedStringArray(
     payload?.instructors ?? payload?.lecture_instructors ?? payload?.lecture_instructor,
   );
@@ -1448,7 +1561,7 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
     progress: Array.isArray(payload?.lecture_pagesFinished)
       ? payload.lecture_pagesFinished.length
       : toFiniteNumber(normalizedPreviousLecture?.progress, 0),
-    pages,
+    content,
   };
 };
 
@@ -1484,9 +1597,15 @@ export const flattenMemoryCoursesForPlanner = (entries = []) =>
         course_code: trimString(normalizedCourse?.code) || "",
         course_name: trimString(normalizedCourse?.name) || "-",
         course_status: courseStatus,
+        course_weight:
+          Number.isFinite(
+            Number(normalizedCourse?.weight ?? normalizedCourse?.totalWeight),
+          )
+            ? String(normalizedCourse?.weight ?? normalizedCourse?.totalWeight)
+            : "-",
         course_totalWeight:
-          Number.isFinite(Number(normalizedCourse?.totalWeight))
-            ? String(normalizedCourse.totalWeight)
+          Number.isFinite(Number(normalizedCourse?.weight ?? normalizedCourse?.totalWeight))
+            ? String(normalizedCourse?.weight ?? normalizedCourse?.totalWeight)
             : "-",
         component_status: componentStatus,
         course_component:
@@ -1576,12 +1695,16 @@ export const flattenMemoryCoursesForPlanner = (entries = []) =>
           "-",
         course_instructors: [],
         course_grade:
-          String(toFiniteNumber(normalizedComponent?.weight?.value, 0) || "-"),
+          String(
+            normalizeComponentWeightNumber(normalizedComponent?.weight, 0) || "-",
+          ),
         course_weightTotal:
           String(toFiniteNumber(normalizedComponent?.weight?.total, 100) || "100"),
         course_fullGrade:
-          Number.isFinite(Number(primaryExam?.grade?.max))
-            ? String(primaryExam.grade.max)
+          Number.isFinite(
+            Number(primaryExam?.grade?.maxGrade ?? primaryExam?.grade?.max),
+          )
+            ? String(primaryExam?.grade?.maxGrade ?? primaryExam?.grade?.max)
             : "-",
         course_length: componentStats.totalPages,
         course_progress: componentStats.finishedPages,
@@ -1619,8 +1742,10 @@ export const flattenMemoryCoursesForPlanner = (entries = []) =>
                 ? toPlainObject(exam.grade)
                 : {},
             course_fullGrade:
-              Number.isFinite(Number(exam?.grade?.max))
-                ? String(exam.grade.max)
+              Number.isFinite(
+                Number(exam?.grade?.maxGrade ?? exam?.grade?.max),
+              )
+                ? String(exam?.grade?.maxGrade ?? exam?.grade?.max)
                 : "-",
             lectures: normalizeReferenceIds(exam?.lectures),
           };
@@ -1641,9 +1766,15 @@ export const flattenMemoryCoursesForPlanner = (entries = []) =>
           course_code: trimString(normalizedCourse?.code) || "",
           course_name: trimString(normalizedCourse?.name) || "-",
           course_status: courseStatus,
+          course_weight:
+            Number.isFinite(
+              Number(normalizedCourse?.weight ?? normalizedCourse?.totalWeight),
+            )
+              ? String(normalizedCourse?.weight ?? normalizedCourse?.totalWeight)
+              : "-",
           course_totalWeight:
-            Number.isFinite(Number(normalizedCourse?.totalWeight))
-              ? String(normalizedCourse.totalWeight)
+            Number.isFinite(Number(normalizedCourse?.weight ?? normalizedCourse?.totalWeight))
+              ? String(normalizedCourse?.weight ?? normalizedCourse?.totalWeight)
               : "-",
           component_status: "-",
           course_component: "-",
@@ -1707,8 +1838,10 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
 
       return lectures.map((lecture) => {
         const normalizedLecture = toPlainObject(lecture) || {};
-        const pages = Array.isArray(normalizedLecture?.pages)
-          ? normalizedLecture.pages
+        const pages = Array.isArray(normalizedLecture?.content)
+          ? normalizedLecture.content
+          : Array.isArray(normalizedLecture?.pages)
+            ? normalizedLecture.pages
           : [];
         const lectureInstructors = normalizeStringArray(
           normalizedLecture?.instructors,
@@ -2121,3 +2254,4 @@ export const updateCoursePagesInPlanner = (
 
   setPlannerCourses(memoryDoc, nextCourses);
 };
+

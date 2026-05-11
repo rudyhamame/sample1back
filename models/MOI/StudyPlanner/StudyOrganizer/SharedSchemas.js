@@ -68,6 +68,7 @@ const StudyGradeSchema = new Schema(
     value: { type: Number, default: null }, //actual grade value, e.g., 85
     passThreshold: { type: Number, default: null }, //grade required to pass, e.g., 60
     maxGrade: { type: Number, default: null }, //maximum possible grade, e.g., 100
+    status: { type: String, default: "" }, //e.g., "passed", "failed", "pending"
   },
   { _id: false },
 );
@@ -109,7 +110,7 @@ const PageNonTextDataSchema = new Schema(
   { _id: true },
 );
 
-const StudyPageSchema = new Schema(
+const LectureContentSchema = new Schema(
   {
     order: { type: Number, default: 0, min: 0 },
     textData: { type: [PageTextDataSchema], default: [] },
@@ -124,7 +125,7 @@ const StudyLectureSchema = new Schema(
     instructors: { type: [String], default: [] },
     writer: { type: [String], default: [] },
     publishDate: { type: Date, default: null },
-    pages: { type: [StudyPageSchema], default: [] },
+    content: { type: [LectureContentSchema], default: [] },
   },
   { _id: true },
 );
@@ -138,6 +139,6 @@ export {
   StudyGradeSchema,
   PageTextDataSchema,
   PageNonTextDataSchema,
-  StudyPageSchema,
+  LectureContentSchema,
   StudyLectureSchema,
 };

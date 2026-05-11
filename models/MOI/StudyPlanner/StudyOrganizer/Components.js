@@ -8,7 +8,7 @@ import {
   StudyGradeSchema,
   PageTextDataSchema,
   PageNonTextDataSchema,
-  StudyPageSchema,
+  LectureContentSchema,
   StudyLectureSchema,
 } from "./SharedSchemas.js";
 
@@ -51,13 +51,13 @@ const CourseSchema = new Schema(
     status: {
       type: String,
     },
-    totalWeight: { type: Number },
+    weight: { type: Number },
     components: { type: [ComponentSchema], default: [] },
   },
   { _id: true },
 );
 
-const ComponentLecturePageSchema = StudyPageSchema;
+const ComponentLecturePageSchema = LectureContentSchema;
 const ComponentLectureSchema = StudyLectureSchema;
 
 export {
@@ -69,7 +69,7 @@ export {
   ExamSchema,
   PageTextDataSchema,
   PageNonTextDataSchema,
-  StudyPageSchema,
+  LectureContentSchema,
   StudyLectureSchema,
   ComponentSchema,
   CourseSchema,

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
-import StudyOrganizerSchema from "../StudyOrganizer/StudyOrganizer.js";
-import StudyPlanAidSchema from "../StudyPlanAid/StudyPlanAid.js";
+import StudyOrganizerSchema from "./StudyOrganizer/StudyOrganizer.js";
+import StudyPlanAidSchema from "./StudyPlanAid/StudyPlanAid.js";
 
 const { Schema } = mongoose;
 

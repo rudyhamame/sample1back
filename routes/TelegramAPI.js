@@ -63,9 +63,11 @@ const DEFAULT_OPENAI_MODEL =
   process.env.OPENAI_MODEL ||
   process.env.GROQ_MODEL ||
   "gpt-5-mini";
-const VALID_AI_PROVIDERS = ["openai", "groq", "gemini"];
+const DEFAULT_KIMI_MODEL =
+  process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || "kimi-k2.5";
+const VALID_AI_PROVIDERS = ["openai", "groq", "gemini", "kimi"];
 const DEFAULT_NO_PROVIDER_MESSAGE =
-  "Missing GROQ_API_KEY, GEMINI_API_KEY, and OPENAI_API_KEY in the backend environment.";
+  "Missing GROQ_API_KEY, GEMINI_API_KEY, MOONSHOT_API_KEY, and OPENAI_API_KEY in the backend environment.";
 
 const pendingTelegramAuthByUser = new Map();
 const telegramSyncPromisesByUser = new Map();
@@ -179,8 +181,31 @@ const getOpenAIClient = () => {
   });
 };
 
+const getKimiClient = () => {
+  const apiKey = String(
+    process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY || "",
+  ).trim();
+
+  if (!apiKey) {
+    return null;
+  }
+
+  const baseURL =
+    String(process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "").trim() ||
+    "https://api.moonshot.ai/v1";
+
+  return new OpenAI({
+    apiKey,
+    baseURL,
+  });
+};
+
 const getGeminiApiKey = () => String(process.env.GEMINI_API_KEY || "").trim();
-const getConfiguredAiProviders = (groqClient = null, openAiClient = null) => {
+const getConfiguredAiProviders = (
+  groqClient = null,
+  openAiClient = null,
+  kimiClient = null,
+) => {
   const providers = [];
 
   if (groqClient || getGroqClient()) {
@@ -191,14 +216,21 @@ const getConfiguredAiProviders = (groqClient = null, openAiClient = null) => {
     providers.push("gemini");
   }
 
+  if (kimiClient || getKimiClient()) {
+    providers.push("kimi");
+  }
+
   if (openAiClient || getOpenAIClient()) {
     providers.push("openai");
   }
 
   return providers;
 };
-const getDefaultAiProvider = (groqClient = null, openAiClient = null) =>
-  getConfiguredAiProviders(groqClient, openAiClient)[0] || "openai";
+const getDefaultAiProvider = (
+  groqClient = null,
+  openAiClient = null,
+  kimiClient = null,
+) => getConfiguredAiProviders(groqClient, openAiClient, kimiClient)[0] || "openai";
 const normalizeAiProvider = (value = "", fallbackProvider = "openai") => {
   const normalizedValue = String(value || "")
     .trim()
@@ -210,13 +242,17 @@ const normalizeAiProvider = (value = "", fallbackProvider = "openai") => {
 };
 const hasExplicitAiProviderSelection = (value = "") =>
   VALID_AI_PROVIDERS.includes(String(value || "").trim().toLowerCase());
-const isProviderConfigured = (provider, groqClient, openAiClient) => {
+const isProviderConfigured = (provider, groqClient, openAiClient, kimiClient) => {
   if (provider === "groq") {
     return Boolean(groqClient);
   }
 
   if (provider === "openai") {
     return Boolean(openAiClient);
+  }
+
+  if (provider === "kimi") {
+    return Boolean(kimiClient);
   }
 
   if (provider === "gemini") {
@@ -232,6 +268,10 @@ const getMissingProviderConfigurationMessage = (provider) => {
 
   if (provider === "gemini") {
     return "Missing GEMINI_API_KEY in the backend environment.";
+  }
+
+  if (provider === "kimi") {
+    return "Missing MOONSHOT_API_KEY in the backend environment.";
   }
 
   return "Missing OPENAI_API_KEY in the backend environment.";
@@ -262,10 +302,15 @@ const buildAiProviderFailureMessage = (
   return providerErrors[0]?.message || fallbackMessage;
 };
 
-const getPreferredAiProvider = (userPreferredProvider = "") => {
+const getPreferredAiProvider = (
+  userPreferredProvider = "",
+  groqClient = null,
+  openAiClient = null,
+  kimiClient = null,
+) => {
   return normalizeAiProvider(
     userPreferredProvider || process.env.APP_AI_PROVIDER || "",
-    getDefaultAiProvider(),
+    getDefaultAiProvider(groqClient, openAiClient, kimiClient),
   );
 };
 
@@ -328,11 +373,26 @@ const createGeminiResponse = async ({
 const createOpenAiResponse = async ({
   client,
   model = DEFAULT_OPENAI_MODEL,
+  provider = "openai",
   instructions = "",
   input = "",
 }) => {
   if (!client) {
     throw new Error("Missing OPENAI_API_KEY in the backend environment.");
+  }
+
+  if (provider === "kimi") {
+    const completion = await client.chat.completions.create({
+      model,
+      messages: [
+        ...(String(instructions || "").trim()
+          ? [{ role: "system", content: String(instructions || "") }]
+          : []),
+        { role: "user", content: String(input || "") },
+      ],
+    });
+
+    return String(completion?.choices?.[0]?.message?.content || "").trim();
   }
 
   const response = await client.responses.create({
@@ -344,9 +404,18 @@ const createOpenAiResponse = async ({
   return String(response?.output_text || "").trim();
 };
 
-const getOpenAiCompatibleClient = (provider, groqClient, openAiClient) => {
+const getOpenAiCompatibleClient = (
+  provider,
+  groqClient,
+  openAiClient,
+  kimiClient,
+) => {
   if (provider === "groq") {
     return groqClient;
+  }
+
+  if (provider === "kimi") {
+    return kimiClient;
   }
 
   if (provider === "openai") {
@@ -357,17 +426,24 @@ const getOpenAiCompatibleClient = (provider, groqClient, openAiClient) => {
 };
 
 const getOpenAiCompatibleModel = (provider) =>
-  provider === "groq" ? DEFAULT_GROQ_MODEL : DEFAULT_OPENAI_MODEL;
+  provider === "groq"
+    ? DEFAULT_GROQ_MODEL
+    : provider === "kimi"
+      ? DEFAULT_KIMI_MODEL
+      : DEFAULT_OPENAI_MODEL;
 
 const buildProviderAttemptOrder = (
   preferredProvider,
   groqClient,
   openAiClient,
+  kimiClient,
   { allowFallback = true } = {},
 ) => {
   const availableProviders = [];
 
-  if (isProviderConfigured(preferredProvider, groqClient, openAiClient)) {
+  if (
+    isProviderConfigured(preferredProvider, groqClient, openAiClient, kimiClient)
+  ) {
     availableProviders.push(preferredProvider);
   }
 
@@ -381,6 +457,10 @@ const buildProviderAttemptOrder = (
 
   if (openAiClient && !availableProviders.includes("openai")) {
     availableProviders.push("openai");
+  }
+
+  if (kimiClient && !availableProviders.includes("kimi")) {
+    availableProviders.push("kimi");
   }
 
   if (getGeminiApiKey() && !availableProviders.includes("gemini")) {
@@ -2578,18 +2658,23 @@ TelegramRouter.post(
             .filter(Boolean),
         ),
       );
+      const groqClient = getGroqClient();
+      const openAiClient = getOpenAIClient();
+      const kimiClient = getKimiClient();
       const preferredProvider = getPreferredAiProvider(
         req.body?.aiProvider || aiSettingsDoc?.settings?.aiProvider,
+        groqClient,
+        openAiClient,
+        kimiClient,
       );
       const hasExplicitProvider = hasExplicitAiProviderSelection(
         req.body?.aiProvider || aiSettingsDoc?.settings?.aiProvider,
       );
-      const groqClient = getGroqClient();
-      const openAiClient = getOpenAIClient();
       const providerAttemptOrder = buildProviderAttemptOrder(
         preferredProvider,
         groqClient,
         openAiClient,
+        kimiClient,
         { allowFallback: !hasExplicitProvider },
       );
 
@@ -2609,7 +2694,7 @@ TelegramRouter.post(
         "Keep source names such as lecture titles, instructor names, writer names, and file names as they appear in the evidence unless direct translation is obvious.",
         "Return only JSON.",
         "Return an array of objects matching this shape:",
-        '[{"title":"", "instructors":[""], "writer":[""], "publishDate":"YYYY-MM-DD or null", "pages":[], "sourceGroups":[""], "sourceMessageNumbers":[1], "volume":"", "reference":"", "predictionLogic":""}]',
+        '[{"title":"", "instructors":[""], "writer":[""], "publishDate":"YYYY-MM-DD or null", "content":[], "sourceGroups":[""], "sourceMessageNumbers":[1], "volume":"", "reference":"", "predictionLogic":""}]',
         "Use only evidence present in the provided messages.",
         "You must do the course-specific reasoning yourself from the full selected group corpus.",
         "Do not assume the backend prefiltered lecture-related messages for you.",
@@ -2623,7 +2708,7 @@ TelegramRouter.post(
         "volume must be a short evidence-volume summary such as low, medium, high, or a concise amount phrase.",
         "reference must be a short supporting reference from the corpus, such as dates, file names, or repeated phrases.",
         "predictionLogic must be one concise sentence explaining why the lecture was predicted.",
-        "Do not invent pages; always return pages as [].",
+        "Do not invent content; always return content as [].",
         "If a date is missing, use null.",
         "Return at most 20 lectures.",
       ].join(" ");
@@ -2679,8 +2764,10 @@ TelegramRouter.post(
                     candidateProvider,
                     groqClient,
                     openAiClient,
+                    kimiClient,
                   ),
                   model: getOpenAiCompatibleModel(candidateProvider),
+                  provider: candidateProvider,
                   instructions: aiInstructions,
                   input: aiPrompt,
                 });
@@ -2717,11 +2804,15 @@ TelegramRouter.post(
             selectedPlannerComponent,
             lectureTitle,
           );
-          const lecturePages = Array.isArray(storedLecture?.pages)
-            ? storedLecture.pages
-            : Array.isArray(entry?.pages)
-              ? entry.pages
-              : [];
+          const lecturePages = Array.isArray(storedLecture?.content)
+            ? storedLecture.content
+            : Array.isArray(storedLecture?.pages)
+              ? storedLecture.pages
+              : Array.isArray(entry?.content)
+                ? entry.content
+                : Array.isArray(entry?.pages)
+                  ? entry.pages
+                  : [];
           const sourceMessageNumbers = normalizePredictionSourceMessageNumbers(
             entry?.sourceMessageNumbers,
           );
@@ -2871,18 +2962,23 @@ TelegramRouter.post(
         user._id,
         "settings.aiProvider",
       );
+      const groqClient = getGroqClient();
+      const openAiClient = getOpenAIClient();
+      const kimiClient = getKimiClient();
       const preferredProvider = getPreferredAiProvider(
         req.body?.aiProvider || aiSettingsDoc?.settings?.aiProvider,
+        groqClient,
+        openAiClient,
+        kimiClient,
       );
       const hasExplicitProvider = hasExplicitAiProviderSelection(
         req.body?.aiProvider || aiSettingsDoc?.settings?.aiProvider,
       );
-      const groqClient = getGroqClient();
-      const openAiClient = getOpenAIClient();
       const providerAttemptOrder = buildProviderAttemptOrder(
         preferredProvider,
         groqClient,
         openAiClient,
+        kimiClient,
         { allowFallback: !hasExplicitProvider },
       );
 
@@ -2921,8 +3017,10 @@ TelegramRouter.post(
                     candidateProvider,
                     groqClient,
                     openAiClient,
+                    kimiClient,
                   ),
                   model: getOpenAiCompatibleModel(candidateProvider),
+                  provider: candidateProvider,
                   instructions: aiInstructions,
                   input: aiPrompt,
                 });
