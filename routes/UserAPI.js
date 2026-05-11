@@ -1902,7 +1902,7 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       !lastname
     ) {
       return res.status(400).json({
-        message: "First name and last name are required.",
+        message: "First name, last name, and username are required.",
       });
     }
 
