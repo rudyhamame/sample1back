@@ -169,6 +169,12 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const locationRoomOptionsByBuilding = normalizePlannerRoomOptionsByBuilding(
     normalizedSettings?.locationRoomOptionsByBuilding,
   );
+  const normalizedLogoFixedClock = trimString(
+    normalizedSettings?.logoFixedClock || "9",
+  ).replace(/[^\d]/g, "");
+  const logoFixedClock = /^[1-9]$|^1[0-2]$/.test(normalizedLogoFixedClock)
+    ? normalizedLogoFixedClock
+    : "9";
 
   return {
     componentClassOptions: normalizePlannerSettingsStringList(
@@ -191,6 +197,11 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     ),
     locationRoomOptions: [],
     locationRoomOptionsByBuilding,
+    logoMotionEnabled:
+      typeof normalizedSettings?.logoMotionEnabled === "boolean"
+        ? normalizedSettings.logoMotionEnabled
+        : true,
+    logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     relationships: relationshipsSource
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
@@ -213,6 +224,8 @@ const getDefaultStudyOrganizerSettings = () => ({
   locationBuildingOptions: [],
   locationRoomOptions: [],
   locationRoomOptionsByBuilding: [],
+  logoMotionEnabled: true,
+  logoFixedClock: "9",
   fieldDefaults: {},
   relationships: [],
 });
@@ -317,10 +330,12 @@ const PlannerSettingsSchema = new Schema(
       ],
       default: [],
     },
+    logoMotionEnabled: { type: Boolean, default: true },
+    logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
   },
-  { _id: false },
+  { _id: false, strict: "throw" },
 );
 
 export {
