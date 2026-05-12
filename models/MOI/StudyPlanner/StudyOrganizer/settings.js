@@ -109,6 +109,14 @@ const normalizePlannerRelationship = (entry = {}) => {
 
   return {
     id: trimString(entry?.id),
+    mode:
+      trimString(entry?.mode) === "intercomponent"
+        ? "intercomponent"
+        : trimString(entry?.mode) === "innerComponent"
+          ? "innerComponent"
+          : trimString(entry?.layerLevel || entry?.layer) === "inter-component"
+            ? "intercomponent"
+            : "innerComponent",
     targetType:
       trimString(entry?.targetType || entry?.target) === "course"
         ? "course"
@@ -141,6 +149,19 @@ const normalizePlannerRelationship = (entry = {}) => {
     resultFormKey: trimString(entry?.resultFormKey) || "savedCourse",
     resultFieldKey: trimString(entry?.resultFieldKey),
     resultValue: trimString(entry?.resultValue),
+    relationScope:
+      trimString(entry?.relationScope) === "intercomponent" ||
+      trimString(entry?.mode) === "intercomponent"
+        ? "intercomponent"
+        : "innerComponent",
+    causeField: trimString(entry?.causeField || entry?.conditionFieldKey),
+    causeValue: trimString(entry?.causeValue || entry?.conditionValue),
+    effectField: trimString(entry?.effectField || entry?.resultFieldKey),
+    effectValue: trimString(entry?.effectValue || entry?.resultValue),
+    active:
+      typeof entry?.active === "boolean"
+        ? entry.active
+        : Boolean(entry?.readOnly),
     course_classSelection: trimString(entry?.course_classSelection),
     normativeCourseTerm: trimString(entry?.normativeCourseTerm),
     actualCourseTerm: trimString(entry?.actualCourseTerm),
@@ -149,7 +170,10 @@ const normalizePlannerRelationship = (entry = {}) => {
     course_locationBuilding: trimString(entry?.course_locationBuilding),
     course_locationRoom: trimString(entry?.course_locationRoom),
     course_grade: trimString(entry?.course_grade),
-    readOnly: Boolean(entry?.readOnly),
+    readOnly:
+      typeof entry?.readOnly === "boolean"
+        ? entry.readOnly
+        : Boolean(entry?.active),
   };
 };
 
@@ -207,10 +231,18 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
       .filter(
         (entry) =>
-          Array.isArray(entry.conditions) &&
-          entry.conditions.length > 0 &&
-          Boolean(entry.resultFieldKey) &&
-          Boolean(entry.resultValue),
+          (Array.isArray(entry.conditions) &&
+            entry.conditions.length > 0 &&
+            Boolean(entry.resultFieldKey) &&
+            Boolean(entry.resultValue)) ||
+          (entry.mode === "intercomponent" &&
+            Boolean(entry.causeField) &&
+            Boolean(entry.effectField)) ||
+          (entry.mode === "innerComponent" &&
+            Boolean(entry.causeField) &&
+            Boolean(entry.causeValue) &&
+            Boolean(entry.effectField) &&
+            Boolean(entry.effectValue)),
       ),
   };
 };
@@ -274,40 +306,14 @@ const PlannerRelationshipConditionSchema = new Schema(
   { _id: false },
 );
 
-const PlannerRelationshipSchema = new Schema(
-  {
-    id: { type: String, trim: true, default: "" },
-    targetType: {
-      type: String,
-      enum: ["component", "course"],
-      default: "component",
-    },
-    activeComponentClass: { type: String, trim: true, default: "" },
-    affectedComponentClass: { type: String, trim: true, default: "" },
-    layerLevel: {
-      type: String,
-      enum: ["inner-component", "inter-component"],
-      default: "inner-component",
-    },
-    conditionFormKey: { type: String, trim: true, default: "savedCourse" },
-    conditionFieldKey: { type: String, trim: true, default: "" },
-    conditionValue: { type: String, trim: true, default: "" },
-    conditions: { type: [PlannerRelationshipConditionSchema], default: [] },
-    resultFormKey: { type: String, trim: true, default: "savedCourse" },
-    resultFieldKey: { type: String, trim: true, default: "" },
-    resultValue: { type: String, trim: true, default: "" },
-    course_classSelection: { type: String, trim: true, default: "" },
-    normativeCourseTerm: { type: String, trim: true, default: "" },
-    actualCourseTerm: { type: String, trim: true, default: "" },
-    course_daySelection: { type: String, trim: true, default: "" },
-    course_timeSelection: { type: String, trim: true, default: "" },
-    course_locationBuilding: { type: String, trim: true, default: "" },
-    course_locationRoom: { type: String, trim: true, default: "" },
-    course_grade: { type: String, trim: true, default: "" },
-    readOnly: { type: Boolean, default: false },
-  },
-  { _id: false },
-);
+const PlannerRelationshipSchema = new Schema({
+  mode: { type: String },
+  causeField: { type: String },
+  causeValue: { type: String },
+  effectField: { type: String },
+  effectValue: { type: String },
+  active: { type: Boolean },
+});
 
 const PlannerSettingsSchema = new Schema(
   {
