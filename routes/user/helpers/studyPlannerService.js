@@ -379,16 +379,17 @@ const classifyExamResultStatus = (value) => {
 };
 
 const deriveExamGradeStatusFromValues = (grade = {}, passGrade = {}) => {
-  const gradeValue = Number(
-    grade?.value ?? grade?.gradeValue ?? null,
-  );
-  const passThreshold = Number(
+  const rawGradeValue = grade?.value ?? grade?.gradeValue;
+  const rawPassThreshold =
     grade?.passThreshold ??
-      passGrade?.passThreshold ??
-      passGrade?.value ??
-      passGrade?.min ??
-      null,
-  );
+    passGrade?.passThreshold ??
+    passGrade?.value ??
+    passGrade?.min;
+  const hasGradeValue = rawGradeValue !== null && rawGradeValue !== undefined;
+  const hasPassThreshold =
+    rawPassThreshold !== null && rawPassThreshold !== undefined;
+  const gradeValue = hasGradeValue ? Number(rawGradeValue) : null;
+  const passThreshold = hasPassThreshold ? Number(rawPassThreshold) : null;
 
   if (!Number.isFinite(gradeValue) || !Number.isFinite(passThreshold)) {
     return trimString(grade?.status || "");
@@ -1385,7 +1386,7 @@ export const buildComponentPayload = (payload = {}, previousComponent = {}) => {
     : [];
   const nextExams = normalizePlannerExamPayloads(
     payload?.course_exams,
-    payload,
+    {},
     Array.isArray(normalizedPreviousComponent?.exams)
       ? normalizedPreviousComponent.exams
       : [],

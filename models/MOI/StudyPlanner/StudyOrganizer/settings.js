@@ -23,6 +23,21 @@ const normalizePlannerSettingsStringList = (value) =>
         .filter((entry, index, entries) => entries.indexOf(entry) === index)
     : [];
 
+const normalizePredictionToolEntry = (value = {}) => {
+  const nextValue =
+    value && typeof value === "object" ? toPlainObject(value) || {} : {};
+  return {
+    tab: trimString(nextValue?.tab),
+    inputFieldID: trimString(nextValue?.inputFieldID),
+    list: normalizePlannerSettingsStringList(nextValue?.list),
+  };
+};
+
+const normalizePredictionToolSettings = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => normalizePredictionToolEntry(entry))
+    .filter((entry) => Boolean(entry.inputFieldID));
+
 const normalizePlannerRoomOptionsByBuilding = (value) =>
   (Array.isArray(value) ? value : [])
     .map((entry) => toPlainObject(entry) || {})
@@ -218,13 +233,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
       ? toPlainObject(normalizedSettings.messageFriend) || {}
-      : normalizedSettings?.messageFromFriend &&
-          typeof normalizedSettings.messageFromFriend === "object"
-        ? {
-            from: toPlainObject(normalizedSettings.messageFromFriend) || {},
-            to: [],
-          }
-        : {};
+      : {};
   const normalizedMessageFrom = normalizeMessageFriendEntry(
     rawMessageFriend?.from ||
       (rawMessageFriend?.friendID || rawMessageFriend?.message
@@ -244,6 +253,9 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     from: normalizedMessageFrom,
     to: normalizedMessageTo,
   };
+  const predictionTool = normalizePredictionToolSettings(
+    normalizedSettings?.predictionTool,
+  );
 
   return {
     componentClassOptions: normalizePlannerSettingsStringList(
@@ -273,6 +285,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
+    predictionTool,
     relationships: relationshipsSource
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
       .filter(
@@ -313,6 +326,7 @@ const getDefaultStudyOrganizerSettings = () => ({
     to: [],
   },
   relationships: [],
+  predictionTool: [],
 });
 
 const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
@@ -339,6 +353,9 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
       message: trimString(entry?.message),
     }))
     .filter((entry) => Boolean(entry.friendID));
+  const serializedPredictionTool = normalizePredictionToolSettings(
+    normalizedSettings?.predictionTool,
+  );
 
   return {
     ...normalizedSettings,
@@ -346,6 +363,7 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
       from: serializedMessageFriendFrom,
       to: serializedMessageFriendTo,
     },
+    predictionTool: serializedPredictionTool,
     relationships: (Array.isArray(normalizedSettings.relationships)
       ? normalizedSettings.relationships
       : []
@@ -450,6 +468,13 @@ const PlannerSettingsSchema = new Schema(
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
     messageFriend: { type: MessageFriend, default: {} },
+    predictionTool: [
+      {
+        tab: { type: String },
+        inputFieldID: { type: String },
+        list: [],
+      },
+    ],
   },
   { _id: false, strict: "throw" },
 );

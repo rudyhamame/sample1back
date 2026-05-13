@@ -2397,6 +2397,7 @@ UserRouter.get("/update/:id", async function (req, res, next) {
               "profile.picture.profilePic.index",
               "profile.picture.profilePic.viewport",
               "status",
+              "memory.MOI.studyPlanner.studyOrganizer.settings.messageFriend.to",
             ].join(" "),
           )
           .lean()
@@ -4280,6 +4281,104 @@ UserRouter.post(
           : req.body && typeof req.body === "object"
             ? req.body
             : {};
+      const predictionToolInput =
+        req.body &&
+        typeof req.body === "object" &&
+        req.body.predictionToolInput &&
+        typeof req.body.predictionToolInput === "object"
+          ? req.body.predictionToolInput
+          : null;
+      const predictionToolInputs =
+        req.body &&
+        typeof req.body === "object" &&
+        Array.isArray(req.body.predictionToolInputs)
+          ? req.body.predictionToolInputs
+          : [];
+      if (
+        predictionToolInput ||
+        (Array.isArray(predictionToolInputs) && predictionToolInputs.length > 0)
+      ) {
+        const existingDoc = await UserModel.findById(userId).select(
+          "memory.MOI.studyPlanner.studyOrganizer.settings",
+        );
+        if (!existingDoc?._id) {
+          return res.status(404).json({ message: "User not found." });
+        }
+        const existingSettings = normalizeStudyOrganizerSettings(
+          existingDoc?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings || {},
+        );
+        const predictionEntries = Array.isArray(existingSettings?.predictionTool)
+          ? [...existingSettings.predictionTool]
+          : [];
+        const applyPredictionInput = (rawInput) => {
+          const tab = String(rawInput?.tab || "").trim();
+          const inputFieldID = String(rawInput?.inputFieldID || "").trim();
+          const value = String(rawInput?.value || "").trim();
+          if (!tab || !inputFieldID || !value || value === "-") {
+            return;
+          }
+          const existingIndex = predictionEntries.findIndex(
+            (entry) =>
+              String(entry?.tab || "").trim() === tab &&
+              String(entry?.inputFieldID || "").trim() === inputFieldID,
+          );
+          if (existingIndex === -1) {
+            predictionEntries.push({
+              tab,
+              inputFieldID,
+              list: [value],
+            });
+            return;
+          }
+          const currentList = Array.isArray(predictionEntries[existingIndex]?.list)
+            ? predictionEntries[existingIndex].list
+            : [];
+          const normalizedCurrentList = currentList
+            .map((entry) => String(entry || "").trim())
+            .filter(Boolean);
+          predictionEntries[existingIndex] = {
+            ...predictionEntries[existingIndex],
+            tab,
+            inputFieldID,
+            list: [value, ...normalizedCurrentList.filter((entry) => entry !== value)].slice(
+              0,
+              25,
+            ),
+          };
+        };
+        if (predictionToolInput) {
+          applyPredictionInput(predictionToolInput);
+        }
+        predictionToolInputs.forEach((entry) => applyPredictionInput(entry));
+        const mergedSettings = {
+          ...existingSettings,
+          predictionTool: predictionEntries,
+        };
+        const storedMergedSettings =
+          serializeStudyOrganizerSettingsForStorage(mergedSettings);
+        const predictionUpdateResult = await UserModel.updateOne(
+          { _id: userId },
+          {
+            $set: {
+              "memory.MOI.studyPlanner.studyOrganizer.settings":
+                storedMergedSettings,
+            },
+            $unset: {
+              "memory.MOI.studyPlanner.studyOrganizer.selectOptions": 1,
+              "memory.MOI.studyPlanner.studyOrganizer.fieldsRelationships": 1,
+            },
+          },
+        );
+        if (!predictionUpdateResult?.acknowledged) {
+          return res.status(500).json({
+            message: "Prediction tool update was not acknowledged by database.",
+          });
+        }
+        return res.status(200).json({
+          message: "Prediction tool entry saved successfully.",
+          settings: normalizeStudyOrganizerSettings(storedMergedSettings),
+        });
+      }
       const storedSettings = serializeStudyOrganizerSettingsForStorage(nextSettings);
       console.info("[studyOrganizer/settings] normalized settings", {
         userId,
