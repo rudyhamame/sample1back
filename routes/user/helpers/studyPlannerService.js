@@ -447,7 +447,9 @@ const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
     }))
     .filter(
       ({ gradeValue, passGradeValue }) =>
-        Number.isFinite(gradeValue) && Number.isFinite(passGradeValue),
+        Number.isFinite(gradeValue) &&
+        Number.isFinite(passGradeValue) &&
+        (gradeValue > 0 || passGradeValue > 0),
     );
 
   if (evaluatedExams.length > 0) {
@@ -1305,6 +1307,10 @@ const buildCoursePayloadForUpdate = (payload = {}, previousCourse = {}) => {
 
 export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
   const normalizedPreviousCourse = toPlainObject(previousCourse) || {};
+  const hasExplicitCourseWeight =
+    payload?.course_totalWeight !== null &&
+    payload?.course_totalWeight !== undefined &&
+    String(payload?.course_totalWeight).trim() !== "";
 
   return {
     _id:
@@ -1313,7 +1319,7 @@ export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
     name: trimString(payload?.course_name) || trimString(normalizedPreviousCourse?.name) || "-",
     status: normalizeCourseStatus(normalizedPreviousCourse?.status),
     weight:
-      payload?.course_totalWeight !== null && payload?.course_totalWeight !== undefined
+      hasExplicitCourseWeight
         ? toFiniteNumber(payload?.course_totalWeight, null)
         : toFiniteNumber(
             normalizedPreviousCourse?.weight ?? normalizedPreviousCourse?.totalWeight,

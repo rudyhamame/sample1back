@@ -5,6 +5,12 @@ const { Schema } = mongoose;
 const createEmptyObject = () => ({});
 
 const trimString = (value) => String(value || "").trim();
+const normalizeObjectIdString = (value) => {
+  const normalizedValue = trimString(value);
+  return mongoose.Types.ObjectId.isValid(normalizedValue)
+    ? normalizedValue
+    : undefined;
+};
 
 const toPlainObject = (value) =>
   value && typeof value?.toObject === "function" ? value.toObject() : value;
@@ -64,6 +70,15 @@ const normalizePlannerSettingsFieldDefaults = (value) =>
             .filter(([fieldKey]) => Boolean(fieldKey)),
         )
       : {};
+
+const normalizeMessageFriendEntry = (entry = {}) => {
+  const nextEntry =
+    entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+  return {
+    friendID: normalizeObjectIdString(nextEntry?.friendID),
+    message: trimString(nextEntry?.message),
+  };
+};
 
 const normalizePlannerRelationshipCondition = (entry = {}) => ({
   id: trimString(entry?.id),
@@ -199,6 +214,34 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const logoFixedClock = /^[1-9]$|^1[0-2]$/.test(normalizedLogoFixedClock)
     ? normalizedLogoFixedClock
     : "9";
+  const rawMessageFriend =
+    normalizedSettings?.messageFriend &&
+    typeof normalizedSettings.messageFriend === "object"
+      ? toPlainObject(normalizedSettings.messageFriend) || {}
+      : normalizedSettings?.messageFromFriend &&
+          typeof normalizedSettings.messageFromFriend === "object"
+        ? {
+            from: toPlainObject(normalizedSettings.messageFromFriend) || {},
+            to: [],
+          }
+        : {};
+  const normalizedMessageFrom = normalizeMessageFriendEntry(
+    rawMessageFriend?.from ||
+      (rawMessageFriend?.friendID || rawMessageFriend?.message
+        ? rawMessageFriend
+        : {}),
+  );
+  const normalizedMessageTo = (Array.isArray(rawMessageFriend?.to)
+    ? rawMessageFriend.to
+    : rawMessageFriend?.to && typeof rawMessageFriend.to === "object"
+      ? [rawMessageFriend.to]
+      : [])
+    .map((entry) => normalizeMessageFriendEntry(entry))
+    .filter((entry) => Boolean(entry.friendID) && Boolean(entry.message));
+  const messageFriend = {
+    from: normalizedMessageFrom,
+    to: normalizedMessageTo,
+  };
 
   return {
     componentClassOptions: normalizePlannerSettingsStringList(
@@ -227,6 +270,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
         : true,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
+    messageFriend,
     relationships: relationshipsSource
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
       .filter(
@@ -259,14 +303,58 @@ const getDefaultStudyOrganizerSettings = () => ({
   logoMotionEnabled: true,
   logoFixedClock: "9",
   fieldDefaults: {},
+  messageFriend: {
+    from: {
+      friendID: undefined,
+      message: "",
+    },
+    to: [],
+  },
   relationships: [],
 });
 
 const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
   const normalizedSettings = normalizeStudyOrganizerSettings(settings);
+  const serializedMessageFriendFrom =
+    normalizedSettings?.messageFriend &&
+    typeof normalizedSettings.messageFriend === "object" &&
+    normalizedSettings.messageFriend.from &&
+    typeof normalizedSettings.messageFriend.from === "object"
+      ? {
+          friendID: normalizeObjectIdString(
+            normalizedSettings.messageFriend.from.friendID,
+          ),
+          message: trimString(normalizedSettings.messageFriend.from.message),
+        }
+      : { message: "" };
+  const serializedMessageFriendTo = (
+    Array.isArray(normalizedSettings?.messageFriend?.to)
+      ? normalizedSettings.messageFriend.to
+      : []
+  )
+    .map((entry) => ({
+      friendID: normalizeObjectIdString(entry?.friendID),
+      message: trimString(entry?.message),
+    }))
+    .filter((entry) => Boolean(entry.friendID));
 
   return {
     ...normalizedSettings,
+    messageFriend: {
+      from: serializedMessageFriendFrom,
+      to: serializedMessageFriendTo,
+    },
+    relationships: (Array.isArray(normalizedSettings.relationships)
+      ? normalizedSettings.relationships
+      : []
+    ).map((entry) => ({
+      mode: trimString(entry?.mode),
+      causeField: trimString(entry?.causeField),
+      causeValue: trimString(entry?.causeValue),
+      effectField: trimString(entry?.effectField),
+      effectValue: trimString(entry?.effectValue),
+      active: Boolean(entry?.active),
+    })),
     fieldDefaults: Object.entries(normalizedSettings.fieldDefaults || {}).map(
       ([fieldKey, value]) => ({
         fieldKey,
@@ -315,6 +403,25 @@ const PlannerRelationshipSchema = new Schema({
   active: { type: Boolean },
 });
 
+const MessageFriendEntry = new Schema(
+  {
+    friendID: {
+      type: Schema.Types.ObjectId,
+      set: (value) => normalizeObjectIdString(value),
+    },
+    message: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const MessageFriend = new Schema(
+  {
+    from: { type: MessageFriendEntry, default: {} },
+    to: { type: [MessageFriendEntry], default: [] },
+  },
+  { _id: false },
+);
+
 const PlannerSettingsSchema = new Schema(
   {
     componentClassOptions: { type: [String], default: [] },
@@ -340,6 +447,7 @@ const PlannerSettingsSchema = new Schema(
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
+    messageFriend: { type: MessageFriend, default: {} },
   },
   { _id: false, strict: "throw" },
 );

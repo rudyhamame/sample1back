@@ -7,7 +7,7 @@ const MOISchema = new Schema(
   {
     studyPlanner: { type: StudyPlannerSchema, default: () => ({}) },
   },
-  { _id: false, strict: "throw" },
+  { _id: false, strict: false },
 );
 
 export default MOISchema;

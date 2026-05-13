@@ -26,16 +26,19 @@ const MemorySchema = new Schema(
     // - processed and enriched memories derived from those traces
     // - connections to other subjects, with associated metadata and context
     MOA: { type: [MOASchema], default: [] },
-    MOI: { type: [MOISchema], default: [] },
+    MOI: { type: MOISchema, default: () => ({}) },
   },
   { strict: "throw" },
 );
 
 MemorySchema.pre("validate", function () {
   this.MOA = normalizeTracesArray(this.MOA);
-  this.MOI = Array.isArray(this.MOI)
-    ? this.MOI.filter((entry) => entry && typeof entry === "object")
-    : [];
+  if (Array.isArray(this.MOI)) {
+    const firstEntry = this.MOI.find((entry) => entry && typeof entry === "object");
+    this.MOI = firstEntry || {};
+  } else if (!this.MOI || typeof this.MOI !== "object") {
+    this.MOI = {};
+  }
 });
 
 // Sub-schema only. Memory is embedded inside `subjects.memory`, not a standalone collection.

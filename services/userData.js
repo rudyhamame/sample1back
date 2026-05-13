@@ -220,25 +220,62 @@ const resolveStudyPlannerSource = (memory = {}) => {
   if (memory?.studyPlanner && typeof memory.studyPlanner === "object") {
     return memory.studyPlanner;
   }
-  const moiEntries = Array.isArray(memory?.MOI) ? memory.MOI : [];
+  const moiObject =
+    memory?.MOI && typeof memory.MOI === "object" && !Array.isArray(memory.MOI)
+      ? memory.MOI
+      : null;
+  if (moiObject?.studyPlanner && typeof moiObject.studyPlanner === "object") {
+    return moiObject.studyPlanner;
+  }
+  const legacyMoiEntries = Array.isArray(memory?.MOI) ? memory.MOI : [];
   const plannerFromMoi =
-    moiEntries.find(
+    legacyMoiEntries.find(
       (entry) => entry?.studyPlanner && typeof entry.studyPlanner === "object",
     )?.studyPlanner || null;
   return plannerFromMoi || {};
 };
 
 const mergeStudyPlannerIntoMoi = (memory = {}, studyPlanner = {}) => {
-  const moiEntries = Array.isArray(memory?.MOI) ? cloneValue(memory.MOI) : [];
-  if (moiEntries.length === 0) {
-    return [{ studyPlanner: cloneValue(studyPlanner) }];
+  const nextStudyPlanner = cloneValue(studyPlanner);
+  const moiObject =
+    memory?.MOI && typeof memory.MOI === "object" && !Array.isArray(memory.MOI)
+      ? cloneValue(memory.MOI)
+      : {};
+  if (Object.keys(moiObject).length > 0) {
+    return {
+      ...moiObject,
+      studyPlanner: nextStudyPlanner,
+    };
   }
-  const first = moiEntries[0] && typeof moiEntries[0] === "object" ? moiEntries[0] : {};
-  moiEntries[0] = {
-    ...first,
-    studyPlanner: cloneValue(studyPlanner),
+  const legacyMoiEntries = Array.isArray(memory?.MOI) ? cloneValue(memory.MOI) : [];
+  const firstLegacyEntry =
+    legacyMoiEntries.find((entry) => entry && typeof entry === "object") || {};
+  return {
+    ...firstLegacyEntry,
+    studyPlanner: nextStudyPlanner,
   };
-  return moiEntries;
+};
+
+const hasLegacyOnlyMemoryKeys = (memoryObject = {}) =>
+  Object.keys(memoryObject).filter((key) => key !== "_id").some(
+    (key) =>
+      ![
+        "MOA",
+        "MOI",
+        "studyOrganizer",
+        "studyPlanAid",
+      ].includes(key),
+  );
+
+const isMoiInitialized = (memoryObject = {}) => {
+  const moiObject = memoryObject?.MOI;
+  if (moiObject && typeof moiObject === "object" && !Array.isArray(moiObject)) {
+    return true;
+  }
+  if (Array.isArray(moiObject)) {
+    return false;
+  }
+  return false;
 };
 
 const normalizeMemoryPayload = (memory) => {
@@ -314,23 +351,14 @@ export const ensureUserMemoryDoc = async (user) => {
   }
 
   const normalizedMemory = normalizeMemoryPayload(user.memory);
-  const currentMemoryKeys = Object.keys(
-    user?.memory?.toObject?.() ||
-      (user?.memory && typeof user.memory === "object" ? user.memory : {}),
-  ).filter((key) => key !== "_id");
   const needsInitialization =
     !user.memory ||
     typeof user.memory !== "object" ||
     !Array.isArray(user?.memory?.MOA) ||
-    !Array.isArray(user?.memory?.MOI) ||
-    currentMemoryKeys.some(
-      (key) =>
-        ![
-          "MOA",
-          "MOI",
-          "studyOrganizer",
-          "studyPlanAid",
-        ].includes(key),
+    !isMoiInitialized(user?.memory) ||
+    hasLegacyOnlyMemoryKeys(
+      user?.memory?.toObject?.() ||
+        (user?.memory && typeof user.memory === "object" ? user.memory : {}),
     );
 
   if (needsInitialization) {

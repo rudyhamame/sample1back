@@ -128,6 +128,13 @@ const buildNormativeCourseYearIntervalFromProfile = (
 const withAutoNormativeCourseYearInterval = (user, payload = {}) => {
   const nextPayload =
     payload && typeof payload === "object" ? { ...payload } : {};
+  const explicitInterval = normalizeAcademicYearInterval(
+    nextPayload?.normativeCourseYearInterval || "",
+  );
+  if (explicitInterval) {
+    nextPayload.normativeCourseYearInterval = explicitInterval;
+    return nextPayload;
+  }
   const generatedInterval = buildNormativeCourseYearIntervalFromProfile(
     user?.profile?.studying?.time?.start?.programYearInterval || "",
     nextPayload?.normativeCourseYearNum,
@@ -171,6 +178,62 @@ const withAutoActualCourseTimingFromProfile = (user, payload = {}) => {
   nextPayload.term = normalizedCurrentProgramTerm || "";
 
   return nextPayload;
+};
+
+const sanitizeStudyOrganizerSettingsOnMemoryDoc = (memoryDoc) => {
+  if (!memoryDoc || typeof memoryDoc !== "object") {
+    return;
+  }
+  const currentSettings =
+    memoryDoc?.studyPlanner?.studyOrganizer?.settings &&
+    typeof memoryDoc.studyPlanner.studyOrganizer.settings === "object"
+      ? memoryDoc.studyPlanner.studyOrganizer.settings
+      : {};
+  memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+  memoryDoc.studyPlanner.studyOrganizer =
+    memoryDoc.studyPlanner.studyOrganizer || {};
+  memoryDoc.studyPlanner.studyOrganizer.settings =
+    serializeStudyOrganizerSettingsForStorage(
+      normalizeStudyOrganizerSettings(currentSettings),
+    );
+};
+
+const persistStudyOrganizerMutation = async (
+  userId = "",
+  memoryDoc,
+  { persistCourses = true, persistStudyPlanAid = true } = {},
+) => {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId || !memoryDoc || typeof memoryDoc !== "object") {
+    return { acknowledged: false };
+  }
+
+  const setPayload = {};
+  if (persistCourses) {
+    setPayload["memory.MOI.studyPlanner.studyOrganizer.courses"] = Array.isArray(
+      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+    )
+      ? memoryDoc.studyPlanner.studyOrganizer.courses
+      : [];
+  }
+  if (persistStudyPlanAid) {
+    setPayload["memory.MOI.studyPlanner.studyPlanAid"] =
+      memoryDoc?.studyPlanner?.studyPlanAid &&
+      typeof memoryDoc.studyPlanner.studyPlanAid === "object"
+        ? memoryDoc.studyPlanner.studyPlanAid
+        : {};
+  }
+
+  if (Object.keys(setPayload).length === 0) {
+    return { acknowledged: false };
+  }
+
+  return UserModel.updateOne(
+    { _id: normalizedUserId },
+    {
+      $set: setPayload,
+    },
+  );
 };
 
 const getSubjectAuth = (user) =>
@@ -4228,11 +4291,11 @@ UserRouter.post(
         { _id: userId },
         {
           $set: {
-            "memory.MOI.0.studyPlanner.studyOrganizer.settings": storedSettings,
+            "memory.MOI.studyPlanner.studyOrganizer.settings": storedSettings,
           },
           $unset: {
-            "memory.MOI.0.studyPlanner.studyOrganizer.selectOptions": 1,
-            "memory.MOI.0.studyPlanner.studyOrganizer.fieldsRelationships": 1,
+            "memory.MOI.studyPlanner.studyOrganizer.selectOptions": 1,
+            "memory.MOI.studyPlanner.studyOrganizer.fieldsRelationships": 1,
           },
         },
       );
@@ -4277,7 +4340,7 @@ UserRouter.post(
       }
 
       const createdCourse = addCourseInfoToPlanner(memoryDoc, req.body);
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       return res.status(201).json({
         course: createdCourse,
@@ -4319,7 +4382,7 @@ UserRouter.post(
         return res.status(404).json({ message: "Course not found." });
       }
 
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       return res.status(201).json({
         component: createdComponent,
@@ -4352,21 +4415,35 @@ UserRouter.post(
       const createdPlannerCourse = addCourseInfoToPlanner(memoryDoc, {
         course_code: req.body?.course_code,
         course_name: req.body?.course_name,
+        course_totalWeight: req.body?.course_totalWeight,
       });
 
-      const normalizedCourseComponents = Array.isArray(req.body?.course_components)
+      const normalizedCourseComponentPayloads = Array.isArray(
+        req.body?.course_components,
+      )
         ? req.body.course_components
-            .map((entry) => String(entry || "").trim())
-            .filter(Boolean)
+            .map((entry) =>
+              entry && typeof entry === "object"
+                ? entry
+                : {
+                    course_class: String(entry || "").trim(),
+                  },
+            )
+            .filter(
+              (entry) =>
+                entry &&
+                typeof entry === "object" &&
+                Boolean(
+                  String(entry?.course_class || entry?.course_component || "").trim(),
+                ),
+            )
         : [];
-      const fallbackCourseComponent = String(
-        req.body?.course_component || "",
-      ).trim();
+      const fallbackCourseComponent = String(req.body?.course_component || "").trim();
       const courseComponentsToCreate =
-        normalizedCourseComponents.length > 0
-          ? normalizedCourseComponents
+        normalizedCourseComponentPayloads.length > 0
+          ? normalizedCourseComponentPayloads
           : fallbackCourseComponent
-            ? [fallbackCourseComponent]
+            ? [{ course_class: fallbackCourseComponent }]
             : [];
 
       const shouldCreateComponent = Boolean(
@@ -4385,25 +4462,36 @@ UserRouter.post(
       );
 
       if (shouldCreateComponent && createdPlannerCourse?._id) {
-        const baseCourseClass = String(req.body?.course_class || "").trim();
-        const componentPayloads =
-          courseComponentsToCreate.length > 0
-            ? courseComponentsToCreate
-            : [String(req.body?.course_component || "").trim()];
-
-        componentPayloads.forEach((componentName) => {
+        courseComponentsToCreate.forEach((componentPayload) => {
+          const normalizedComponentPayload =
+            componentPayload && typeof componentPayload === "object"
+              ? componentPayload
+              : {};
+          const resolvedComponentClass = String(
+            normalizedComponentPayload?.course_class ||
+              normalizedComponentPayload?.course_component ||
+              req.body?.course_class ||
+              req.body?.course_component ||
+              "",
+          ).trim();
+          if (!resolvedComponentClass) {
+            return;
+          }
           addComponentToPlanner(memoryDoc, createdPlannerCourse._id, {
             ...withAutoActualCourseTimingFromProfile(
               user,
-              withAutoNormativeCourseYearInterval(user, req.body),
+              withAutoNormativeCourseYearInterval(user, {
+                ...(req.body && typeof req.body === "object" ? req.body : {}),
+                ...normalizedComponentPayload,
+              }),
             ),
-            course_component: componentName,
-            course_class: baseCourseClass || componentName,
+            course_component: resolvedComponentClass,
+            course_class: resolvedComponentClass,
           });
         });
       }
 
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       const createdCourse =
         flattenMemoryCoursesForPlanner(
@@ -4444,7 +4532,7 @@ UserRouter.post(
 
       addLectureToPlanner(memoryDoc, req.body);
       recalculateCourseLectureTotals(memoryDoc);
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       return res.status(201).json();
     } catch (error) {
@@ -4473,8 +4561,7 @@ UserRouter.delete(
       }
 
       removeCourseOrComponentFromPlanner(memoryDoc, req.params.courseID);
-
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
       return res.status(201).json();
     } catch (error) {
       return next(error);
@@ -4504,7 +4591,7 @@ UserRouter.delete(
       memoryDoc.studyPlanner.studyOrganizer =
         memoryDoc.studyPlanner.studyOrganizer || {};
       memoryDoc.studyPlanner.studyOrganizer.courses = [];
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
       return res.status(201).json();
     } catch (error) {
       return next(error);
@@ -4533,7 +4620,7 @@ UserRouter.delete(
 
       removeLectureFromPlanner(memoryDoc, req.params.lectureID);
       recalculateCourseLectureTotals(memoryDoc);
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
       return res.status(201).json();
     } catch (error) {
       return next(error);
@@ -4583,7 +4670,7 @@ UserRouter.post(
         return res.status(404).json({ message: "Course not found." });
       }
 
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       return res.status(201).json({
         course:
@@ -4605,6 +4692,11 @@ UserRouter.post(
   requireSelfParam("my_id"),
   async function (req, res, next) {
     try {
+      const normalizedCourseId = String(req.params.courseID || "").trim();
+      if (!normalizedCourseId) {
+        return res.status(400).json({ message: "Missing courseID." });
+      }
+
       const user = await UserModel.findById(req.params.my_id);
       if (!user) {
         return res.status(404).json({ message: "User not found." });
@@ -4619,25 +4711,29 @@ UserRouter.post(
 
       const updatedPlannerCourse = updateCourseInPlanner(
         memoryDoc,
-        req.params.courseID,
+        normalizedCourseId,
         withAutoActualCourseTimingFromProfile(
           user,
           withAutoNormativeCourseYearInterval(user, req.body),
         ),
       );
 
-      await memoryDoc.save();
+      if (!updatedPlannerCourse) {
+        return res.status(404).json({ message: "Course/component not found." });
+      }
+
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
       const updatedCourse =
         flattenMemoryCoursesForPlanner(
           updatedPlannerCourse ? [updatedPlannerCourse] : [],
         ).find(
-          (course) => String(course?._id) === String(req.params.courseID),
+          (course) => String(course?._id) === normalizedCourseId,
         ) ||
         flattenMemoryCoursesForPlanner(
           memoryDoc?.studyPlanner?.studyOrganizer?.courses,
         ).find(
-          (course) => String(course?._id) === String(req.params.courseID),
+          (course) => String(course?._id) === normalizedCourseId,
         ) ||
         null;
 
@@ -4645,7 +4741,10 @@ UserRouter.post(
         course: updatedCourse,
       });
     } catch (error) {
-      return next(error);
+      const failureMessage = String(error?.message || "").trim();
+      return res.status(500).json({
+        message: failureMessage || "Failed to edit course.",
+      });
     }
   },
 );
@@ -4670,8 +4769,7 @@ UserRouter.post(
       }
 
       updateCoursePagesInPlanner(memoryDoc, req.params.courseNAME, req.body);
-
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
       return res.status(201).json();
     } catch (error) {
       return next(error);
@@ -4699,7 +4797,7 @@ UserRouter.post(
 
       updateLectureInPlanner(memoryDoc, req.params.lectureID, req.body);
       recalculateCourseLectureTotals(memoryDoc);
-      await memoryDoc.save();
+      await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
       return res.status(201).json();
     } catch (error) {
       return next(error);
