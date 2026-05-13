@@ -231,11 +231,13 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
         ? rawMessageFriend
         : {}),
   );
-  const normalizedMessageTo = (Array.isArray(rawMessageFriend?.to)
-    ? rawMessageFriend.to
-    : rawMessageFriend?.to && typeof rawMessageFriend.to === "object"
-      ? [rawMessageFriend.to]
-      : [])
+  const normalizedMessageTo = (
+    Array.isArray(rawMessageFriend?.to)
+      ? rawMessageFriend.to
+      : rawMessageFriend?.to && typeof rawMessageFriend.to === "object"
+        ? [rawMessageFriend.to]
+        : []
+  )
     .map((entry) => normalizeMessageFriendEntry(entry))
     .filter((entry) => Boolean(entry.friendID) && Boolean(entry.message));
   const messageFriend = {
