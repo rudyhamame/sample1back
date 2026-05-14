@@ -38,6 +38,36 @@ const normalizePredictionToolSettings = (value = []) =>
     .map((entry) => normalizePredictionToolEntry(entry))
     .filter((entry) => Boolean(entry.inputFieldID));
 
+const normalizeVoiceCommandEntry = (value = {}) => {
+  const nextValue =
+    value && typeof value === "object" ? toPlainObject(value) || {} : {};
+  return {
+    tab: trimString(nextValue?.tab),
+    button: trimString(nextValue?.button),
+    command: trimString(nextValue?.command),
+  };
+};
+
+const normalizeVoiceCommandSettings = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => normalizeVoiceCommandEntry(entry))
+    .filter(
+      (entry) =>
+        Boolean(entry.tab) && Boolean(entry.button) && Boolean(entry.command),
+    )
+    .reduce((accumulator, entry) => {
+      const duplicateIndex = accumulator.findIndex(
+        (existingEntry) =>
+          existingEntry.tab === entry.tab &&
+          existingEntry.button === entry.button &&
+          existingEntry.command === entry.command,
+      );
+      if (duplicateIndex === -1) {
+        accumulator.push(entry);
+      }
+      return accumulator;
+    }, []);
+
 const normalizePlannerRoomOptionsByBuilding = (value) =>
   (Array.isArray(value) ? value : [])
     .map((entry) => toPlainObject(entry) || {})
@@ -229,6 +259,10 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const logoFixedClock = /^[1-9]$|^1[0-2]$/.test(normalizedLogoFixedClock)
     ? normalizedLogoFixedClock
     : "9";
+  const voiceControlEnabled =
+    typeof normalizedSettings?.voiceControlEnabled === "boolean"
+      ? normalizedSettings.voiceControlEnabled
+      : false;
   const rawMessageFriend =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
@@ -256,6 +290,11 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const predictionTool = normalizePredictionToolSettings(
     normalizedSettings?.predictionTool,
   );
+  const voiceCommands = normalizeVoiceCommandSettings(
+    normalizedSettings?.voiceCommands ||
+      normalizedSettings?.voiceCommandEntries ||
+      [],
+  );
 
   return {
     componentClassOptions: normalizePlannerSettingsStringList(
@@ -282,10 +321,12 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
       typeof normalizedSettings?.logoMotionEnabled === "boolean"
         ? normalizedSettings.logoMotionEnabled
         : true,
+    voiceControlEnabled,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
     predictionTool,
+    voiceCommands,
     relationships: relationshipsSource
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
       .filter(
@@ -316,6 +357,7 @@ const getDefaultStudyOrganizerSettings = () => ({
   locationRoomOptions: [],
   locationRoomOptionsByBuilding: [],
   logoMotionEnabled: true,
+  voiceControlEnabled: false,
   logoFixedClock: "9",
   fieldDefaults: {},
   messageFriend: {
@@ -327,10 +369,13 @@ const getDefaultStudyOrganizerSettings = () => ({
   },
   relationships: [],
   predictionTool: [],
+  voiceCommands: [],
 });
 
 const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
   const normalizedSettings = normalizeStudyOrganizerSettings(settings);
+  const { voiceCommandEntries: _voiceCommandEntries, ...normalizedSettingsForStorage } =
+    normalizedSettings || {};
   const serializedMessageFriendFrom =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object" &&
@@ -356,14 +401,18 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
   const serializedPredictionTool = normalizePredictionToolSettings(
     normalizedSettings?.predictionTool,
   );
+  const serializedVoiceCommands = normalizeVoiceCommandSettings(
+    normalizedSettings?.voiceCommands,
+  );
 
   return {
-    ...normalizedSettings,
+    ...normalizedSettingsForStorage,
     messageFriend: {
       from: serializedMessageFriendFrom,
       to: serializedMessageFriendTo,
     },
     predictionTool: serializedPredictionTool,
+    voiceCommands: serializedVoiceCommands,
     relationships: (Array.isArray(normalizedSettings.relationships)
       ? normalizedSettings.relationships
       : []
@@ -442,6 +491,14 @@ const MessageFriend = new Schema(
   { _id: false },
 );
 
+const PlannerVoiceCommandSchema = new Schema(
+  {
+    tab: { type: String, trim: true, default: "" },
+    button: { type: String, trim: true, default: "" },
+    command: { type: String, trim: true, default: "" },
+  },
+);
+
 const PlannerSettingsSchema = new Schema(
   {
     componentClassOptions: { type: [String], default: [] },
@@ -464,10 +521,12 @@ const PlannerSettingsSchema = new Schema(
       default: [],
     },
     logoMotionEnabled: { type: Boolean, default: true },
+    voiceControlEnabled: { type: Boolean, default: false },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
     messageFriend: { type: MessageFriend, default: {} },
+    voiceCommands: { type: [PlannerVoiceCommandSchema], default: [] },
     predictionTool: [
       {
         tab: { type: String },

@@ -4298,14 +4298,18 @@ UserRouter.post(
         predictionToolInput ||
         (Array.isArray(predictionToolInputs) && predictionToolInputs.length > 0)
       ) {
-        const existingDoc = await UserModel.findById(userId).select(
-          "memory.MOI.studyPlanner.studyOrganizer.settings",
-        );
-        if (!existingDoc?._id) {
+        const existingUser = await UserModel.findById(userId).select("memory");
+        if (!existingUser?._id) {
           return res.status(404).json({ message: "User not found." });
         }
+        const memoryDoc = await ensureUserMemoryDoc(existingUser);
+        if (!memoryDoc) {
+          return res.status(500).json({
+            message: "Failed to access user memory.",
+          });
+        }
         const existingSettings = normalizeStudyOrganizerSettings(
-          existingDoc?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings || {},
+          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
         );
         const predictionEntries = Array.isArray(existingSettings?.predictionTool)
           ? [...existingSettings.predictionTool]
@@ -4356,24 +4360,11 @@ UserRouter.post(
         };
         const storedMergedSettings =
           serializeStudyOrganizerSettingsForStorage(mergedSettings);
-        const predictionUpdateResult = await UserModel.updateOne(
-          { _id: userId },
-          {
-            $set: {
-              "memory.MOI.studyPlanner.studyOrganizer.settings":
-                storedMergedSettings,
-            },
-            $unset: {
-              "memory.MOI.studyPlanner.studyOrganizer.selectOptions": 1,
-              "memory.MOI.studyPlanner.studyOrganizer.fieldsRelationships": 1,
-            },
-          },
-        );
-        if (!predictionUpdateResult?.acknowledged) {
-          return res.status(500).json({
-            message: "Prediction tool update was not acknowledged by database.",
-          });
-        }
+        memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+        memoryDoc.studyPlanner.studyOrganizer =
+          memoryDoc.studyPlanner.studyOrganizer || {};
+        memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+        await memoryDoc.save();
         return res.status(200).json({
           message: "Prediction tool entry saved successfully.",
           settings: normalizeStudyOrganizerSettings(storedMergedSettings),
@@ -4386,27 +4377,31 @@ UserRouter.post(
         logoFixedClock: storedSettings?.logoFixedClock,
       });
 
-      const updateResult = await UserModel.updateOne(
-        { _id: userId },
-        {
-          $set: {
-            "memory.MOI.studyPlanner.studyOrganizer.settings": storedSettings,
-          },
-          $unset: {
-            "memory.MOI.studyPlanner.studyOrganizer.selectOptions": 1,
-            "memory.MOI.studyPlanner.studyOrganizer.fieldsRelationships": 1,
-          },
-        },
-      );
-      if (!updateResult?.acknowledged) {
+      const existingUser = await UserModel.findById(userId).select("memory");
+      if (!existingUser?._id) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const memoryDoc = await ensureUserMemoryDoc(existingUser);
+      if (!memoryDoc) {
         return res.status(500).json({
-          message: "Settings update was not acknowledged by database.",
+          message: "Failed to access user memory.",
         });
       }
+      const previousStoredSettings = serializeStudyOrganizerSettingsForStorage(
+        normalizeStudyOrganizerSettings(
+          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+        ),
+      );
+      memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+      memoryDoc.studyPlanner.studyOrganizer =
+        memoryDoc.studyPlanner.studyOrganizer || {};
+      memoryDoc.studyPlanner.studyOrganizer.settings = storedSettings;
+      await memoryDoc.save();
+
       const persistedSettings = normalizeStudyOrganizerSettings(storedSettings);
       const noChangesApplied =
-        Number(updateResult?.matchedCount || 0) > 0 &&
-        Number(updateResult?.modifiedCount || 0) === 0;
+        JSON.stringify(previousStoredSettings || {}) ===
+        JSON.stringify(storedSettings || {});
 
       return res.status(200).json({
         message: noChangesApplied
