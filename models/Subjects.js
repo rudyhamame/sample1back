@@ -4,6 +4,38 @@ import { MemorySchema } from "./Memory.js";
 import SettingsSchema from "./Settings.js";
 
 const { Schema } = mongoose;
+const TRACE_KEYS = ["user", "telegram", "ai", "chat"];
+
+const normalizeMoaOnSubject = (value) => {
+  if (!Array.isArray(value)) {
+    return value && typeof value === "object" ? value : {};
+  }
+  const traces = value.filter((entry) => entry && typeof entry === "object");
+  if (traces.length === 0) {
+    return {};
+  }
+  return traces.reduce((accumulator, traceEntry) => {
+    TRACE_KEYS.forEach((traceKey) => {
+      const currentValue = traceEntry?.[traceKey];
+      if (currentValue === null || currentValue === undefined) {
+        return;
+      }
+      if (typeof currentValue === "object" && !Array.isArray(currentValue)) {
+        const previousValue =
+          accumulator?.[traceKey] && typeof accumulator[traceKey] === "object"
+            ? accumulator[traceKey]
+            : {};
+        accumulator[traceKey] = {
+          ...previousValue,
+          ...currentValue,
+        };
+        return;
+      }
+      accumulator[traceKey] = currentValue;
+    });
+    return accumulator;
+  }, {});
+};
 
 const ClinicalRealitySchema = new Schema(
   {
@@ -102,7 +134,7 @@ const SubjectsSchema = new Schema(
     },
     profile: { type: ProfileSchema, default: () => ({}) },
     connections: { type: [ConnectionsSchema], default: [] },
-    memory: { type: MemorySchema, default: () => ({}) },
+    memory: MemorySchema,
     clinicalReality: { type: ClinicalRealitySchema, default: () => ({}) },
     settings: { type: SettingsSchema, default: () => ({}) },
     status: {
@@ -116,6 +148,13 @@ const SubjectsSchema = new Schema(
   },
   { strict: "throw" },
 );
+
+SubjectsSchema.pre("validate", function () {
+  if (!this.memory || typeof this.memory !== "object") {
+    return;
+  }
+  this.memory.MOA = normalizeMoaOnSubject(this.memory.MOA);
+});
 
 const SubjectsModel =
   mongoose.models.subjects || mongoose.model("subjects", SubjectsSchema);

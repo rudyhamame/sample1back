@@ -140,41 +140,56 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
 };
 
 const normalizeTelegramMemory = (telegram) => {
-  const groups = telegram?.groups;
-  const info = groups?.info;
-  const contentEntries = Array.isArray(groups?.content) ? groups.content : [];
+  const rawGroups = Array.isArray(telegram?.groups)
+    ? telegram.groups
+    : telegram?.groups && typeof telegram.groups === "object"
+      ? [telegram.groups]
+      : [];
   const predictions =
     telegram?.predictions && typeof telegram.predictions === "object"
       ? cloneValue(telegram.predictions)
       : {};
 
   return {
-    groups: {
-      info: {
-        name: typeof info?.name === "string" ? info.name : "",
-        groupReference:
-          typeof info?.groupReference === "string" ? info.groupReference : "",
-        memberCount:
-          typeof info?.memberCount === "number" && Number.isFinite(info.memberCount)
-            ? info.memberCount
-            : 0,
-        description:
-          typeof info?.description === "string" ? info.description : "",
-        messageCount:
-          typeof info?.messageCount === "number" && Number.isFinite(info.messageCount)
-            ? info.messageCount
-            : 0,
-        pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
-      },
-      content: (contentEntries.length > 0 ? contentEntries : [{}]).map((entry) => ({
-        texts: Array.isArray(entry?.texts) ? cloneValue(entry.texts) : [],
-        photos: Array.isArray(entry?.photos) ? cloneValue(entry.photos) : [],
-        images: Array.isArray(entry?.images) ? cloneValue(entry.images) : [],
-        videos: Array.isArray(entry?.videos) ? cloneValue(entry.videos) : [],
-        audios: Array.isArray(entry?.audios) ? cloneValue(entry.audios) : [],
-        documents: Array.isArray(entry?.documents) ? cloneValue(entry.documents) : [],
-      })),
-    },
+    groups: rawGroups.map((groupEntry) => {
+      const group =
+        groupEntry && typeof groupEntry === "object" ? groupEntry : {};
+      const info =
+        group?.info && typeof group.info === "object" ? group.info : {};
+      const contentEntry = Array.isArray(group?.content)
+        ? group.content[0] || {}
+        : group?.content && typeof group.content === "object"
+          ? group.content
+          : {};
+
+      return {
+        info: {
+          name: typeof info?.name === "string" ? info.name : "",
+          groupReference:
+            typeof info?.groupReference === "string" ? info.groupReference : "",
+          memberCount:
+            typeof info?.memberCount === "number" && Number.isFinite(info.memberCount)
+              ? info.memberCount
+              : 0,
+          description:
+            typeof info?.description === "string" ? info.description : "",
+          messageCount:
+            typeof info?.messageCount === "number" && Number.isFinite(info.messageCount)
+              ? info.messageCount
+              : 0,
+          pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
+        },
+        content: {
+          texts: Array.isArray(contentEntry?.texts) ? cloneValue(contentEntry.texts) : [],
+          photos: Array.isArray(contentEntry?.photos) ? cloneValue(contentEntry.photos) : [],
+          images: Array.isArray(contentEntry?.images) ? cloneValue(contentEntry.images) : [],
+          videos: Array.isArray(contentEntry?.videos) ? cloneValue(contentEntry.videos) : [],
+          audios: Array.isArray(contentEntry?.audios) ? cloneValue(contentEntry.audios) : [],
+          documents: Array.isArray(contentEntry?.documents) ? cloneValue(contentEntry.documents) : [],
+          messages: Array.isArray(contentEntry?.messages) ? cloneValue(contentEntry.messages) : [],
+        },
+      };
+    }),
     predictions,
   };
 };
@@ -183,9 +198,14 @@ const resolveTelegramMemorySource = (memory = {}) => {
   if (memory?.telegram && typeof memory.telegram === "object") {
     return memory.telegram;
   }
-  const moaEntries = Array.isArray(memory?.MOA)
-    ? memory.MOA
-    : [];
+  const moaObject =
+    memory?.MOA && typeof memory.MOA === "object" && !Array.isArray(memory.MOA)
+      ? memory.MOA
+      : null;
+  if (moaObject?.telegram && typeof moaObject.telegram === "object") {
+    return moaObject.telegram;
+  }
+  const moaEntries = Array.isArray(memory?.MOA) ? memory.MOA : [];
   const traceTelegram =
     moaEntries.find((entry) => entry?.telegram && typeof entry.telegram === "object")
       ?.telegram || null;
@@ -193,27 +213,16 @@ const resolveTelegramMemorySource = (memory = {}) => {
 };
 
 const mergeTelegramIntoTraces = (memory = {}, normalizedTelegram = {}) => {
-  const traces = Array.isArray(memory?.MOA)
-    ? cloneValue(memory.MOA)
-    : [];
-  const traceIndex = traces.findIndex(
-    (entry) => entry?.telegram && typeof entry.telegram === "object",
-  );
-
-  if (traceIndex >= 0) {
-    traces[traceIndex] = {
-      ...(traces[traceIndex] && typeof traces[traceIndex] === "object"
-        ? traces[traceIndex]
-        : {}),
-      telegram: cloneValue(normalizedTelegram),
-    };
-    return traces;
-  }
-
-  traces.push({
+  const moaObject =
+    memory?.MOA && typeof memory.MOA === "object" && !Array.isArray(memory.MOA)
+      ? cloneValue(memory.MOA)
+      : Array.isArray(memory?.MOA)
+        ? cloneValue(memory.MOA).find((entry) => entry && typeof entry === "object") || {}
+        : {};
+  return {
+    ...moaObject,
     telegram: cloneValue(normalizedTelegram),
-  });
-  return traces;
+  };
 };
 
 const resolveStudyPlannerSource = (memory = {}) => {
@@ -354,7 +363,9 @@ export const ensureUserMemoryDoc = async (user) => {
   const needsInitialization =
     !user.memory ||
     typeof user.memory !== "object" ||
-    !Array.isArray(user?.memory?.MOA) ||
+    !user?.memory?.MOA ||
+    typeof user.memory.MOA !== "object" ||
+    Array.isArray(user.memory.MOA) ||
     !isMoiInitialized(user?.memory) ||
     hasLegacyOnlyMemoryKeys(
       user?.memory?.toObject?.() ||

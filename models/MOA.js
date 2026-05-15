@@ -236,20 +236,21 @@ const TelegramGroupContentBucketSchema = new Schema(
     videos: { type: [Schema.Types.Mixed], default: [] },
     audios: { type: [Schema.Types.Mixed], default: [] },
     documents: { type: [Schema.Types.Mixed], default: [] },
+    messages: { type: [Schema.Types.Mixed], default: [] },
   },
   { _id: false, strict: "throw" },
 );
 const TelegramGroupsSchema = new Schema(
   {
     info: { type: TelegramGroupInfoSchema, default: () => ({}) },
-    content: { type: [TelegramGroupContentBucketSchema], default: [] },
+    content: TelegramGroupContentBucketSchema,
   },
   { _id: false, strict: "throw" },
 );
 
 const TelegramMemorySchema = new Schema(
   {
-    groups: { type: TelegramGroupsSchema, default: () => ({}) },
+    groups: { type: [TelegramGroupsSchema], default: [] },
     predictions: { type: Schema.Types.Mixed, default: () => ({}) },
   },
   { _id: false, strict: "throw" },
@@ -264,5 +265,47 @@ const MOASchema = new Schema(
   },
   { _id: false },
 );
+
+MOASchema.pre("validate", function () {
+  const telegram =
+    this?.telegram && typeof this.telegram === "object" ? this.telegram : null;
+  if (!telegram) {
+    return;
+  }
+  const groups = Array.isArray(telegram.groups) ? telegram.groups : [];
+  telegram.groups = groups.map((groupEntry) => {
+    const nextGroup =
+      groupEntry && typeof groupEntry === "object" ? groupEntry : {};
+    if (Array.isArray(nextGroup.content)) {
+      nextGroup.content =
+        nextGroup.content[0] && typeof nextGroup.content[0] === "object"
+          ? nextGroup.content[0]
+          : {};
+    } else if (!nextGroup.content || typeof nextGroup.content !== "object") {
+      nextGroup.content = {};
+    }
+    const content = nextGroup.content;
+    content.texts = Array.isArray(content.texts) ? content.texts : [];
+    content.photos = Array.isArray(content.photos) ? content.photos : [];
+    content.images = Array.isArray(content.images) ? content.images : [];
+    content.videos = Array.isArray(content.videos) ? content.videos : [];
+    content.audios = Array.isArray(content.audios) ? content.audios : [];
+    content.documents = Array.isArray(content.documents) ? content.documents : [];
+    content.messages = Array.isArray(content.messages) ? content.messages : [];
+
+    if (!nextGroup.info || typeof nextGroup.info !== "object") {
+      nextGroup.info = {};
+    }
+    nextGroup.info.messageCount =
+      content.texts.length +
+      content.photos.length +
+      content.images.length +
+      content.videos.length +
+      content.audios.length +
+      content.documents.length +
+      content.messages.length;
+    return nextGroup;
+  });
+});
 
 export default MOASchema;

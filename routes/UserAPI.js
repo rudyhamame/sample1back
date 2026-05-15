@@ -1360,14 +1360,12 @@ const sortGalleryImages = (images = []) =>
     );
 
 const setMemoryLocalGallery = (memoryDoc, images = []) => {
-  const tracesArray = Array.isArray(memoryDoc?.MOA)
-    ? memoryDoc.MOA
-      : [];
+  const tracesArray = Array.isArray(memoryDoc?.MOA) ? memoryDoc.MOA : [];
   const traceRoot =
-    tracesArray[0] && typeof tracesArray[0] === "object"
-      ? tracesArray[0]
-      : memoryDoc?.MOA && typeof memoryDoc.MOA === "object"
-        ? memoryDoc.MOA
+    memoryDoc?.MOA && typeof memoryDoc.MOA === "object" && !Array.isArray(memoryDoc.MOA)
+      ? memoryDoc.MOA
+      : tracesArray[0] && typeof tracesArray[0] === "object"
+        ? tracesArray[0]
         : {};
   const existingUserTrace =
     traceRoot?.user && typeof traceRoot.user === "object" ? traceRoot.user : {};
@@ -1400,15 +1398,7 @@ const setMemoryLocalGallery = (memoryDoc, images = []) => {
     chat: traceRoot?.chat || null,
   };
 
-  if (Array.isArray(memoryDoc?.MOA)) {
-    memoryDoc.MOA = [
-      nextRoot,
-      ...tracesArray.slice(1).filter((entry) => entry && typeof entry === "object"),
-    ];
-    return;
-  }
-
-  memoryDoc.MOA = [nextRoot];
+  memoryDoc.MOA = nextRoot;
 };
 
 const deleteCloudinaryAsset = async ({
