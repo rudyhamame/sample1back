@@ -1124,6 +1124,78 @@ const listStoredTelegramGroups = (user, memoryDoc, telegramSettings = null) => {
     groupsByReference.set(groupReference, existingGroup);
   });
 
+  if (groupsByReference.size === 0 && storedMessages.length > 0) {
+    const summaryGroup = buildStoredTelegramGroupSummary(user, memoryDoc);
+    const fallbackGroupReference =
+      normalizeGroupReference(summaryGroup?.groupReference) ||
+      syncedGroupReference;
+    groupsByReference.set(
+      fallbackGroupReference || "__stored_telegram_group__",
+      {
+        id: null,
+        title:
+          normalizeString(summaryGroup?.title) ||
+          normalizeString(telegramConfig?.groupTitle) ||
+          "Telegram Group",
+        username: normalizeString(summaryGroup?.username),
+        groupReference: fallbackGroupReference,
+        pageUrl: normalizePageUrl(
+          summaryGroup?.pageUrl || telegramConfig?.pageUrl || user?.settings?.telegram?.status?.pageUrl,
+        ),
+        memberCount: Number(summaryGroup?.memberCount || 0),
+        description: normalizeString(summaryGroup?.description),
+        storedCount: Number(summaryGroup?.storedCount || storedMessages.length),
+        latestDateMs: storedMessages.reduce(
+          (maxDate, message) => Math.max(maxDate, Number(message?.date || 0) || 0),
+          0,
+        ),
+        type: "group",
+        synced: Boolean(
+          fallbackGroupReference && syncedGroupReference === fallbackGroupReference,
+        ),
+      },
+    );
+  }
+
+  if (groupsByReference.size === 0) {
+    const configGroupReference =
+      normalizeGroupReference(telegramConfig?.groupReference) ||
+      normalizeGroupReference(user?.settings?.telegram?.status?.groupReference) ||
+      "";
+    const configGroupTitle =
+      normalizeString(telegramConfig?.groupTitle) ||
+      normalizeString(user?.settings?.telegram?.status?.groupTitle) ||
+      "";
+    const configStoredCount = Number(
+      telegramConfig?.storedCount ??
+        user?.settings?.telegram?.status?.storedCount ??
+        0,
+    );
+    if (configGroupReference || configStoredCount > 0 || configGroupTitle) {
+      groupsByReference.set(
+        configGroupReference || "__configured_telegram_group__",
+        {
+          id: null,
+          title: configGroupTitle || configGroupReference || "Telegram Group",
+          username: "",
+          groupReference: configGroupReference,
+          pageUrl: normalizePageUrl(
+            telegramConfig?.pageUrl || user?.settings?.telegram?.status?.pageUrl,
+          ),
+          memberCount: Number(telegramConfig?.memberCount || 0),
+          description: normalizeString(telegramConfig?.description),
+          storedCount: Number.isFinite(configStoredCount) ? configStoredCount : 0,
+          latestDateMs: 0,
+          type: "group",
+          synced: Boolean(
+            configGroupReference &&
+              syncedGroupReference === configGroupReference,
+          ),
+        },
+      );
+    }
+  }
+
   return Array.from(groupsByReference.values()).sort(
     (left, right) =>
       Number(right?.latestDateMs || 0) - Number(left?.latestDateMs || 0) ||

@@ -1715,6 +1715,154 @@ export const flattenMemoryCoursesForPlanner = (entries = []) =>
             : "-",
         course_length: componentStats.totalPages,
         course_progress: componentStats.finishedPages,
+        course_components: components.map((componentEntry) => {
+          const normalizedComponentEntry = toPlainObject(componentEntry) || {};
+          const componentEntryTime =
+            normalizedComponentEntry?.time &&
+            typeof normalizedComponentEntry.time === "object"
+              ? normalizedComponentEntry.time
+              : {};
+          return {
+            _id: normalizedComponentEntry?._id || null,
+            course_class:
+              trimString(normalizedComponentEntry?.class) ||
+              trimString(normalizedComponentEntry?.name) ||
+              "",
+            component_status: derivePlannerComponentStatus(normalizedComponentEntry),
+            normativeCourseYearNum:
+              Number.isFinite(
+                Number(
+                  normalizedComponentEntry?.normativeCourseYearNum ??
+                    componentEntryTime?.Normative?.courseYearNum,
+                ),
+              ) &&
+              Number(
+                normalizedComponentEntry?.normativeCourseYearNum ??
+                  componentEntryTime?.Normative?.courseYearNum,
+              ) >= 0
+                ? String(
+                    Math.trunc(
+                      Number(
+                        normalizedComponentEntry?.normativeCourseYearNum ??
+                          componentEntryTime?.Normative?.courseYearNum,
+                      ),
+                    ),
+                  )
+                : "-",
+            normativeCourseYearInterval:
+              trimString(
+                normalizedComponentEntry?.normativeCourseYearInterval ||
+                  componentEntryTime?.Normative?.courseYearInterval,
+              ) || "-",
+            normativeCourseTerm:
+              trimString(
+                normalizedComponentEntry?.normativeCourseTerm ||
+                  componentEntryTime?.Normative?.courseTerm,
+              ) || "-",
+            actualCourseYearNum:
+              Number.isFinite(
+                Number(
+                  normalizedComponentEntry?.actualCourseYearNum ??
+                    componentEntryTime?.actual?.courseYearNum,
+                ),
+              ) &&
+              Number(
+                normalizedComponentEntry?.actualCourseYearNum ??
+                  componentEntryTime?.actual?.courseYearNum,
+              ) >= 0
+                ? String(
+                    Math.trunc(
+                      Number(
+                        normalizedComponentEntry?.actualCourseYearNum ??
+                          componentEntryTime?.actual?.courseYearNum,
+                      ),
+                    ),
+                  )
+                : "-",
+            actualCourseYearInterval:
+              trimString(
+                normalizedComponentEntry?.actualCourseYearInterval ||
+                  componentEntryTime?.actual?.courseYearInterval,
+              ) || "-",
+            actualCourseTerm:
+              trimString(
+                normalizedComponentEntry?.actualCourseTerm ||
+                  componentEntryTime?.actual?.courseTerm,
+              ) || "-",
+            course_dayAndTime: Array.isArray(normalizedComponentEntry?.schedule)
+              ? normalizedComponentEntry.schedule
+              : [],
+            course_grade: String(
+              normalizeComponentWeightNumber(normalizedComponentEntry?.weight, 0),
+            ),
+            course_location:
+              normalizedComponentEntry?.location &&
+              typeof normalizedComponentEntry.location === "object"
+                ? {
+                    building: trimString(normalizedComponentEntry.location.building),
+                    room: trimString(normalizedComponentEntry.location.room),
+                  }
+                : {},
+            course_exams: Array.isArray(normalizedComponentEntry?.exams)
+              ? normalizedComponentEntry.exams.map((examEntry) => {
+                  const normalizedExamEntry = toPlainObject(examEntry) || {};
+                  const plannerExamTime = mapExamTimeForPlanner(normalizedExamEntry);
+                  return {
+                    _id: normalizedExamEntry?._id || null,
+                    componentId:
+                      normalizeIdString(normalizedExamEntry?.componentId) || null,
+                    type: trimString(normalizedExamEntry?.type) || "-",
+                    exam_type: trimString(normalizedExamEntry?.type) || "-",
+                    exam_date: plannerExamTime.exam_date,
+                    exam_time: plannerExamTime.exam_time,
+                    time:
+                      normalizedExamEntry?.time &&
+                      typeof normalizedExamEntry.time === "object"
+                        ? toPlainObject(normalizedExamEntry.time)
+                        : {},
+                    location:
+                      normalizedExamEntry?.location &&
+                      typeof normalizedExamEntry.location === "object"
+                        ? {
+                            building: trimString(
+                              normalizedExamEntry.location.building,
+                            ),
+                            room: trimString(normalizedExamEntry.location.room),
+                          }
+                        : {},
+                    volume:
+                      normalizedExamEntry?.volume &&
+                      typeof normalizedExamEntry.volume === "object"
+                        ? toPlainObject(normalizedExamEntry.volume)
+                        : {},
+                    passGrade:
+                      normalizedExamEntry?.passGrade &&
+                      typeof normalizedExamEntry.passGrade === "object"
+                        ? toPlainObject(normalizedExamEntry.passGrade)
+                        : {},
+                    grade:
+                      normalizedExamEntry?.grade &&
+                      typeof normalizedExamEntry.grade === "object"
+                        ? toPlainObject(normalizedExamEntry.grade)
+                        : {},
+                    course_fullGrade:
+                      Number.isFinite(
+                        Number(
+                          normalizedExamEntry?.grade?.maxGrade ??
+                            normalizedExamEntry?.grade?.max,
+                        ),
+                      )
+                        ? String(
+                            normalizedExamEntry?.grade?.maxGrade ??
+                              normalizedExamEntry?.grade?.max,
+                          )
+                        : "-",
+                    lectures: normalizeReferenceIds(normalizedExamEntry?.lectures),
+                  };
+                })
+              : [],
+          };
+        }),
         course_exams: exams.map((exam) => {
           const plannerExamTime = mapExamTimeForPlanner(exam);
 

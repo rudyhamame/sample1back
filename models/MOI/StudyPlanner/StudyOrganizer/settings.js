@@ -41,26 +41,68 @@ const normalizePredictionToolSettings = (value = []) =>
 const normalizeVoiceCommandEntry = (value = {}) => {
   const nextValue =
     value && typeof value === "object" ? toPlainObject(value) || {} : {};
+  const idTree = Array.isArray(nextValue?.idTree)
+    ? nextValue.idTree.map((entry) => trimString(entry)).filter(Boolean)
+    : [];
+  const elementID = trimString(nextValue?.elementID || nextValue?.button);
+  const voiceCommand = trimString(
+    nextValue?.voiceCommand || nextValue?.command,
+  );
   return {
-    tab: trimString(nextValue?.tab),
-    button: trimString(nextValue?.button),
-    command: trimString(nextValue?.command),
+    idTree,
+    elementID,
+    voiceCommand,
   };
 };
 
 const normalizeVoiceCommandSettings = (value = []) =>
   (Array.isArray(value) ? value : [])
     .map((entry) => normalizeVoiceCommandEntry(entry))
-    .filter(
-      (entry) =>
-        Boolean(entry.tab) && Boolean(entry.button) && Boolean(entry.command),
-    )
+    .filter((entry) => Boolean(entry.elementID) && Boolean(entry.voiceCommand))
     .reduce((accumulator, entry) => {
       const duplicateIndex = accumulator.findIndex(
         (existingEntry) =>
-          existingEntry.tab === entry.tab &&
-          existingEntry.button === entry.button &&
-          existingEntry.command === entry.command,
+          String(existingEntry.elementID || "").trim() ===
+            String(entry.elementID || "").trim() &&
+          String(existingEntry.voiceCommand || "").trim() ===
+            String(entry.voiceCommand || "").trim(),
+      );
+      if (duplicateIndex === -1) {
+        accumulator.push(entry);
+      }
+      return accumulator;
+    }, []);
+
+const normalizeVoiceDictationNormalizationEntry = (value = {}) => {
+  const nextValue =
+    value && typeof value === "object" ? toPlainObject(value) || {} : {};
+  const conditionRaw = trimString(nextValue?.condition).toLowerCase();
+  const condition =
+    conditionRaw === "startofword"
+      ? "startOfWord"
+      : conditionRaw === "anywhere"
+        ? "anywhere"
+        : "endOfWord";
+  return {
+    letter: trimString(nextValue?.letter),
+    normalizedLetter: trimString(nextValue?.normalizedLetter),
+    condition,
+  };
+};
+
+const normalizeVoiceDictationNormalizationSettings = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => normalizeVoiceDictationNormalizationEntry(entry))
+    .filter((entry) => Boolean(entry.letter) && Boolean(entry.normalizedLetter))
+    .reduce((accumulator, entry) => {
+      const duplicateIndex = accumulator.findIndex(
+        (existingEntry) =>
+          String(existingEntry.letter || "").trim() ===
+            String(entry.letter || "").trim() &&
+          String(existingEntry.normalizedLetter || "").trim() ===
+            String(entry.normalizedLetter || "").trim() &&
+          String(existingEntry.condition || "").trim() ===
+            String(entry.condition || "").trim(),
       );
       if (duplicateIndex === -1) {
         accumulator.push(entry);
@@ -263,6 +305,10 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     typeof normalizedSettings?.voiceControlEnabled === "boolean"
       ? normalizedSettings.voiceControlEnabled
       : false;
+  const voiceDictationEnabled =
+    typeof normalizedSettings?.voiceDictationEnabled === "boolean"
+      ? normalizedSettings.voiceDictationEnabled
+      : false;
   const rawMessageFriend =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
@@ -295,8 +341,13 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
       normalizedSettings?.voiceCommandEntries ||
       [],
   );
+  const voiceDictationNormalizations =
+    normalizeVoiceDictationNormalizationSettings(
+      normalizedSettings?.voiceDictationNormalizations || [],
+    );
 
   return {
+    defaultSection: trimString(normalizedSettings?.defaultSection) || "المقررات",
     componentClassOptions: normalizePlannerSettingsStringList(
       normalizedSettings?.componentClassOptions,
     ),
@@ -322,11 +373,13 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
         ? normalizedSettings.logoMotionEnabled
         : true,
     voiceControlEnabled,
+    voiceDictationEnabled,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
     predictionTool,
     voiceCommands,
+    voiceDictationNormalizations,
     relationships: relationshipsSource
       .map((entry) => normalizePlannerRelationship(toPlainObject(entry) || {}))
       .filter(
@@ -349,6 +402,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
 
 const getDefaultStudyOrganizerSettings = () => ({
   componentClassOptions: [],
+  defaultSection: "المقررات",
   weekdayOptions: [],
   hourOptions: [],
   termOptions: [],
@@ -358,6 +412,7 @@ const getDefaultStudyOrganizerSettings = () => ({
   locationRoomOptionsByBuilding: [],
   logoMotionEnabled: true,
   voiceControlEnabled: false,
+  voiceDictationEnabled: false,
   logoFixedClock: "9",
   fieldDefaults: {},
   messageFriend: {
@@ -370,12 +425,15 @@ const getDefaultStudyOrganizerSettings = () => ({
   relationships: [],
   predictionTool: [],
   voiceCommands: [],
+  voiceDictationNormalizations: [],
 });
 
 const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
   const normalizedSettings = normalizeStudyOrganizerSettings(settings);
-  const { voiceCommandEntries: _voiceCommandEntries, ...normalizedSettingsForStorage } =
-    normalizedSettings || {};
+  const {
+    voiceCommandEntries: _voiceCommandEntries,
+    ...normalizedSettingsForStorage
+  } = normalizedSettings || {};
   const serializedMessageFriendFrom =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object" &&
@@ -404,6 +462,10 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
   const serializedVoiceCommands = normalizeVoiceCommandSettings(
     normalizedSettings?.voiceCommands,
   );
+  const serializedVoiceDictationNormalizations =
+    normalizeVoiceDictationNormalizationSettings(
+      normalizedSettings?.voiceDictationNormalizations,
+    );
 
   return {
     ...normalizedSettingsForStorage,
@@ -413,6 +475,7 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
     },
     predictionTool: serializedPredictionTool,
     voiceCommands: serializedVoiceCommands,
+    voiceDictationNormalizations: serializedVoiceDictationNormalizations,
     relationships: (Array.isArray(normalizedSettings.relationships)
       ? normalizedSettings.relationships
       : []
@@ -491,17 +554,29 @@ const MessageFriend = new Schema(
   { _id: false },
 );
 
-const PlannerVoiceCommandSchema = new Schema(
+const PlannerVoiceCommandSchema = new Schema({
+  idTree: { type: [String], default: [] },
+  elementID: { type: String, trim: true, default: "" },
+  voiceCommand: { type: String, trim: true, default: "" },
+});
+
+const PlannerVoiceDictationNormalizationSchema = new Schema(
   {
-    tab: { type: String, trim: true, default: "" },
-    button: { type: String, trim: true, default: "" },
-    command: { type: String, trim: true, default: "" },
+    letter: { type: String, trim: true, default: "" },
+    normalizedLetter: { type: String, trim: true, default: "" },
+    condition: {
+      type: String,
+      enum: ["endOfWord", "startOfWord", "anywhere"],
+      default: "endOfWord",
+    },
   },
+  { _id: false },
 );
 
 const PlannerSettingsSchema = new Schema(
   {
     componentClassOptions: { type: [String], default: [] },
+    defaultSection: { type: String, trim: true, default: "المقررات" },
     weekdayOptions: { type: [String], default: [] },
     hourOptions: { type: [String], default: [] },
     termOptions: { type: [String], default: [] },
@@ -522,11 +597,16 @@ const PlannerSettingsSchema = new Schema(
     },
     logoMotionEnabled: { type: Boolean, default: true },
     voiceControlEnabled: { type: Boolean, default: false },
+    voiceDictationEnabled: { type: Boolean, default: false },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
     messageFriend: { type: MessageFriend, default: {} },
     voiceCommands: { type: [PlannerVoiceCommandSchema], default: [] },
+    voiceDictationNormalizations: {
+      type: [PlannerVoiceDictationNormalizationSchema],
+      default: [],
+    },
     predictionTool: [
       {
         tab: { type: String },
