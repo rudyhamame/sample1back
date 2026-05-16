@@ -45,9 +45,20 @@ import {
   updateLectureInPlanner,
 } from "./user/helpers/studyPlannerService.js";
 import {
+  normalizePlannerSettingsFieldDefaults,
   normalizeStudyOrganizerSettings,
   serializeStudyOrganizerSettingsForStorage,
 } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
+
+const plannerFieldDefaultsObjectToEntries = (fieldDefaults = {}) =>
+  Object.entries(
+    fieldDefaults && typeof fieldDefaults === "object" ? fieldDefaults : {},
+  )
+    .map(([fieldKey, value]) => ({
+      fieldKey: String(fieldKey || "").trim(),
+      value: String(value ?? "").trim(),
+    }))
+    .filter((entry) => Boolean(entry.fieldKey));
 const UserRouter = express.Router();
 const resolveDefaultAiProvider = () => {
   const appProvider = String(process.env.APP_AI_PROVIDER || "")
@@ -1807,41 +1818,54 @@ UserRouter.post("/login", function (req, res, next) {
     .catch(next);
 });
 
-UserRouter.post("/logout", checkAuth, function (req, res, next) {
-  const io = req.app.locals.io;
+UserRouter.post("/logout", checkAuth, async function (req, res, next) {
+  try {
+    const io = req.app.locals.io;
+    const userId = String(req.authentication?.userId || "").trim();
+    if (!userId) {
+      return res.status(401).json({ message: "Missing login session." });
+    }
 
-  UserModel.findById(req.authentication.userId)
-    .then((user) => {
-      if (!user) {
-        res.status(404).json({
-          message: "User not found.",
-        });
-        return null;
+    const responsePayload = {
+      ok: true,
+      userId,
+    };
+    res.status(200).json(responsePayload);
+
+    // Non-blocking persistence. Logout response must not wait on DB/network latency.
+    setImmediate(async () => {
+      try {
+        const now = new Date();
+        await UserModel.updateOne(
+          { _id: userId },
+          {
+            $set: {
+              "status.value": "offline",
+              "status.updatedAt": now,
+            },
+          },
+          { maxTimeMS: 4000 },
+        );
+
+        const notifyUser = await UserModel.findById(userId)
+          .select("_id connections friends")
+          .lean()
+          .maxTimeMS(4000);
+
+        if (notifyUser) {
+          emitUserRefresh(io, getUserAndFriendIds(notifyUser), "connection:changed", {
+            isConnected: false,
+            targetUserId: String(notifyUser._id),
+          });
+        }
+      } catch (error) {
+        console.error("[logout] deferred persistence failed:", error?.message || error);
       }
-
-      setUserConnectionState(user, {
-        isConnected: false,
-        at: new Date(),
-      });
-
-      return user.save();
-    })
-    .then((user) => {
-      if (!user) {
-        return null;
-      }
-
-      emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
-        isConnected: false,
-        targetUserId: String(user._id),
-      });
-
-      return res.status(200).json({
-        ok: true,
-        userId: String(user._id),
-      });
-    })
-    .catch(next);
+    });
+    return;
+  } catch (error) {
+    return next(error);
+  }
 });
 
 // Direct signup (verification code flow removed)
@@ -4271,6 +4295,13 @@ UserRouter.post(
           : req.body && typeof req.body === "object"
             ? req.body
             : {};
+      const settingsPatch =
+        req.body &&
+        typeof req.body === "object" &&
+        req.body.settingsPatch &&
+        typeof req.body.settingsPatch === "object"
+          ? req.body.settingsPatch
+          : null;
       const predictionToolInput =
         req.body &&
         typeof req.body === "object" &&
@@ -4360,13 +4391,54 @@ UserRouter.post(
           settings: normalizeStudyOrganizerSettings(storedMergedSettings),
         });
       }
-      const storedSettings = serializeStudyOrganizerSettingsForStorage(nextSettings);
-      console.info("[studyOrganizer/settings] normalized settings", {
-        userId,
-        logoMotionEnabled: storedSettings?.logoMotionEnabled,
-        logoFixedClock: storedSettings?.logoFixedClock,
-      });
-
+      if (settingsPatch) {
+        const existingUser = await UserModel.findById(userId).select("memory");
+        if (!existingUser?._id) {
+          return res.status(404).json({ message: "User not found." });
+        }
+        const memoryDoc = await ensureUserMemoryDoc(existingUser);
+        if (!memoryDoc) {
+          return res.status(500).json({
+            message: "Failed to access user memory.",
+          });
+        }
+        const existingSettings = normalizeStudyOrganizerSettings(
+          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+        );
+        const normalizedPatch = normalizeStudyOrganizerSettings({
+          ...existingSettings,
+          ...settingsPatch,
+          fieldDefaults:
+            settingsPatch?.fieldDefaults &&
+            typeof settingsPatch.fieldDefaults === "object"
+              ? {
+                  ...(existingSettings?.fieldDefaults || {}),
+                  ...Object.fromEntries(
+                    Object.entries(settingsPatch.fieldDefaults).map(
+                      ([fieldKey, fieldValue]) => [
+                        String(fieldKey || "").trim(),
+                        String(fieldValue ?? "").trim(),
+                      ],
+                    ),
+                  ),
+                }
+              : existingSettings?.fieldDefaults || {},
+        });
+        const storedMergedSettings =
+          serializeStudyOrganizerSettingsForStorage(normalizedPatch);
+        memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+        memoryDoc.studyPlanner.studyOrganizer =
+          memoryDoc.studyPlanner.studyOrganizer || {};
+        memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+        await memoryDoc.save();
+        return res.status(200).json({
+          message: "Planner settings patch saved successfully.",
+          settings: normalizeStudyOrganizerSettings(storedMergedSettings),
+        });
+      }
+      const normalizedIncomingSettings = normalizeStudyOrganizerSettings(
+        nextSettings,
+      );
       const existingUser = await UserModel.findById(userId).select("memory");
       if (!existingUser?._id) {
         return res.status(404).json({ message: "User not found." });
@@ -4377,10 +4449,25 @@ UserRouter.post(
           message: "Failed to access user memory.",
         });
       }
-      const previousStoredSettings = serializeStudyOrganizerSettingsForStorage(
-        normalizeStudyOrganizerSettings(
-          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
-        ),
+      const existingNormalizedSettings = normalizeStudyOrganizerSettings(
+        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+      );
+      const previousStoredSettings =
+        serializeStudyOrganizerSettingsForStorage(existingNormalizedSettings);
+      const mergedSettings = normalizeStudyOrganizerSettings({
+        ...existingNormalizedSettings,
+        ...normalizedIncomingSettings,
+        fieldDefaults:
+          normalizedIncomingSettings?.fieldDefaults &&
+          typeof normalizedIncomingSettings.fieldDefaults === "object"
+            ? {
+                ...(existingNormalizedSettings?.fieldDefaults || {}),
+                ...normalizedIncomingSettings.fieldDefaults,
+              }
+            : existingNormalizedSettings?.fieldDefaults || {},
+      });
+      const storedSettings = serializeStudyOrganizerSettingsForStorage(
+        mergedSettings,
       );
       memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
       memoryDoc.studyPlanner.studyOrganizer =
@@ -4398,6 +4485,117 @@ UserRouter.post(
           ? "No settings changes were applied."
           : "Settings saved successfully.",
         settings: persistedSettings,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+UserRouter.get(
+  "/studyOrganizer/settings/defaults/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const userId = String(req.params.my_id || "").trim();
+      const existingUser = await UserModel.findById(userId).select("memory");
+      if (!existingUser?._id) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const memoryDoc = await ensureUserMemoryDoc(existingUser);
+      if (!memoryDoc) {
+        return res.status(500).json({
+          message: "Failed to access user memory.",
+        });
+      }
+      const settings = normalizeStudyOrganizerSettings(
+        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+      );
+      const fieldDefaults = normalizePlannerSettingsFieldDefaults(
+        settings?.fieldDefaults,
+      );
+      return res.status(200).json({
+        message: "Planner defaults loaded successfully.",
+        fieldDefaults: plannerFieldDefaultsObjectToEntries(fieldDefaults),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+UserRouter.post(
+  "/studyOrganizer/settings/defaults/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const userId = String(req.params.my_id || "").trim();
+      const existingUser = await UserModel.findById(userId).select("memory");
+      if (!existingUser?._id) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const memoryDoc = await ensureUserMemoryDoc(existingUser);
+      if (!memoryDoc) {
+        return res.status(500).json({
+          message: "Failed to access user memory.",
+        });
+      }
+      const settings = normalizeStudyOrganizerSettings(
+        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+      );
+      const currentDefaults =
+        normalizePlannerSettingsFieldDefaults(settings?.fieldDefaults);
+      const requestBody =
+        req.body && typeof req.body === "object" ? req.body : {};
+      const nextFieldKey = String(requestBody.fieldKey || "").trim();
+      const hasFieldValue =
+        requestBody.fieldValue !== undefined || requestBody.value !== undefined;
+      const nextFieldValue = String(
+        requestBody.fieldValue ?? requestBody.value ?? "",
+      ).trim();
+      const nextDefaultsCandidate = requestBody.fieldDefaults
+        ? requestBody.fieldDefaults
+        : nextFieldKey
+          ? {
+              [nextFieldKey]: hasFieldValue ? nextFieldValue : "",
+            }
+          : {};
+
+      if (
+        !requestBody.fieldDefaults &&
+        !nextFieldKey &&
+        Object.keys(requestBody).length > 0
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid defaults payload. Send either fieldDefaults or fieldKey.",
+        });
+      }
+      const normalizedIncomingDefaults = normalizePlannerSettingsFieldDefaults(
+        nextDefaultsCandidate,
+      );
+      const nextDefaults = normalizePlannerSettingsFieldDefaults({
+        ...currentDefaults,
+        ...normalizedIncomingDefaults,
+      });
+      const mergedSettings = normalizeStudyOrganizerSettings({
+        ...settings,
+        fieldDefaults: nextDefaults,
+      });
+      const storedMergedSettings =
+        serializeStudyOrganizerSettingsForStorage(mergedSettings);
+      memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
+      memoryDoc.studyPlanner.studyOrganizer =
+        memoryDoc.studyPlanner.studyOrganizer || {};
+      memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+      await memoryDoc.save();
+      return res.status(200).json({
+        message: "Planner defaults saved successfully.",
+        fieldDefaults: plannerFieldDefaultsObjectToEntries(
+          normalizeStudyOrganizerSettings(storedMergedSettings)?.fieldDefaults ||
+            {},
+        ),
+        settings: normalizeStudyOrganizerSettings(storedMergedSettings),
       });
     } catch (error) {
       return next(error);

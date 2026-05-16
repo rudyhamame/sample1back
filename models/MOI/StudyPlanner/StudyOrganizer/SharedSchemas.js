@@ -55,10 +55,9 @@ const StudyTimeSchema = new Schema(
 
 const StudyVolumeSchema = new Schema(
   {
-    value: { type: Number, default: 0, min: 0 },
-    unit: { type: String, default: "pages" },
-    scope: { type: String, default: "" },
-    note: { type: String, default: "" },
+    total: { type: Number, default: 0, min: 0 },
+    done: { type: Number, default: 0, min: 0 },
+    remaining: { type: Number, default: 0, min: 0 },
   },
   { _id: false },
 );
@@ -113,6 +112,7 @@ const PageNonTextDataSchema = new Schema(
 const LectureContentSchema = new Schema(
   {
     order: { type: Number, default: 0, min: 0 },
+    status: { type: String, default: "" },
     textData: { type: [PageTextDataSchema], default: [] },
     nonTextData: { type: [PageNonTextDataSchema], default: [] },
   },
@@ -125,6 +125,7 @@ const StudyLectureSchema = new Schema(
     instructors: { type: [String], default: [] },
     writer: { type: [String], default: [] },
     publishDate: { type: Date, default: null },
+    volume: { type: StudyVolumeSchema, default: () => ({}) },
     content: { type: [LectureContentSchema], default: [] },
   },
   { _id: true },

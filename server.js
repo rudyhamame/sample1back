@@ -16,6 +16,7 @@ import ChatAPI from "./routes/ChatAPI.js";
 import EnquiriesAPI from "./routes/EnquiriesAPI.js";
 import ECGAPI from "./routes/ECGAPI.js";
 import TelegramAPI, { startTelegramSyncWorker } from "./routes/TelegramAPI.js";
+import DeezerAPI from "./routes/DeezerAPI.js";
 // import VideoAPI from "./routes/VideoAPI.js";
 import UserModel from "./compat/UserModel.js";
 import { setUserConnectionState } from "./helpers/connectionStatus.js";
@@ -511,6 +512,7 @@ app.use("/api/chat", ChatAPI);
 app.use("/api/enquiries", EnquiriesAPI);
 app.use("/api/ecg", ECGAPI);
 app.use("/api/telegram", TelegramAPI);
+app.use("/api/deezer", DeezerAPI);
 // app.use("/api/video", VideoAPI);
 
 // app.use("/api/posts", PostsAPI);

@@ -643,12 +643,19 @@ const normalizeComponentWeightNumber = (value, fallbackValue = 0) => {
   return toFiniteNumber(value, fallbackValue);
 };
 
-const sanitizeStudyVolume = (value = {}) => ({
-  value: toFiniteNumber(value?.value, 0),
-  unit: trimString(value?.unit) || "pages",
-  scope: trimString(value?.scope),
-  note: trimString(value?.note),
-});
+const sanitizeStudyVolume = (value = {}) => {
+  const total = toFiniteNumber(value?.total ?? value?.value, 0);
+  const done = toFiniteNumber(value?.done, 0);
+  const remaining = toFiniteNumber(
+    value?.remaining,
+    Math.max(total - done, 0),
+  );
+  return {
+    total: Math.max(total, 0),
+    done: Math.max(done, 0),
+    remaining: Math.max(remaining, 0),
+  };
+};
 
 const sanitizeStudyGrade = (value = {}) => ({
   value:
@@ -706,6 +713,7 @@ const sanitizePageNonTextData = (value = {}) => ({
 const sanitizeStudyPage = (value = {}) => ({
   ...(normalizeObjectIdValue(value?._id) ? { _id: normalizeObjectIdValue(value?._id) } : {}),
   order: toPositiveInteger(value?.order, 0),
+  status: trimString(value?.status),
   textData: Array.isArray(value?.textData)
     ? value.textData.map((entry) => sanitizePageTextData(toPlainObject(entry) || {}))
     : [],
@@ -976,7 +984,10 @@ const buildLecturePages = (payload = {}, previousLecture = {}) => {
       ? previousLecture.pages.map((page) => ({ ...toPlainObject(page) }))
     : [];
   const totalPages = Math.max(
-    toPositiveInteger(payload?.lecture_length, previousPages.length),
+    toPositiveInteger(
+      payload?.volume?.total ?? payload?.lecture_volume_total ?? payload?.lecture_length,
+      previousPages.length,
+    ),
     previousPages.length && !payload?.lecture_length ? previousPages.length : 0,
   );
   const finishedPages = new Set(
@@ -994,6 +1005,7 @@ const buildLecturePages = (payload = {}, previousLecture = {}) => {
     return {
       ...(previousPage?._id ? { _id: previousPage._id } : {}),
       order,
+      status: finishedPages.has(order) ? "done" : "remaining",
       textData: Array.isArray(previousPage?.textData) ? previousPage.textData : [],
       nonTextData: Array.isArray(previousPage?.nonTextData)
         ? previousPage.nonTextData
@@ -1544,6 +1556,20 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
   const publishDate = parseOptionalDate(
     payload?.publishDate || payload?.lecture_publishDate || payload?.lecture_date,
   );
+  const nextVolume = sanitizeStudyVolume(
+    payload?.volume ||
+      {
+        total: payload?.lecture_volume_total,
+        done: payload?.lecture_volume_done,
+        remaining: payload?.lecture_volume_remaining,
+      } ||
+      normalizedPreviousLecture?.volume ||
+      {},
+  );
+  const finishedPages = content
+    .filter((page) => trimString(page?.status).toLowerCase() === "done")
+    .map((page) => toPositiveInteger(page?.order, 0))
+    .filter((pageNumber) => pageNumber > 0);
 
   return {
     ...(normalizedPreviousLecture?._id ? { _id: normalizedPreviousLecture._id } : {}),
@@ -1560,14 +1586,13 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
         ? writers
         : normalizeStringArray(normalizedPreviousLecture?.writer),
     publishDate: publishDate || normalizedPreviousLecture?.publishDate || null,
+    volume: nextVolume,
     weight:
       normalizedPreviousLecture?.weight &&
       typeof normalizedPreviousLecture.weight === "object"
         ? normalizedPreviousLecture.weight
         : { value: 0, unit: "percent" },
-    progress: Array.isArray(payload?.lecture_pagesFinished)
-      ? payload.lecture_pagesFinished.length
-      : toFiniteNumber(normalizedPreviousLecture?.progress, 0),
+    progress: finishedPages.length,
     content,
   };
 };
@@ -2008,15 +2033,24 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
         const lecturePublishDate = normalizedLecture?.publishDate
           ? new Date(normalizedLecture.publishDate)
           : null;
-        const finishedPages = Array.from(
-          {
-            length: Math.min(
-              toPositiveInteger(normalizedLecture?.progress, 0),
-              pages.length,
-            ),
-          },
-          (_, index) => index + 1,
-        );
+        const finishedPagesFromStatus = pages
+          .filter(
+            (page) => trimString(toPlainObject(page)?.status).toLowerCase() === "done",
+          )
+          .map((page) => toPositiveInteger(toPlainObject(page)?.order, 0))
+          .filter((pageNumber) => pageNumber > 0);
+        const finishedPages =
+          finishedPagesFromStatus.length > 0
+            ? finishedPagesFromStatus
+            : Array.from(
+                {
+                  length: Math.min(
+                    toPositiveInteger(normalizedLecture?.progress, 0),
+                    pages.length,
+                  ),
+                },
+                (_, index) => index + 1,
+              );
 
         return {
           _id: normalizedLecture?._id || null,
@@ -2024,6 +2058,12 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
           lecture_course:
             lectureCourseLabel || trimString(normalizedCourse?.name) || "-",
           lecture_courseName: trimString(normalizedCourse?.name) || "-",
+          lecture_component:
+            trimString(normalizedComponent?.class || normalizedComponent?.name) || "-",
+          lecture_componentClass:
+            trimString(normalizedComponent?.class || normalizedComponent?.name) || "-",
+          component_class:
+            trimString(normalizedComponent?.class || normalizedComponent?.name) || "-",
           lecture_instructors: lectureInstructors,
           lecture_instructor: lectureInstructorDisplay,
           lecture_instructorName: lectureInstructorDisplay,
@@ -2034,6 +2074,7 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
             lecturePublishDate && !Number.isNaN(lecturePublishDate.getTime())
               ? lecturePublishDate.toISOString().slice(0, 10)
               : "",
+          volume: sanitizeStudyVolume(normalizedLecture?.volume || {}),
           lecture_length: pages.length,
           lecture_progress: finishedPages.length,
           lecture_pagesFinished: finishedPages,

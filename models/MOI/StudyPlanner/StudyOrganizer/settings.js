@@ -347,7 +347,6 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     );
 
   return {
-    defaultSection: trimString(normalizedSettings?.defaultSection) || "المقررات",
     componentClassOptions: normalizePlannerSettingsStringList(
       normalizedSettings?.componentClassOptions,
     ),
@@ -402,7 +401,6 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
 
 const getDefaultStudyOrganizerSettings = () => ({
   componentClassOptions: [],
-  defaultSection: "المقررات",
   weekdayOptions: [],
   hourOptions: [],
   termOptions: [],
@@ -501,7 +499,7 @@ const PlannerFieldDefaultSchema = new Schema(
     fieldKey: { type: String, trim: true, default: "" },
     value: { type: String, trim: true, default: "" },
   },
-  { _id: false },
+  { _id: false, strict: "throw" },
 );
 
 const PlannerRelationshipConditionSchema = new Schema(
@@ -524,6 +522,14 @@ const PlannerRelationshipConditionSchema = new Schema(
     negate: { type: Boolean, default: false },
   },
   { _id: false },
+);
+
+const PlannerOptionsSelectsSchema = new Schema(
+  {
+    selectID: { type: String, trim: true, default: "" },
+    options: { type: [String], default: [] },
+  },
+  { _id: false, strict: "throw" },
 );
 
 const PlannerRelationshipSchema = new Schema({
@@ -575,8 +581,8 @@ const PlannerVoiceDictationNormalizationSchema = new Schema(
 
 const PlannerSettingsSchema = new Schema(
   {
+    optionsSelects: { type: PlannerOptionsSelectsSchema },
     componentClassOptions: { type: [String], default: [] },
-    defaultSection: { type: String, trim: true, default: "المقررات" },
     weekdayOptions: { type: [String], default: [] },
     hourOptions: { type: [String], default: [] },
     termOptions: { type: [String], default: [] },
@@ -623,6 +629,7 @@ export {
   PlannerFieldDefaultSchema,
   PlannerRelationshipSchema,
   PlannerSettingsSchema,
+  normalizePlannerSettingsFieldDefaults,
   getDefaultStudyOrganizerSettings,
   normalizeStudyOrganizerSettings,
   serializeStudyOrganizerSettingsForStorage,

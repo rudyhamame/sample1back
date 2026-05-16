@@ -71,8 +71,93 @@ const DEFAULT_NO_PROVIDER_MESSAGE =
 
 const pendingTelegramAuthByUser = new Map();
 const telegramSyncPromisesByUser = new Map();
+const telegramSyncStatusByUser = new Map();
+const telegramSyncControlsByUser = new Map();
+const telegramFastResponseCache = new Map();
+const telegramStorageSnapshotCache = new Map();
+const telegramStorageSnapshotInFlight = new Map();
+const TELEGRAM_FAST_CACHE_TTL_MS = 15000;
+const TELEGRAM_STORAGE_SNAPSHOT_TTL_MS = 12000;
 let telegramSyncWorkerStarted = false;
 let telegramSyncWorkerIntervalId = null;
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getTelegramSyncStatus = (userId) =>
+  telegramSyncStatusByUser.get(String(userId || "").trim()) || {
+    running: false,
+    scannedCount: 0,
+    importedCount: 0,
+    reason: "",
+    synced: false,
+  };
+
+const setTelegramSyncStatus = (userId, patch = {}) => {
+  const userKey = String(userId || "").trim();
+  if (!userKey) {
+    return;
+  }
+  const currentValue = getTelegramSyncStatus(userKey);
+  telegramSyncStatusByUser.set(userKey, {
+    ...currentValue,
+    ...patch,
+  });
+};
+const getTelegramSyncControl = (userId) =>
+  telegramSyncControlsByUser.get(String(userId || "").trim()) || "play";
+const setTelegramSyncControl = (userId, control = "play") => {
+  const userKey = String(userId || "").trim();
+  if (!userKey) {
+    return "play";
+  }
+  const normalized = normalizeString(control).toLowerCase();
+  const nextControl = ["play", "pause", "stop"].includes(normalized)
+    ? normalized
+    : "play";
+  telegramSyncControlsByUser.set(userKey, nextControl);
+  return nextControl;
+};
+
+const getTelegramFastCacheKey = (userId = "", routeKey = "") =>
+  `${String(userId || "").trim()}::${String(routeKey || "").trim()}`;
+
+const getTelegramFastCachedResponse = (userId = "", routeKey = "") => {
+  const key = getTelegramFastCacheKey(userId, routeKey);
+  const entry = telegramFastResponseCache.get(key);
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+  const createdAt = Number(entry.createdAt || 0);
+  if (!createdAt || Date.now() - createdAt > TELEGRAM_FAST_CACHE_TTL_MS) {
+    telegramFastResponseCache.delete(key);
+    return null;
+  }
+  return entry.payload && typeof entry.payload === "object" ? entry.payload : null;
+};
+
+const setTelegramFastCachedResponse = (userId = "", routeKey = "", payload = {}) => {
+  const key = getTelegramFastCacheKey(userId, routeKey);
+  telegramFastResponseCache.set(key, {
+    createdAt: Date.now(),
+    payload: payload && typeof payload === "object" ? payload : {},
+  });
+};
+
+const clearTelegramFastCachedResponsesForUser = (userId = "") => {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return;
+  }
+  for (const key of telegramFastResponseCache.keys()) {
+    if (key.startsWith(`${normalizedUserId}::`)) {
+      telegramFastResponseCache.delete(key);
+    }
+  }
+  for (const key of telegramStorageSnapshotCache.keys()) {
+    if (key.startsWith(`${normalizedUserId}::`)) {
+      telegramStorageSnapshotCache.delete(key);
+    }
+  }
+};
 
 const getPendingTelegramAuth = (userId) =>
   pendingTelegramAuthByUser.get(String(userId || "").trim()) || null;
@@ -148,6 +233,16 @@ const normalizeGroupReference = (value) => {
 
 const normalizeTelegramSyncMode = (value) =>
   normalizeString(value).toLowerCase() === "one-time" ? "one-time" : "live";
+const normalizeTelegramStoreContent = (value = {}) => {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    texts: source.texts !== false,
+    photos: source.photos !== false,
+    videos: source.videos !== false,
+    audios: source.audios !== false,
+    documents: source.documents !== false,
+  };
+};
 
 const getGroqClient = () => {
   const apiKey = String(process.env.GROQ_API_KEY || "").trim();
@@ -528,6 +623,11 @@ const runWithTimeout = async (
 
 const withFastTimeout = (promise, timeoutMs = 4000, message = "Timed out.") =>
   runWithTimeout(promise, timeoutMs, message);
+const TELEGRAM_BOOTSTRAP_TIMEOUT_MS = Math.max(
+  5000,
+  Number.parseInt(String(process.env.TELEGRAM_BOOTSTRAP_TIMEOUT_MS || "15000").trim(), 10) ||
+    15000,
+);
 
 const getTelegramConfigSecret = () => {
   const secret = normalizeString(
@@ -608,6 +708,7 @@ const getUserTelegramConfig = (telegramSettings) => {
     historyStartDate: status.historyStartDate || null,
     historyEndDate: status.historyEndDate || null,
     syncEnabled: Boolean(status.syncEnabled),
+    storeContent: normalizeTelegramStoreContent(status.storeContent),
     apiId: Number.isFinite(apiId) && apiId > 0 ? apiId : 0,
     apiHash: decryptValue(status.apiHashEncrypted),
     stringSession: decryptValue(status.stringSessionEncrypted),
@@ -1242,7 +1343,23 @@ const getStoredMessageCountForUser = async (memoryDoc, configSource) => {
           configSource?.settings?.telegram?.status?.groupReference,
   );
 
-  return listStoredTelegramMessages(memoryDoc, groupReference).length;
+  const groupEntries = listTelegramGroupMemoryEntries(memoryDoc);
+  const countGroupEntryFast = (groupEntry = {}) => {
+    const messageCount = Number(groupEntry?.info?.messageCount);
+    if (Number.isFinite(messageCount) && messageCount >= 0) {
+      return messageCount;
+    }
+    return countTelegramGroupBucketMessages(groupEntry);
+  };
+  if (!groupReference) {
+    return groupEntries.reduce((count, groupEntry) => count + countGroupEntryFast(groupEntry), 0);
+  }
+  const matchingGroup =
+    groupEntries.find(
+      (groupEntry, index) =>
+        buildGroupReferenceFromSchemaEntry(groupEntry, index) === groupReference,
+    ) || null;
+  return matchingGroup ? countGroupEntryFast(matchingGroup) : 0;
 };
 
 const buildStoredTelegramGroupSummary = (user, memoryDoc) => {
@@ -1282,6 +1399,71 @@ const getStoredPlannerCoursesPayload = (memoryDoc) => {
     ? memoryDoc.studyPlanner.studyOrganizer.courses
     : [];
   return flattenMemoryCoursesForPlanner(plannerCourses);
+};
+
+const getTelegramStorageSnapshotCacheKey = (userId = "", includeCourses = true) =>
+  `${String(userId || "").trim()}::${includeCourses ? "courses" : "nocourses"}`;
+
+const getTelegramStorageSnapshot = async ({
+  user,
+  telegramSettings,
+  includeCourses = true,
+  timeoutMs = 5000,
+} = {}) => {
+  const userId = String(user?._id || "").trim();
+  if (!userId) {
+    return { memoryDoc: {}, groups: [], courses: [] };
+  }
+
+  const cacheKey = getTelegramStorageSnapshotCacheKey(userId, includeCourses);
+  const now = Date.now();
+  const cached = telegramStorageSnapshotCache.get(cacheKey);
+  if (
+    cached &&
+    typeof cached === "object" &&
+    Number(cached.createdAt || 0) > 0 &&
+    now - Number(cached.createdAt || 0) <= TELEGRAM_STORAGE_SNAPSHOT_TTL_MS
+  ) {
+    return cached.payload || { memoryDoc: {}, groups: [], courses: [] };
+  }
+
+  const inFlight = telegramStorageSnapshotInFlight.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const requestPromise = (async () => {
+    let memoryDoc = {};
+    try {
+      memoryDoc = await withFastTimeout(
+        findUserMemoryLean(userId, {
+          includeCourses,
+          includeLectures: false,
+        }),
+        timeoutMs,
+        "Telegram storage snapshot memory request timed out.",
+      );
+    } catch {
+      memoryDoc = {};
+    }
+    const payload = {
+      memoryDoc: memoryDoc && typeof memoryDoc === "object" ? memoryDoc : {},
+      groups: listStoredTelegramGroupsFast(user, memoryDoc, telegramSettings),
+      courses: includeCourses ? getStoredPlannerCoursesPayload(memoryDoc) : [],
+    };
+    telegramStorageSnapshotCache.set(cacheKey, {
+      createdAt: Date.now(),
+      payload,
+    });
+    return payload;
+  })();
+
+  telegramStorageSnapshotInFlight.set(cacheKey, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    telegramStorageSnapshotInFlight.delete(cacheKey);
+  }
 };
 
 const removeStoredTelegramGroupMessages = (memoryDoc, groupReference = "") => {
@@ -1380,17 +1562,27 @@ const removeStoredTelegramGroupEntry = (memoryDoc, groupReference = "") => {
   };
 };
 
-const persistStoredPhotoDataUrl = ({
+const persistStoredMediaDataUrl = ({
   memoryDoc,
   groupReference = "",
   messageId = 0,
-  photoDataUrl = "",
+  bucketName = "",
+  dataUrlField = "",
+  dataUrlValue = "",
 }) => {
   const normalizedReference = normalizeGroupReference(groupReference);
   const normalizedMessageId = Number(messageId || 0);
-  const normalizedPhotoDataUrl = normalizeString(photoDataUrl);
+  const normalizedBucketName = normalizeString(bucketName).toLowerCase();
+  const normalizedDataUrlField = normalizeString(dataUrlField);
+  const normalizedDataUrlValue = normalizeString(dataUrlValue);
 
-  if (!normalizedReference || !normalizedMessageId || !normalizedPhotoDataUrl) {
+  if (
+    !normalizedReference ||
+    !normalizedMessageId ||
+    !normalizedBucketName ||
+    !normalizedDataUrlField ||
+    !normalizedDataUrlValue
+  ) {
     return false;
   }
 
@@ -1407,8 +1599,10 @@ const persistStoredPhotoDataUrl = ({
 
   for (const groupEntry of telegramMemory.groups) {
     const buckets = getTelegramGroupContentBuckets(groupEntry);
-    const photoBucket = Array.isArray(buckets.photos) ? buckets.photos : [];
-    const index = photoBucket.findIndex(
+    const mediaBucket = Array.isArray(buckets?.[normalizedBucketName])
+      ? buckets[normalizedBucketName]
+      : [];
+    const index = mediaBucket.findIndex(
       (entry) =>
         Number(entry?.id || 0) === normalizedMessageId &&
         normalizeGroupReference(entry?.groupReference) === normalizedReference,
@@ -1416,35 +1610,81 @@ const persistStoredPhotoDataUrl = ({
     if (index === -1) {
       continue;
     }
-    photoBucket[index] = {
-      ...photoBucket[index],
-      photoDataUrl: normalizedPhotoDataUrl,
+    mediaBucket[index] = {
+      ...mediaBucket[index],
+      [normalizedDataUrlField]: normalizedDataUrlValue,
     };
     if (Array.isArray(groupEntry?.content)) {
       const first = groupEntry.content[0] && typeof groupEntry.content[0] === "object"
         ? groupEntry.content[0]
         : {};
-      first.photos = photoBucket;
+      first[normalizedBucketName] = mediaBucket;
       groupEntry.content[0] = first;
     } else if (groupEntry?.content && typeof groupEntry.content === "object") {
-      groupEntry.content.photos = photoBucket;
+      groupEntry.content[normalizedBucketName] = mediaBucket;
     }
     return true;
   }
 
   return false;
 };
+const persistStoredPhotoDataUrl = ({
+  memoryDoc,
+  groupReference = "",
+  messageId = 0,
+  photoDataUrl = "",
+}) =>
+  persistStoredMediaDataUrl({
+    memoryDoc,
+    groupReference,
+    messageId,
+    bucketName: "photos",
+    dataUrlField: "photoDataUrl",
+    dataUrlValue: photoDataUrl,
+  });
 
 const queryStoredTelegramMessages = async ({
   memoryDoc,
   groupReference = "",
   limit = 100,
+  offset = 0,
   searchQuery = "",
   startDateMs = null,
   endDateMs = null,
 }) => {
   const normalizedSearch = normalizeString(searchQuery).toLowerCase();
   const messages = listStoredTelegramMessages(memoryDoc, groupReference);
+  const buildSearchableMessageText = (message = {}) =>
+    [
+      message?.text,
+      message?.sender,
+      message?.groupTitle,
+      message?.groupReference,
+      message?.attachmentKind,
+      message?.attachmentFileName,
+      message?.attachmentFileExtension,
+      message?.attachmentMimeType,
+    ]
+      .map((value) => normalizeString(value).toLowerCase())
+      .filter(Boolean)
+      .join(" ");
+  const toLightweightStoredMessage = (message = {}) => {
+    const normalizedMessage = normalizeStoredMessage(
+      {
+        ...message,
+        photoDataUrl: "",
+        videoDataUrl: "",
+        documentDataUrl: "",
+      },
+      getTelegramMessageBucketName(message),
+    );
+    return {
+      ...normalizedMessage,
+      photoDataUrl: "",
+      videoDataUrl: "",
+      documentDataUrl: "",
+    };
+  };
   const filteredMessages = messages.filter((message) => {
     const messageDateMs = Number(message?.date || 0) || 0;
 
@@ -1460,14 +1700,28 @@ const queryStoredTelegramMessages = async ({
       return true;
     }
 
-    return JSON.stringify(message).toLowerCase().includes(normalizedSearch);
+    return buildSearchableMessageText(message).includes(normalizedSearch);
   });
 
+  const safeOffset = Math.max(0, Number(offset || 0) || 0);
+  const totalFilteredCount = filteredMessages.length;
+  const pagedMessages =
+    limit === "all"
+      ? filteredMessages
+      : filteredMessages.slice(safeOffset, safeOffset + Number(limit || 0));
+  const nextOffset =
+    limit === "all" ? totalFilteredCount : safeOffset + pagedMessages.length;
+  const hasMore =
+    limit === "all" ? false : nextOffset < totalFilteredCount;
+
   return {
-    filteredMessages:
-      limit === "all" ? filteredMessages : filteredMessages.slice(0, limit),
+    filteredMessages: pagedMessages.map((message) => toLightweightStoredMessage(message)),
     rawCount: messages.length,
     storedCount: messages.length,
+    totalFilteredCount,
+    offset: safeOffset,
+    nextOffset,
+    hasMore,
   };
 };
 
@@ -1482,8 +1736,30 @@ const buildConfigStatusPayload = (telegramSettings) => {
     historyStartDate: status.historyStartDate || null,
     historyEndDate: status.historyEndDate || null,
     syncEnabled: Boolean(status.syncEnabled),
+    storeContent: normalizeTelegramStoreContent(status.storeContent),
     connected: Boolean(config.apiId && config.apiHash && config.stringSession),
   };
+};
+
+const isTelegramAttachmentKindAllowed = (attachmentKind = "", storeContent = {}) => {
+  const normalizedKind = normalizeString(attachmentKind).toLowerCase();
+  const normalizedStoreContent = normalizeTelegramStoreContent(storeContent);
+  if (!normalizedKind || normalizedKind === "text") {
+    return Boolean(normalizedStoreContent.texts);
+  }
+  if (normalizedKind === "photo") {
+    return Boolean(normalizedStoreContent.photos);
+  }
+  if (normalizedKind === "video") {
+    return Boolean(normalizedStoreContent.videos);
+  }
+  if (normalizedKind === "audio") {
+    return Boolean(normalizedStoreContent.audios);
+  }
+  if (normalizedKind === "document" || normalizedKind === "pdf") {
+    return Boolean(normalizedStoreContent.documents);
+  }
+  return true;
 };
 
 const getTelegramMessageBucketName = (entry = {}) => {
@@ -1566,6 +1842,17 @@ const normalizeStoredMessage = (entry, bucketName = "texts") => ({
     normalizeString(entry?.attachmentKind).toLowerCase() === "photo" &&
     normalizeString(entry?.photoDataUrl)
       ? normalizeString(entry?.photoDataUrl)
+      : "",
+  videoDataUrl:
+    normalizeString(entry?.attachmentKind).toLowerCase() === "video" &&
+    normalizeString(entry?.videoDataUrl)
+      ? normalizeString(entry?.videoDataUrl)
+      : "",
+  documentDataUrl:
+    (normalizeString(entry?.attachmentKind).toLowerCase() === "document" ||
+      normalizeString(entry?.attachmentKind).toLowerCase() === "pdf") &&
+    normalizeString(entry?.documentDataUrl)
+      ? normalizeString(entry?.documentDataUrl)
       : "",
 });
 
@@ -1747,9 +2034,11 @@ const buildMessagePayload = (message, options = {}) => {
     attachmentMimeType === "application/pdf" ||
     attachmentFileExtension === "pdf";
   const mediaClassName = normalizeString(message?.media?.className);
-  const isNativePhotoMedia =
-    mediaClassName === "MessageMediaPhoto" || Boolean(message?.media?.photo);
-  const isPhotoMessage = Boolean(isNativePhotoMedia);
+  const hasNativePhoto = mediaClassName === "MessageMediaPhoto" || Boolean(message?.media?.photo);
+  const hasWebPreviewPhoto =
+    mediaClassName === "MessageMediaWebPage" &&
+    Boolean(message?.media?.webpage?.photo);
+  const isPhotoMessage = Boolean(hasNativePhoto || hasWebPreviewPhoto);
   const hasVideoAttribute = attributes.some((attribute) => {
     const className = normalizeString(attribute?.className);
     return (
@@ -1897,6 +2186,17 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
 
   const syncPromise = (async () => {
     let client = null;
+    setTelegramSyncControl(userKey, "play");
+    setTelegramSyncStatus(userKey, {
+      running: true,
+      startedAt: Date.now(),
+      finishedAt: null,
+      scannedCount: 0,
+      importedCount: 0,
+      reason: "running",
+      synced: false,
+      error: "",
+    });
 
     try {
       const [user, telegramSettings] = await Promise.all([
@@ -1922,15 +2222,44 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         telegramSettings,
         { requireSyncEnabled: !options.force },
       );
+      const normalizedSyncGroupReference = normalizeGroupReference(
+        config?.groupReference,
+      );
+      let importedCountTotal = 0;
+      const flushImportedMessages = async (batchMessages = []) => {
+        const safeBatch = Array.isArray(batchMessages) ? batchMessages : [];
+        if (safeBatch.length === 0) {
+          return 0;
+        }
+        const inserted = upsertTelegramMessagesIntoMemory({
+          memoryDoc,
+          groupMetadata,
+          messages: safeBatch,
+        });
+        if (inserted > 0) {
+          await memoryDoc.save();
+        }
+        return inserted;
+      };
 
       if (!canSync) {
-        return {
+        const result = {
           synced: false,
           reason: "import-not-configured",
           message: "Telegram import is not configured for this user.",
           importedCount: 0,
           scannedCount: 0,
         };
+        setTelegramSyncStatus(userKey, {
+          running: false,
+          finishedAt: Date.now(),
+          scannedCount: result.scannedCount,
+          importedCount: result.importedCount,
+          reason: result.reason,
+          synced: result.synced,
+          groupReference: normalizedSyncGroupReference,
+        });
+        return result;
       }
 
       client = await ensureTelegramClient(config);
@@ -1945,6 +2274,45 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
       );
       const historyStartMs = normalizeTelegramDateMs(config.historyStartDate);
       const historyEndMs = normalizeTelegramDateMs(config.historyEndDate);
+      const toMessageDateMs = (message = null) => {
+        if (!message || typeof message !== "object") {
+          return null;
+        }
+        return normalizeTelegramDateMs(message.date);
+      };
+      const pickFirstMessage = (result) =>
+        Array.isArray(result) ? result.find(Boolean) || null : result || null;
+      const [latestMessageProbe, oldestMessageProbe] = await Promise.all([
+        client
+          .getMessages(entity, {
+            limit: 1,
+          })
+          .then((result) => pickFirstMessage(result))
+          .catch(() => null),
+        client
+          .getMessages(entity, {
+            limit: 1,
+            reverse: true,
+          })
+          .then((result) => pickFirstMessage(result))
+          .catch(() => null),
+      ]);
+      const firstEverMessageDateMs = toMessageDateMs(oldestMessageProbe);
+      const lastEverMessageDateMs = toMessageDateMs(latestMessageProbe);
+      const hasFullInterval = Boolean(historyStartMs && historyEndMs);
+      const canCompareDistances = Boolean(
+        hasFullInterval && firstEverMessageDateMs && lastEverMessageDateMs,
+      );
+      const distanceFromFirstToFrom = canCompareDistances
+        ? Math.abs(historyStartMs - firstEverMessageDateMs)
+        : Number.POSITIVE_INFINITY;
+      const distanceFromLastToTo = canCompareDistances
+        ? Math.abs(lastEverMessageDateMs - historyEndMs)
+        : Number.POSITIVE_INFINITY;
+      const scanDirection =
+        canCompareDistances && distanceFromFirstToFrom < distanceFromLastToTo
+          ? "forward"
+          : "backward";
       const existingStoredMessages = listStoredTelegramMessages(
         memoryDoc,
         groupMetadata.groupReference,
@@ -1957,19 +2325,23 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
       const importedMessages = [];
       let scannedCount = 0;
       let offsetId = 0;
+      let shouldStopByInterval = false;
 
       while (
         scannedCount < TELEGRAM_MAX_SYNC_MESSAGES &&
         importedMessages.length < TELEGRAM_MAX_SYNC_MESSAGES
       ) {
-        const telegramMessages = await client.getMessages(entity, {
-          limit: Math.min(
-            TELEGRAM_FETCH_BATCH_SIZE,
-            TELEGRAM_MAX_SYNC_MESSAGES - scannedCount,
-          ),
+        setTelegramSyncControl(userKey, "play");
+        const nextLimit = Math.min(
+          TELEGRAM_FETCH_BATCH_SIZE,
+          TELEGRAM_MAX_SYNC_MESSAGES - scannedCount,
+        );
+        const fetchOptions = {
+          limit: nextLimit,
           offsetId,
-        });
-
+          reverse: scanDirection === "forward",
+        };
+        const telegramMessages = await client.getMessages(entity, fetchOptions);
         const batch = Array.isArray(telegramMessages)
           ? telegramMessages.filter(Boolean)
           : [];
@@ -1980,8 +2352,12 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
 
         for (const telegramMessage of batch) {
           let photoDataUrl = "";
+          const syncMediaClassName = normalizeString(telegramMessage?.media?.className);
           const isPhotoMessage = Boolean(
-            telegramMessage?.media?.photo || telegramMessage?.photo,
+            telegramMessage?.media?.photo ||
+              telegramMessage?.photo ||
+              (syncMediaClassName === "MessageMediaWebPage" &&
+                telegramMessage?.media?.webpage?.photo),
           );
           if (isPhotoMessage) {
             try {
@@ -2017,6 +2393,19 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
                 );
               } catch {}
               try {
+                if (
+                  syncMediaClassName === "MessageMediaWebPage" &&
+                  telegramMessage?.media?.webpage?.photo
+                ) {
+                  photoCandidates.push(
+                    await client.downloadMedia(
+                      telegramMessage.media.webpage.photo,
+                      { workers: 1 },
+                    ),
+                  );
+                }
+              } catch {}
+              try {
                 if (typeof telegramMessage?.downloadMedia === "function") {
                   photoCandidates.push(
                     await telegramMessage.downloadMedia({ workers: 1 }),
@@ -2039,11 +2428,23 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
           const payload = buildMessagePayload(telegramMessage, {
             photoDataUrl,
           });
+          if (!isTelegramAttachmentKindAllowed(payload?.attachmentKind, config.storeContent)) {
+            continue;
+          }
           const messageDateMs = Number(payload.date || 0) || 0;
 
           scannedCount += 1;
+          setTelegramSyncStatus(userKey, {
+            scannedCount,
+            importedCount: importedMessages.length,
+            groupReference: normalizedSyncGroupReference,
+          });
 
           if (historyEndMs && messageDateMs > historyEndMs) {
+            if (scanDirection === "forward") {
+              shouldStopByInterval = true;
+              break;
+            }
             continue;
           }
 
@@ -2052,6 +2453,10 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
             messageDateMs &&
             messageDateMs < historyStartMs
           ) {
+            if (scanDirection === "backward") {
+              shouldStopByInterval = true;
+              break;
+            }
             continue;
           }
 
@@ -2068,30 +2473,50 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
           }
 
           importedMessages.push(payload);
+          setTelegramSyncStatus(userKey, {
+            scannedCount,
+            importedCount: importedCountTotal + importedMessages.length,
+            groupReference: normalizedSyncGroupReference,
+          });
 
           if (importedMessages.length >= TELEGRAM_MAX_SYNC_MESSAGES) {
             break;
           }
         }
 
-        offsetId = Number(batch[batch.length - 1]?.id || 0);
+        if (importedMessages.length > 0) {
+          const insertedNow = await flushImportedMessages(importedMessages.splice(0));
+          importedCountTotal += insertedNow;
+          setTelegramSyncStatus(userKey, {
+            scannedCount,
+            importedCount: importedCountTotal,
+            groupReference: normalizedSyncGroupReference,
+          });
+        }
 
-        if (!offsetId || batch.length < TELEGRAM_FETCH_BATCH_SIZE) {
+        if (shouldStopByInterval) {
           break;
         }
+        const nextOffsetId = Number(batch[batch.length - 1]?.id || 0);
+        if (!nextOffsetId || batch.length < TELEGRAM_FETCH_BATCH_SIZE) {
+          break;
+        }
+
+        if (nextOffsetId === offsetId) {
+          break;
+        }
+        offsetId = nextOffsetId;
       }
 
-      const importedCount = upsertTelegramMessagesIntoMemory({
-        memoryDoc,
-        groupMetadata,
-        messages: importedMessages,
-      });
+      const importedCount = importedCountTotal;
 
       if (config.syncMode === "one-time") {
         user.settings.telegram.status.syncEnabled = false;
       }
 
-      await memoryDoc.save();
+      if (memoryDoc?.isModified?.()) {
+        await memoryDoc.save();
+      }
 
       if (importedCount > 0) {
         const persistedMemory = await findUserMemoryLean(user._id);
@@ -2123,7 +2548,7 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         }
       }
 
-      return {
+      const result = {
         synced: true,
         reason: importedCount > 0 ? "messages-imported" : "no-new-messages",
         message:
@@ -2133,13 +2558,34 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         importedCount,
         scannedCount,
       };
+      setTelegramSyncStatus(userKey, {
+        running: false,
+        finishedAt: Date.now(),
+        scannedCount: result.scannedCount,
+        importedCount: result.importedCount,
+        reason: result.reason,
+        synced: result.synced,
+        error: "",
+        groupReference: normalizedSyncGroupReference,
+      });
+      return result;
     } catch (error) {
       try {
         await UserModel.findById(userId).select("_id");
       } catch {}
 
+      setTelegramSyncStatus(userKey, {
+        running: false,
+        finishedAt: Date.now(),
+        reason: "error",
+        synced: false,
+        error: normalizeString(error?.message || "Telegram sync failed."),
+        groupReference: getTelegramSyncStatus(userKey)?.groupReference || "",
+      });
+
       throw error;
     } finally {
+      telegramSyncControlsByUser.delete(userKey);
       if (client) {
         try {
           await client.disconnect();
@@ -2342,6 +2788,10 @@ const handleStoredMessagesRequest = async (req, res, next) => {
     const startDateMs = parseQueryDateValue(req.query.start);
     const endDateMs = parseQueryDateValue(req.query.end);
     const requestedLimit = normalizeString(req.query.limit || "100");
+    const requestedOffset = Math.max(
+      0,
+      Number.parseInt(String(req.query.offset || "0").trim(), 10) || 0,
+    );
     const limit =
       requestedLimit.toLowerCase() === "all"
         ? "all"
@@ -2372,11 +2822,20 @@ const handleStoredMessagesRequest = async (req, res, next) => {
       syncTelegramMessagesForUser(user._id).catch(() => {});
     }
 
-    const { filteredMessages, rawCount, storedCount } =
+    const {
+      filteredMessages,
+      rawCount,
+      storedCount,
+      totalFilteredCount,
+      offset,
+      nextOffset,
+      hasMore,
+    } =
       await queryStoredTelegramMessages({
         memoryDoc,
         groupReference,
         limit,
+        offset: requestedOffset,
         searchQuery,
         startDateMs,
         endDateMs,
@@ -2394,11 +2853,16 @@ const handleStoredMessagesRequest = async (req, res, next) => {
       count: filteredMessages.length,
       rawCount,
       storedCount,
+      filteredTotalCount: totalFilteredCount,
+      offset,
+      nextOffset,
+      hasMore,
       searched: {
         q: searchQuery,
         start: startDateMs,
         end: endDateMs,
         limit,
+        offset,
       },
       messages: filteredMessages,
       sync: buildConfigStatusPayload(telegramSettings),
@@ -2825,6 +3289,11 @@ const downloadTelegramMessageMedia = async ({
   };
 
   const mediaCandidates = [];
+  const mediaClassName = normalizeString(telegramMessage?.media?.className);
+  const webPreviewPhoto =
+    mediaClassName === "MessageMediaWebPage"
+      ? telegramMessage?.media?.webpage?.photo || null
+      : null;
   try {
     mediaCandidates.push(
       await client.downloadMedia(telegramMessage, {
@@ -2838,6 +3307,15 @@ const downloadTelegramMessageMedia = async ({
         workers: 1,
       }),
     );
+  } catch {}
+  try {
+    if (webPreviewPhoto) {
+      mediaCandidates.push(
+        await client.downloadMedia(webPreviewPhoto, {
+          workers: 1,
+        }),
+      );
+    }
   } catch {}
   try {
     if (typeof telegramMessage?.downloadMedia === "function") {
@@ -3554,12 +4032,18 @@ TelegramRouter.post(
 
 TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
   try {
-    const [user, telegramSettings, memoryDocLean] = await Promise.all([
-      UserModel.findById(req.authentication.userId).select(
-        "settings.telegram.status memory",
-      ),
+    const cachedPayload = getTelegramFastCachedResponse(
+      req.authentication.userId,
+      "storage-context",
+    );
+    if (cachedPayload) {
+      return res.status(200).json(cachedPayload);
+    }
+    const [user, telegramSettings] = await Promise.all([
+      UserModel.findById(req.authentication.userId)
+        .select("settings.telegram.status")
+        .lean(),
       findTelegramSettings(req.authentication.userId),
-      findUserMemoryLean(req.authentication.userId),
     ]);
 
     if (!user) {
@@ -3568,24 +4052,22 @@ TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
       });
     }
 
+    const snapshot = await getTelegramStorageSnapshot({
+      user,
+      telegramSettings,
+      includeCourses: true,
+      timeoutMs: 5000,
+    });
     const memorySource =
-      user?.memory && typeof user.memory === "object"
-        ? user.memory
-        : memoryDocLean && typeof memoryDocLean === "object"
-          ? memoryDocLean
-          : {};
-
-    const plannerCourses = Array.isArray(
-      memorySource?.studyPlanner?.studyOrganizer?.courses,
-    )
-      ? memorySource.studyPlanner.studyOrganizer.courses
-      : [];
-    const flattenedCourses = flattenMemoryCoursesForPlanner(plannerCourses);
-    const storedGroups = listStoredTelegramGroups(user, memorySource, telegramSettings);
-    const storedMessagesCount = listStoredTelegramMessages(memorySource, "").length;
+      snapshot?.memoryDoc && typeof snapshot.memoryDoc === "object"
+        ? snapshot.memoryDoc
+        : {};
+    const flattenedCourses = Array.isArray(snapshot?.courses) ? snapshot.courses : [];
+    const storedGroups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
+    const includeDebug = String(req.query?.debug || "").trim().toLowerCase() === "true";
     const rawTelegram =
-      user?.memory?.MOA?.telegram && typeof user.memory.MOA.telegram === "object"
-        ? user.memory.MOA.telegram
+      memorySource?.MOA?.telegram && typeof memorySource.MOA.telegram === "object"
+        ? memorySource.MOA.telegram
         : {};
     const rawGroups = rawTelegram?.groups;
     const rawGroupEntries = Array.isArray(rawGroups)
@@ -3593,21 +4075,36 @@ TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
       : rawGroups && typeof rawGroups === "object"
         ? [rawGroups]
         : [];
-    const rawMessagesCount = rawGroupEntries.reduce((count, groupEntry) => {
-      const buckets = getTelegramGroupContentBuckets(groupEntry);
-      return (
-        count +
-        buckets.texts.length +
-        buckets.photos.length +
-        buckets.images.length +
-        buckets.videos.length +
-        buckets.audios.length +
-        buckets.documents.length +
-        buckets.messages.length
-      );
-    }, 0);
+    const rawMessagesCount = includeDebug
+      ? rawGroupEntries.reduce((count, groupEntry) => {
+          const buckets = getTelegramGroupContentBuckets(groupEntry);
+          return (
+            count +
+            buckets.texts.length +
+            buckets.photos.length +
+            buckets.images.length +
+            buckets.videos.length +
+            buckets.audios.length +
+            buckets.documents.length +
+            buckets.messages.length
+          );
+        }, 0)
+      : 0;
 
-    return res.status(200).json({
+    let storedMessagesCount = 0;
+    if (includeDebug) {
+      try {
+        storedMessagesCount = await withFastTimeout(
+          getStoredMessageCountForUser(memorySource, telegramSettings),
+          2000,
+          "Telegram storage count request timed out.",
+        );
+      } catch {
+        storedMessagesCount = 0;
+      }
+    }
+
+    const payload = {
       groups: storedGroups,
       courses: flattenedCourses,
       importantMessages: [],
@@ -3620,7 +4117,13 @@ TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
         rawGroupsCount: rawGroupEntries.length,
         rawMessagesCount,
       },
-    });
+    };
+    setTelegramFastCachedResponse(
+      req.authentication.userId,
+      "storage-context",
+      payload,
+    );
+    return res.status(200).json(payload);
   } catch (error) {
     return next(error);
   }
@@ -3911,10 +4414,18 @@ TelegramRouter.post(
 
 TelegramRouter.get("/config", checkAuth, async (req, res, next) => {
   try {
-    const [user, telegramSettings, memoryDoc] = await Promise.all([
-      UserModel.findById(req.authentication.userId),
+    const cachedPayload = getTelegramFastCachedResponse(
+      req.authentication.userId,
+      "config",
+    );
+    if (cachedPayload) {
+      return res.status(200).json(cachedPayload);
+    }
+    const [user, telegramSettings] = await Promise.all([
+      UserModel.findById(req.authentication.userId)
+        .select("_id settings.telegram.status")
+        .lean(),
       findTelegramSettings(req.authentication.userId),
-      findUserMemoryLean(req.authentication.userId),
     ]);
 
     if (!user) {
@@ -3923,21 +4434,63 @@ TelegramRouter.get("/config", checkAuth, async (req, res, next) => {
       });
     }
 
-    return res.status(200).json({
+    let storedCount = 0;
+    try {
+      const memoryDoc = await withFastTimeout(
+        findUserMemoryLean(req.authentication.userId, {
+          includeCourses: false,
+          includeLectures: false,
+        }),
+        3500,
+        "Telegram stored count request timed out.",
+      );
+      storedCount = await getStoredMessageCountForUser(memoryDoc, telegramSettings);
+    } catch {
+      storedCount = 0;
+    }
+
+    const payload = {
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(memoryDoc, telegramSettings),
-    });
+      storedCount,
+    };
+    setTelegramFastCachedResponse(req.authentication.userId, "config", payload);
+    return res.status(200).json(payload);
   } catch (error) {
+    if (String(error?.code || "").trim() === "TELEGRAM_TIMEOUT") {
+      return res.status(200).json({
+        configured: false,
+        hasApiId: false,
+        hasApiHash: false,
+        hasStringSession: false,
+        pageUrl: "",
+        groupReference: "",
+        syncMode: "live",
+        syncEnabled: false,
+        historyStartDate: null,
+        historyEndDate: null,
+        storeContent: normalizeTelegramStoreContent({}),
+        storedCount: 0,
+        warning: normalizeString(error?.message) || "Telegram config timed out.",
+      });
+    }
     next(error);
   }
 });
 
 TelegramRouter.get("/status", checkAuth, async (req, res, next) => {
   try {
-    const [user, telegramSettings, memoryDoc] = await Promise.all([
-      UserModel.findById(req.authentication.userId),
+    const cachedPayload = getTelegramFastCachedResponse(
+      req.authentication.userId,
+      "status",
+    );
+    if (cachedPayload) {
+      return res.status(200).json(cachedPayload);
+    }
+    const [user, telegramSettings] = await Promise.all([
+      UserModel.findById(req.authentication.userId)
+        .select("_id settings.telegram.status")
+        .lean(),
       findTelegramSettings(req.authentication.userId),
-      findUserMemoryLean(req.authentication.userId),
     ]);
 
     if (!user) {
@@ -3946,12 +4499,52 @@ TelegramRouter.get("/status", checkAuth, async (req, res, next) => {
       });
     }
 
-    return res.status(200).json({
+    let storedCount = 0;
+    let storedGroupsCount = 0;
+    try {
+      const memoryDoc = await withFastTimeout(
+        findUserMemoryLean(req.authentication.userId, {
+          includeCourses: false,
+          includeLectures: false,
+        }),
+        3500,
+        "Telegram status memory request timed out.",
+      );
+      storedCount = await getStoredMessageCountForUser(memoryDoc, telegramSettings);
+      storedGroupsCount = listTelegramGroupMemoryEntries(memoryDoc).length > 0 ? 1 : 0;
+    } catch {
+      storedCount = 0;
+      storedGroupsCount = 0;
+    }
+
+    const payload = {
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(memoryDoc, telegramSettings),
-      storedGroups: buildStoredTelegramGroupSummary(user, memoryDoc) ? 1 : 0,
-    });
+      storedCount,
+      storedGroups: storedGroupsCount,
+      syncStatus: getTelegramSyncStatus(req.authentication.userId),
+    };
+    setTelegramFastCachedResponse(req.authentication.userId, "status", payload);
+    return res.status(200).json(payload);
   } catch (error) {
+    if (String(error?.code || "").trim() === "TELEGRAM_TIMEOUT") {
+      return res.status(200).json({
+        configured: false,
+        hasApiId: false,
+        hasApiHash: false,
+        hasStringSession: false,
+        pageUrl: "",
+        groupReference: "",
+        syncMode: "live",
+        syncEnabled: false,
+        historyStartDate: null,
+        historyEndDate: null,
+        storeContent: normalizeTelegramStoreContent({}),
+        storedCount: 0,
+        storedGroups: 0,
+        syncStatus: getTelegramSyncStatus(req.authentication.userId),
+        warning: normalizeString(error?.message) || "Telegram status timed out.",
+      });
+    }
     next(error);
   }
 });
@@ -3988,6 +4581,7 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
     const nextSyncEnabled = Boolean(req.body?.syncEnabled);
     const nextHistoryStartDate = parseDateInput(req.body?.historyStartDate);
     const nextHistoryEndDate = parseDateInput(req.body?.historyEndDate);
+    const nextStoreContent = normalizeTelegramStoreContent(req.body?.storeContent);
     const nextApiId = normalizeString(req.body?.apiId);
     const nextApiHash = normalizeString(req.body?.apiHash);
     const nextStringSession = normalizeString(req.body?.stringSession);
@@ -4017,23 +4611,13 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
     const previousGroupReference = normalizeGroupReference(
       telegramStatus.groupReference,
     );
-    const previousHistoryStartMs = normalizeTelegramDateMs(
-      telegramStatus.historyStartDate,
-    );
-    const previousHistoryEndMs = normalizeTelegramDateMs(
-      telegramStatus.historyEndDate,
-    );
-    const nextHistoryStartMs = normalizeTelegramDateMs(nextHistoryStartDate);
-    const nextHistoryEndMs = normalizeTelegramDateMs(nextHistoryEndDate);
-    const didHistoryWindowChange =
-      previousHistoryStartMs !== nextHistoryStartMs ||
-      previousHistoryEndMs !== nextHistoryEndMs;
 
     telegramStatus.pageUrl = nextPageUrl;
     telegramStatus.groupReference = nextGroupReference;
     telegramStatus.syncMode = nextSyncMode;
     telegramStatus.historyStartDate = nextHistoryStartDate;
     telegramStatus.historyEndDate = nextHistoryEndDate;
+    telegramStatus.storeContent = nextStoreContent;
 
     if (nextApiId) {
       telegramStatus.apiIdEncrypted = encryptValue(nextApiId);
@@ -4058,65 +4642,44 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
     );
     telegramStatus.updatedAt = new Date();
 
-    if (
-      previousGroupReference &&
-      previousGroupReference === nextGroupReference &&
-      didHistoryWindowChange
-    ) {
-      removeStoredTelegramGroupMessages(memoryDoc, nextGroupReference);
-    }
+    // Keep previously stored messages when interval changes; sync will upsert
+    // and add newly matched messages without wiping existing data.
 
     await Promise.all([telegramSettings.save(), memoryDoc?.save?.()]);
+    clearTelegramFastCachedResponsesForUser(req.authentication.userId);
 
     const shouldRunOneTimeImport = Boolean(
-      !telegramStatus.syncEnabled &&
-        nextSyncMode === "one-time" &&
-        nextGroupReference &&
-        hasCredentials,
+      nextSyncMode === "one-time" && nextGroupReference && hasCredentials,
     );
-    const shouldRunTelegramImport = Boolean(
-      telegramStatus.syncEnabled || shouldRunOneTimeImport,
-    );
-
-    let responseMessage = "Telegram settings saved for this user.";
-    let syncResult = null;
-
-    if (shouldRunTelegramImport) {
-      try {
-        syncResult = await syncTelegramMessagesForUser(user._id, {
-          force: true,
-        });
-        responseMessage =
-          normalizeString(syncResult?.message) ||
-          (telegramStatus.syncEnabled
-            ? "Telegram settings saved and import completed."
-            : "Telegram group stored and one-time import completed.");
-      } catch (error) {
-        responseMessage = `Telegram settings were saved, but the import failed: ${normalizeString(
-          error?.message || "Unknown Telegram sync error.",
-        )}`;
-      }
+    let importResult = null;
+    if (shouldRunOneTimeImport) {
+      importResult = await syncTelegramMessagesForUser(user._id, {
+        force: true,
+      });
     }
-
-    const responseMemoryDoc = shouldRunTelegramImport
+    const responseMessage = shouldRunOneTimeImport
+      ? normalizeString(importResult?.message) || "Telegram import completed."
+      : "Telegram settings saved for this user.";
+    const responseMemoryDoc = shouldRunOneTimeImport
       ? await findUserMemoryLean(user._id)
       : memoryDoc;
 
     return res.status(200).json({
       message: responseMessage,
-      importStarted: Boolean(shouldRunTelegramImport),
-      importSucceeded: Boolean(syncResult?.synced),
-      importReason: normalizeString(syncResult?.reason),
-      syncStarted: Boolean(shouldRunTelegramImport),
-      syncSucceeded: Boolean(syncResult?.synced),
-      syncReason: normalizeString(syncResult?.reason),
-      importedCount: Number(syncResult?.importedCount || 0),
-      scannedCount: Number(syncResult?.scannedCount || 0),
+      importStarted: Boolean(shouldRunOneTimeImport),
+      importSucceeded: Boolean(importResult?.synced),
+      importReason: normalizeString(importResult?.reason),
+      syncStarted: Boolean(shouldRunOneTimeImport),
+      syncSucceeded: Boolean(importResult?.synced),
+      syncReason: normalizeString(importResult?.reason),
+      importedCount: Number(importResult?.importedCount || 0),
+      scannedCount: Number(importResult?.scannedCount || 0),
       ...buildConfigStatusPayload(telegramSettings),
       storedCount: await getStoredMessageCountForUser(
         responseMemoryDoc,
         telegramSettings,
       ),
+      syncStatus: getTelegramSyncStatus(user._id),
     });
   } catch (error) {
     next(error);
@@ -4163,6 +4726,7 @@ TelegramRouter.post("/auth/start", checkAuth, async (req, res, next) => {
         phoneCodeHash: sendCodeResult.phoneCodeHash,
         isCodeViaApp: Boolean(sendCodeResult.isCodeViaApp),
       });
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
 
       return res.status(200).json({
         message: "Telegram login code sent.",
@@ -4214,7 +4778,8 @@ TelegramRouter.post("/auth/verify-code", checkAuth, async (req, res, next) => {
         stringSession,
       });
 
-      await clearPendingTelegramAuth(req.authentication.userId);
+        await clearPendingTelegramAuth(req.authentication.userId);
+        clearTelegramFastCachedResponsesForUser(req.authentication.userId);
 
       return res.status(200).json({
         message: "Telegram connected successfully.",
@@ -4276,7 +4841,7 @@ TelegramRouter.post(
       });
 
       await clearPendingTelegramAuth(req.authentication.userId);
-
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
       return res.status(200).json({
         message: "Telegram connected successfully.",
         requiresPassword: false,
@@ -4290,8 +4855,20 @@ TelegramRouter.post(
 
 TelegramRouter.get("/groups", checkAuth, async (req, res, next) => {
   try {
+    const includeLiveScan = String(req.query?.live || "").trim().toLowerCase() === "true";
+    if (!includeLiveScan) {
+      const cachedPayload = getTelegramFastCachedResponse(
+        req.authentication.userId,
+        "groups",
+      );
+      if (cachedPayload) {
+        return res.status(200).json(cachedPayload);
+      }
+    }
     const [user, telegramSettings] = await Promise.all([
-      UserModel.findById(req.authentication.userId),
+      UserModel.findById(req.authentication.userId)
+        .select("settings.telegram.status")
+        .lean(),
       findTelegramSettings(req.authentication.userId),
     ]);
 
@@ -4301,12 +4878,64 @@ TelegramRouter.get("/groups", checkAuth, async (req, res, next) => {
       });
     }
 
-    const memoryDoc = await findUserMemoryLean(user._id);
-    const result = await buildLiveGroupsResponse(user, telegramSettings);
-    return res.status(200).json({
-      ...result,
-      courses: getStoredPlannerCoursesPayload(memoryDoc),
+    const snapshot = await getTelegramStorageSnapshot({
+      user,
+      telegramSettings,
+      includeCourses: true,
+      timeoutMs: 5000,
     });
+    const memoryDoc =
+      snapshot?.memoryDoc && typeof snapshot.memoryDoc === "object"
+        ? snapshot.memoryDoc
+        : {};
+    const storedGroups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
+    const storedGroupOptions = (Array.isArray(storedGroups) ? storedGroups : []).map(
+      (group) => ({
+        groupReference: normalizeGroupReference(group?.groupReference),
+        title: normalizeString(group?.title) || normalizeString(group?.groupReference),
+        username: normalizeString(group?.username),
+        type: normalizeString(group?.type || "group") || "group",
+        storedCount: Number(group?.storedCount || 0),
+        latestDateMs: Number(group?.latestDateMs || 0),
+      }),
+    );
+
+    let result = { groups: storedGroupOptions, warning: "" };
+    if (includeLiveScan) {
+      try {
+        result = await withFastTimeout(
+          buildLiveGroupsResponse(user, telegramSettings),
+          TELEGRAM_BOOTSTRAP_TIMEOUT_MS,
+          "Telegram live groups request timed out.",
+        );
+      } catch (error) {
+        result = {
+          groups: storedGroupOptions,
+          warning:
+            normalizeString(error?.message) ||
+            "Live Telegram groups are currently unavailable. Showing stored groups.",
+        };
+      }
+    }
+    const mergedGroups = Array.isArray(result?.groups) ? result.groups : [];
+    const knownReferences = new Set(
+      mergedGroups.map((group) => normalizeGroupReference(group?.groupReference)).filter(Boolean),
+    );
+    const nextGroups = [
+      ...mergedGroups,
+      ...storedGroupOptions.filter(
+        (group) => !knownReferences.has(normalizeGroupReference(group?.groupReference)),
+      ),
+    ];
+    const payload = {
+      ...result,
+      groups: nextGroups,
+      courses: Array.isArray(snapshot?.courses) ? snapshot.courses : [],
+    };
+    if (!includeLiveScan) {
+      setTelegramFastCachedResponse(req.authentication.userId, "groups", payload);
+    }
+    return res.status(200).json(payload);
   } catch (error) {
     next(error);
   }
@@ -4315,9 +4944,9 @@ TelegramRouter.get("/groups", checkAuth, async (req, res, next) => {
 TelegramRouter.get("/stored-groups", checkAuth, async (req, res, next) => {
   try {
     const [user, telegramSettings] = await Promise.all([
-      UserModel.findById(req.authentication.userId).select(
-        "settings.telegram.status memory",
-      ),
+      UserModel.findById(req.authentication.userId)
+        .select("settings.telegram.status")
+        .lean(),
       findTelegramSettings(req.authentication.userId),
     ]);
 
@@ -4327,11 +4956,24 @@ TelegramRouter.get("/stored-groups", checkAuth, async (req, res, next) => {
       });
     }
 
-    const memoryDoc = await findUserMemoryLean(user._id);
+    const snapshot = await getTelegramStorageSnapshot({
+      user,
+      telegramSettings,
+      includeCourses: true,
+      timeoutMs: 5000,
+    });
+    const memoryDoc =
+      snapshot?.memoryDoc && typeof snapshot.memoryDoc === "object"
+        ? snapshot.memoryDoc
+        : {};
 
     return res.status(200).json({
-      groups: listStoredTelegramGroups(user, memoryDoc, telegramSettings),
-      courses: getStoredPlannerCoursesPayload(memoryDoc),
+      groups: Array.isArray(snapshot?.groups)
+        ? snapshot.groups
+        : listStoredTelegramGroupsFast(user, memoryDoc, telegramSettings),
+      courses: Array.isArray(snapshot?.courses)
+        ? snapshot.courses
+        : getStoredPlannerCoursesPayload(memoryDoc),
     });
   } catch (error) {
     next(error);
@@ -4396,6 +5038,7 @@ TelegramRouter.delete(
         }
       }
 
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
       return res.status(200).json({
         message: deletedGroup
           ? "Stored group deleted."
@@ -4445,7 +5088,9 @@ TelegramRouter.post(
       }
 
       const normalizedReference = normalizeGroupReference(req.params.groupReference);
-      const syncEnabled = Boolean(req.body?.syncEnabled);
+      const continueMigration = Boolean(
+        req.body?.continueMigration ?? req.body?.syncEnabled,
+      );
 
       if (!normalizedReference) {
         return res.status(400).json({
@@ -4478,50 +5123,108 @@ TelegramRouter.post(
           telegramStatus.stringSessionEncrypted,
       );
 
-      if (syncEnabled && !hasCredentials) {
+      if (continueMigration && !hasCredentials) {
         return res.status(400).json({
           message: "Telegram credentials are required before enabling sync.",
         });
       }
 
       telegramStatus.groupReference = normalizedReference;
-      telegramStatus.syncMode = syncEnabled ? "live" : "one-time";
-      telegramStatus.syncEnabled = syncEnabled;
+      telegramStatus.syncMode = "one-time";
+      telegramStatus.syncEnabled = false;
       telegramStatus.updatedAt = new Date();
       await telegramSettings.save();
 
       let syncResult = null;
-      let responseMessage = syncEnabled
-        ? "Stored group sync enabled."
-        : "Stored group sync disabled.";
+      let responseMessage = "Stored group sync disabled.";
 
-      if (syncEnabled) {
+      if (continueMigration) {
         try {
           syncResult = await syncTelegramMessagesForUser(user._id, { force: true });
           responseMessage =
-            normalizeString(syncResult?.message) || "Stored group sync enabled.";
+            normalizeString(syncResult?.message) || "Stored group migration completed.";
         } catch (error) {
-          responseMessage = `Stored group sync was enabled, but the initial sync failed: ${normalizeString(
+          responseMessage = `Stored group migration failed: ${normalizeString(
             error?.message || "Unknown Telegram sync error.",
           )}`;
         }
       }
 
-      const responseMemoryDoc = syncEnabled
+      const responseMemoryDoc = continueMigration
         ? await findUserMemoryLean(user._id)
         : memoryDoc;
 
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
       return res.status(200).json({
         message: responseMessage,
         groupReference: normalizedReference,
-        syncEnabled,
-        syncStarted: Boolean(syncEnabled),
+        syncEnabled: false,
+        syncStarted: Boolean(continueMigration),
         syncSucceeded: Boolean(syncResult?.synced),
+        syncReason: normalizeString(syncResult?.reason),
+        importedCount: Number(syncResult?.importedCount || 0),
+        scannedCount: Number(syncResult?.scannedCount || 0),
+        storedCount: await getStoredMessageCountForUser(
+          responseMemoryDoc,
+          telegramSettings,
+        ),
         groups: listStoredTelegramGroups(user, responseMemoryDoc, telegramSettings),
         courses: getStoredPlannerCoursesPayload(responseMemoryDoc),
       });
     } catch (error) {
       next(error);
+    }
+  },
+);
+
+TelegramRouter.post(
+  "/stored-groups/:groupReference/control",
+  checkAuth,
+  async (req, res, next) => {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select("_id");
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const normalizedReference = normalizeGroupReference(req.params.groupReference);
+      const action = normalizeString(req.body?.action).toLowerCase();
+      if (!normalizedReference) {
+        return res.status(400).json({
+          message: "Stored conversation reference is required.",
+        });
+      }
+      if (!["play", "pause", "stop"].includes(action)) {
+        return res.status(400).json({
+          message: "Invalid control action.",
+        });
+      }
+
+      const currentStatus = getTelegramSyncStatus(user._id);
+      const statusReference = normalizeGroupReference(currentStatus?.groupReference);
+      if (statusReference && statusReference !== normalizedReference) {
+        return res.status(409).json({
+          message: "Another group is currently targeted by sync.",
+        });
+      }
+
+      const control = setTelegramSyncControl(user._id, action);
+      if (action === "pause") {
+        setTelegramSyncStatus(user._id, { running: true, reason: "paused" });
+      } else if (action === "play") {
+        setTelegramSyncStatus(user._id, { running: true, reason: "running" });
+      } else if (action === "stop") {
+        setTelegramSyncStatus(user._id, { reason: "stopping" });
+      }
+
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
+      return res.status(200).json({
+        message: `Sync control set to ${control}.`,
+        control,
+        syncStatus: getTelegramSyncStatus(user._id),
+      });
+    } catch (error) {
+      return next(error);
     }
   },
 );
@@ -4693,17 +5396,25 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       return res.status(404).json({ message: "Media not found." });
     }
 
-    const inlinePhotoDataUrl = normalizeString(storedMessage?.photoDataUrl);
-    if (inlinePhotoDataUrl.startsWith("data:image/")) {
-      const separatorIndex = inlinePhotoDataUrl.indexOf(",");
+    const attachmentKind = normalizeString(storedMessage?.attachmentKind).toLowerCase();
+    const inlineMediaDataUrl =
+      attachmentKind === "photo"
+        ? normalizeString(storedMessage?.photoDataUrl)
+        : attachmentKind === "video"
+          ? normalizeString(storedMessage?.videoDataUrl)
+          : attachmentKind === "document" || attachmentKind === "pdf"
+            ? normalizeString(storedMessage?.documentDataUrl)
+            : "";
+    if (inlineMediaDataUrl.startsWith("data:")) {
+      const separatorIndex = inlineMediaDataUrl.indexOf(",");
       if (separatorIndex > -1) {
-        const header = inlinePhotoDataUrl.slice(0, separatorIndex);
-        const base64Payload = inlinePhotoDataUrl.slice(separatorIndex + 1);
+        const header = inlineMediaDataUrl.slice(0, separatorIndex);
+        const base64Payload = inlineMediaDataUrl.slice(separatorIndex + 1);
         const headerMatch = header.match(/^data:([^;]+);base64$/i);
         if (headerMatch && base64Payload) {
           const inlineBuffer = Buffer.from(base64Payload, "base64");
           if (inlineBuffer.length > 0) {
-            res.setHeader("Content-Type", headerMatch[1] || "image/jpeg");
+            res.setHeader("Content-Type", headerMatch[1] || "application/octet-stream");
             res.setHeader("Cache-Control", "private, max-age=120");
             return res.status(200).send(inlineBuffer);
           }
@@ -4716,6 +5427,7 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       3500,
       "Telegram connection timed out.",
     );
+    const mediaTimeoutMs = attachmentKind === "photo" ? 3500 : 12000;
     const media = await withFastTimeout(
       downloadTelegramMessageMedia({
         client,
@@ -4723,7 +5435,7 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
         messageId,
         groupUsername: normalizeString(storedMessage?.groupUsername),
       }),
-      4500,
+      mediaTimeoutMs,
       "Telegram media fetch timed out.",
     );
 
@@ -4736,16 +5448,33 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       });
     }
 
-    if (
-      normalizeString(storedMessage?.attachmentKind).toLowerCase() === "photo" &&
-      !normalizeString(storedMessage?.photoDataUrl) &&
-      normalizeString(media?.mimeType).toLowerCase().startsWith("image/")
-    ) {
-      const persisted = persistStoredPhotoDataUrl({
+    const normalizedMimeType = normalizeString(media?.mimeType).toLowerCase();
+    const shouldPersistInline =
+      (attachmentKind === "photo" && !normalizeString(storedMessage?.photoDataUrl) && normalizedMimeType.startsWith("image/")) ||
+      (attachmentKind === "video" && !normalizeString(storedMessage?.videoDataUrl) && normalizedMimeType.startsWith("video/")) ||
+      ((attachmentKind === "document" || attachmentKind === "pdf") &&
+        !normalizeString(storedMessage?.documentDataUrl));
+
+    if (shouldPersistInline) {
+      const bucketName =
+        attachmentKind === "photo"
+          ? "photos"
+          : attachmentKind === "video"
+            ? "videos"
+            : "documents";
+      const dataUrlField =
+        attachmentKind === "photo"
+          ? "photoDataUrl"
+          : attachmentKind === "video"
+            ? "videoDataUrl"
+            : "documentDataUrl";
+      const persisted = persistStoredMediaDataUrl({
         memoryDoc,
         groupReference,
         messageId,
-        photoDataUrl: `data:${normalizeString(media.mimeType)};base64,${media.buffer.toString("base64")}`,
+        bucketName,
+        dataUrlField,
+        dataUrlValue: `data:${normalizeString(media.mimeType) || "application/octet-stream"};base64,${media.buffer.toString("base64")}`,
       });
       if (persisted && typeof memoryDoc?.save === "function") {
         try {

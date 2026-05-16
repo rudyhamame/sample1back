@@ -49,6 +49,13 @@ const SettingsSchema = new Schema(
         historyStartDate: { type: Date, default: null },
         historyEndDate: { type: Date, default: null },
         syncEnabled: { type: Boolean, default: false },
+        storeContent: {
+          texts: { type: Boolean, default: true },
+          photos: { type: Boolean, default: true },
+          videos: { type: Boolean, default: true },
+          audios: { type: Boolean, default: true },
+          documents: { type: Boolean, default: true },
+        },
         historyImportedAt: { type: Date, default: null },
         lastSyncedAt: { type: Date, default: null },
         lastStoredMessageId: { type: Number, default: 0 },

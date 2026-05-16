@@ -1,6 +1,9 @@
 import mongoose from "mongoose";
 import UserModel from "../compat/UserModel.js";
-import { normalizeStudyOrganizerSettings } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
+import {
+  normalizeStudyOrganizerSettings,
+  serializeStudyOrganizerSettingsForStorage,
+} from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 import AiSettingsModel from "../compat/AiSettingsModel.js";
 import TelegramSettingsModel from "../compat/TelegramSettingsModel.js";
 import {
@@ -113,8 +116,8 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
   }
 
   const normalizedStudyOrganizer = cloneValue(studyOrganizer);
-  normalizedStudyOrganizer.settings = normalizeStudyOrganizerSettings(
-    normalizedStudyOrganizer?.settings,
+  normalizedStudyOrganizer.settings = serializeStudyOrganizerSettingsForStorage(
+    normalizeStudyOrganizerSettings(normalizedStudyOrganizer?.settings),
   );
   normalizedStudyOrganizer.courses = (Array.isArray(normalizedStudyOrganizer.courses)
     ? normalizedStudyOrganizer.courses
@@ -412,7 +415,7 @@ export const findUserMemoryLean = async (
     return null;
   }
 
-  const user = await UserModel.findById(userId).select("memory");
+  const user = await UserModel.findById(userId).select("memory").lean();
   if (!user) {
     return null;
   }
