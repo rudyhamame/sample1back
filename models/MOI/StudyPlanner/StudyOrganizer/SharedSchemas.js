@@ -112,9 +112,9 @@ const PageNonTextDataSchema = new Schema(
 const LectureContentSchema = new Schema(
   {
     order: { type: Number, default: 0, min: 0 },
-    status: { type: String, default: "" },
     textData: { type: [PageTextDataSchema], default: [] },
     nonTextData: { type: [PageNonTextDataSchema], default: [] },
+    status: { type: String, default: "" },
   },
   { _id: true },
 );
