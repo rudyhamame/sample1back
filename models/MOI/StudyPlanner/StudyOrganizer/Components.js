@@ -29,16 +29,17 @@ const ExamSchema = new Schema(
 
 const ComponentSchema = new Schema(
   {
-    order: { type: Number, default: 0, min: 0 },
-    class: { type: String },
+    class: { type: String, default: "" },
+    component_class: { type: String, default: "" },
     time: { type: StudyTimeSchema, default: createEmptyObject },
     location: { type: StudyLocationSchema, default: createEmptyObject },
     status: {
       type: String,
+      default: "",
     },
     schedule: { type: [WeeklyScheduleEntrySchema], default: [] },
     lectures: { type: [StudyLectureSchema], default: [] },
-    weight: { type: Number },
+    weight: { type: Number, default: 0 },
     exams: { type: [ExamSchema], default: [] },
   },
   { _id: true },
@@ -51,7 +52,7 @@ const CourseSchema = new Schema(
     status: {
       type: String,
     },
-    weight: { type: Number },
+    weight: { type: Number, default: 100 },
     components: { type: [ComponentSchema], default: [] },
   },
   { _id: true },

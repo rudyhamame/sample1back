@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+﻿import mongoose from "mongoose";
 import UserModel from "../compat/UserModel.js";
 import {
   normalizeStudyOrganizerSettings,
@@ -80,6 +80,20 @@ const toPlainValue = (value) => {
 };
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(toPlainValue(value)));
+const normalizeTelegramConceptEntries = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const key = String(source?.key || "").trim();
+      const conceptValue = String(source?.value || "").trim();
+      const confidenceRaw = Number(source?.confidence);
+      const confidence = Number.isFinite(confidenceRaw)
+        ? Math.min(1, Math.max(0, confidenceRaw))
+        : 0;
+      const method = String(source?.method || "").trim();
+      return { key, value: conceptValue, confidence, method };
+    })
+    .filter((entry) => entry.key && entry.value);
 
 const normalizePlannerComponentStatus = (value) => {
   const normalizedValue = String(value || "").trim().toLowerCase();
@@ -102,6 +116,8 @@ const normalizePlannerCourseStatus = (value) => {
     failed: "failed",
     incomplete: "incomplete",
     passed: "passed",
+    pending: "pending",
+    ongoing: "ongoing",
     "not started": "new",
     "in progress": "incomplete",
     completed: "passed",
@@ -119,10 +135,14 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
   normalizedStudyOrganizer.settings = serializeStudyOrganizerSettingsForStorage(
     normalizeStudyOrganizerSettings(normalizedStudyOrganizer?.settings),
   );
-  normalizedStudyOrganizer.courses = (Array.isArray(normalizedStudyOrganizer.courses)
+  const rawCourses = Array.isArray(normalizedStudyOrganizer.courses)
     ? normalizedStudyOrganizer.courses
-    : []
-  ).map((course) => {
+    : normalizedStudyOrganizer.courses &&
+        typeof normalizedStudyOrganizer.courses === "object"
+      ? [normalizedStudyOrganizer.courses]
+      : [];
+
+  normalizedStudyOrganizer.courses = rawCourses.map((course) => {
     if (!course || typeof course !== "object") {
       return course;
     }
@@ -130,7 +150,13 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
     return {
       ...course,
       status: normalizePlannerCourseStatus(course.status),
-      components: (Array.isArray(course.components) ? course.components : []).map(
+      components: (
+        Array.isArray(course.components)
+          ? course.components
+          : course.components && typeof course.components === "object"
+            ? [course.components]
+            : []
+      ).map(
         (component) => ({
           ...component,
           status: normalizePlannerComponentStatus(component?.status),
@@ -148,10 +174,6 @@ const normalizeTelegramMemory = (telegram) => {
     : telegram?.groups && typeof telegram.groups === "object"
       ? [telegram.groups]
       : [];
-  const predictions =
-    telegram?.predictions && typeof telegram.predictions === "object"
-      ? cloneValue(telegram.predictions)
-      : {};
 
   return {
     groups: rawGroups.map((groupEntry) => {
@@ -159,11 +181,37 @@ const normalizeTelegramMemory = (telegram) => {
         groupEntry && typeof groupEntry === "object" ? groupEntry : {};
       const info =
         group?.info && typeof group.info === "object" ? group.info : {};
-      const contentEntry = Array.isArray(group?.content)
-        ? group.content[0] || {}
-        : group?.content && typeof group.content === "object"
-          ? group.content
-          : {};
+
+      const toMessageEntry = (entry = {}, inherited = {}) => {
+        const source = entry && typeof entry === "object" ? entry : {};
+        const trace =
+          source?.messageTrace && typeof source.messageTrace === "object"
+            ? source.messageTrace
+            : {};
+        return [
+          {
+            messageMeta:
+              source?.messageMeta && typeof source.messageMeta === "object"
+                ? cloneValue(source.messageMeta)
+                : {},
+            messageTrace: {
+              text: typeof trace?.text === "string" ? trace.text : "",
+              photos: Array.isArray(trace?.photos) ? cloneValue(trace.photos) : [],
+              videos: Array.isArray(trace?.videos) ? cloneValue(trace.videos) : [],
+              audios: Array.isArray(trace?.audios) ? cloneValue(trace.audios) : [],
+              documents: Array.isArray(trace?.documents) ? cloneValue(trace.documents) : [],
+            },
+            keywords_raw: Array.isArray(source?.keywords_raw)
+              ? source.keywords_raw
+                  .map((entry) => String(entry || "").trim())
+                  .filter(Boolean)
+              : [],
+            concepts: normalizeTelegramConceptEntries(source?.concepts),
+          },
+        ];
+      };
+      const normalizedMessages = (Array.isArray(group?.messages) ? group.messages : [])
+        .flatMap((entry) => toMessageEntry(entry, entry));
 
       return {
         info: {
@@ -182,25 +230,13 @@ const normalizeTelegramMemory = (telegram) => {
               : 0,
           pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
         },
-        content: {
-          texts: Array.isArray(contentEntry?.texts) ? cloneValue(contentEntry.texts) : [],
-          photos: Array.isArray(contentEntry?.photos) ? cloneValue(contentEntry.photos) : [],
-          images: Array.isArray(contentEntry?.images) ? cloneValue(contentEntry.images) : [],
-          videos: Array.isArray(contentEntry?.videos) ? cloneValue(contentEntry.videos) : [],
-          audios: Array.isArray(contentEntry?.audios) ? cloneValue(contentEntry.audios) : [],
-          documents: Array.isArray(contentEntry?.documents) ? cloneValue(contentEntry.documents) : [],
-          messages: Array.isArray(contentEntry?.messages) ? cloneValue(contentEntry.messages) : [],
-        },
+        messages: normalizedMessages,
       };
     }),
-    predictions,
   };
 };
 
 const resolveTelegramMemorySource = (memory = {}) => {
-  if (memory?.telegram && typeof memory.telegram === "object") {
-    return memory.telegram;
-  }
   const moaObject =
     memory?.MOA && typeof memory.MOA === "object" && !Array.isArray(memory.MOA)
       ? memory.MOA
@@ -208,11 +244,7 @@ const resolveTelegramMemorySource = (memory = {}) => {
   if (moaObject?.telegram && typeof moaObject.telegram === "object") {
     return moaObject.telegram;
   }
-  const moaEntries = Array.isArray(memory?.MOA) ? memory.MOA : [];
-  const traceTelegram =
-    moaEntries.find((entry) => entry?.telegram && typeof entry.telegram === "object")
-      ?.telegram || null;
-  return traceTelegram || {};
+  return {};
 };
 
 const mergeTelegramIntoTraces = (memory = {}, normalizedTelegram = {}) => {

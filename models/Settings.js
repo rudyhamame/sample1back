@@ -23,6 +23,20 @@ const resolveDefaultAiProvider = () => {
 
 const SettingsSchema = new Schema(
   {
+    musicPlaylist: {
+      type: [
+        {
+          songName: { type: String, default: "" },
+          artist: { type: String, default: "" },
+          provider: { type: String, default: "jamendo" },
+          trackId: { type: String, default: "" },
+          previewUrl: { type: String, default: "" },
+          query: { type: String, default: "" },
+          addedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
     ai: {
       aiProvider: { type: String, default: resolveDefaultAiProvider },
       languageOfReply: { type: String, default: "english" },
@@ -55,6 +69,7 @@ const SettingsSchema = new Schema(
           videos: { type: Boolean, default: true },
           audios: { type: Boolean, default: true },
           documents: { type: Boolean, default: true },
+          pinnedOnly: { type: Boolean, default: false },
         },
         historyImportedAt: { type: Date, default: null },
         lastSyncedAt: { type: Date, default: null },

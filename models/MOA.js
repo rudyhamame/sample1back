@@ -2,6 +2,20 @@ import mongoose from "mongoose";
 import { Content } from "openai/resources/skills.js";
 
 const { Schema } = mongoose;
+const normalizeTelegramConceptEntries = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const key = String(source?.key || "").trim();
+      const conceptValue = String(source?.value || "").trim();
+      const confidenceRaw = Number(source?.confidence);
+      const confidence = Number.isFinite(confidenceRaw)
+        ? Math.min(1, Math.max(0, confidenceRaw))
+        : 0;
+      const method = String(source?.method || "").trim();
+      return { key, value: conceptValue, confidence, method };
+    })
+    .filter((entry) => entry.key && entry.value);
 
 const ContentDocumentSchema = new Schema(
   {
@@ -228,30 +242,51 @@ const TelegramGroupInfoSchema = new Schema(
   { _id: false, strict: "throw" },
 );
 
+const TelegramConceptSchema = new Schema(
+  {
+    key: { type: String, trim: true, default: "" }, // schema key (e.g. course_name)
+    value: { type: String, trim: true, default: "" }, // matched DB value
+    confidence: { type: Number, min: 0, max: 1, default: 0 },
+    method: { type: String, trim: true, default: "" }, // exact_keyword_match, fuzzy_keyword_match, ...
+  },
+  { _id: false, strict: "throw" },
+);
+
 const TelegramGroupContentBucketSchema = new Schema(
   {
-    texts: { type: [Schema.Types.Mixed], default: [] },
-    photos: { type: [Schema.Types.Mixed], default: [] },
-    images: { type: [Schema.Types.Mixed], default: [] },
-    videos: { type: [Schema.Types.Mixed], default: [] },
-    audios: { type: [Schema.Types.Mixed], default: [] },
-    documents: { type: [Schema.Types.Mixed], default: [] },
-    messages: { type: [Schema.Types.Mixed], default: [] },
+    messageMeta: { type: Schema.Types.Mixed, default: () => ({}) },
+    messageTrace: {
+      text: { type: String, default: "" },
+      photos: { type: [Schema.Types.Mixed], default: [] },
+      videos: { type: [Schema.Types.Mixed], default: [] },
+      audios: { type: [Schema.Types.Mixed], default: [] },
+      documents: { type: [Schema.Types.Mixed], default: [] },
+    },
+    keywords_raw: { type: [String], default: [] },
+    concepts: { type: [TelegramConceptSchema], default: [] },
   },
   { _id: false, strict: "throw" },
 );
 const TelegramGroupsSchema = new Schema(
   {
     info: { type: TelegramGroupInfoSchema, default: () => ({}) },
-    content: TelegramGroupContentBucketSchema,
+    messages: { type: [TelegramGroupContentBucketSchema], default: [] },
   },
   { _id: false, strict: "throw" },
 );
 
 const TelegramMemorySchema = new Schema(
   {
-    groups: { type: [TelegramGroupsSchema], default: [] },
-    predictions: { type: Schema.Types.Mixed, default: () => ({}) },
+    groups: {
+      type: [TelegramGroupsSchema],
+      default: [],
+      set: (value) =>
+        Array.isArray(value)
+          ? value
+          : value && typeof value === "object"
+            ? [value]
+            : [],
+    },
   },
   { _id: false, strict: "throw" },
 );
@@ -272,38 +307,51 @@ MOASchema.pre("validate", function () {
   if (!telegram) {
     return;
   }
-  const groups = Array.isArray(telegram.groups) ? telegram.groups : [];
+  const groups = Array.isArray(telegram.groups)
+    ? telegram.groups
+    : telegram?.groups && typeof telegram.groups === "object"
+      ? [telegram.groups]
+      : [];
   telegram.groups = groups.map((groupEntry) => {
     const nextGroup =
       groupEntry && typeof groupEntry === "object" ? groupEntry : {};
-    if (Array.isArray(nextGroup.content)) {
-      nextGroup.content =
-        nextGroup.content[0] && typeof nextGroup.content[0] === "object"
-          ? nextGroup.content[0]
-          : {};
-    } else if (!nextGroup.content || typeof nextGroup.content !== "object") {
-      nextGroup.content = {};
+    if (!Array.isArray(nextGroup.messages)) {
+      nextGroup.messages = [];
     }
-    const content = nextGroup.content;
-    content.texts = Array.isArray(content.texts) ? content.texts : [];
-    content.photos = Array.isArray(content.photos) ? content.photos : [];
-    content.images = Array.isArray(content.images) ? content.images : [];
-    content.videos = Array.isArray(content.videos) ? content.videos : [];
-    content.audios = Array.isArray(content.audios) ? content.audios : [];
-    content.documents = Array.isArray(content.documents) ? content.documents : [];
-    content.messages = Array.isArray(content.messages) ? content.messages : [];
+    const materializedMessages = [];
+    nextGroup.messages.forEach((messageEntry) => {
+      const source =
+        messageEntry && typeof messageEntry === "object" ? messageEntry : {};
+      const trace =
+        source?.messageTrace && typeof source.messageTrace === "object"
+          ? source.messageTrace
+          : {};
+      materializedMessages.push({
+        messageMeta:
+          source?.messageMeta && typeof source.messageMeta === "object"
+            ? source.messageMeta
+            : {},
+        messageTrace: {
+          text: String(trace?.text || "").trim(),
+          photos: Array.isArray(trace?.photos) ? trace.photos : [],
+          videos: Array.isArray(trace?.videos) ? trace.videos : [],
+          audios: Array.isArray(trace?.audios) ? trace.audios : [],
+          documents: Array.isArray(trace?.documents) ? trace.documents : [],
+        },
+        keywords_raw: Array.isArray(source?.keywords_raw)
+          ? source.keywords_raw
+              .map((entry) => String(entry || "").trim())
+              .filter(Boolean)
+          : [],
+        concepts: normalizeTelegramConceptEntries(source?.concepts),
+      });
+    });
+    nextGroup.messages = materializedMessages;
 
     if (!nextGroup.info || typeof nextGroup.info !== "object") {
       nextGroup.info = {};
     }
-    nextGroup.info.messageCount =
-      content.texts.length +
-      content.photos.length +
-      content.images.length +
-      content.videos.length +
-      content.audios.length +
-      content.documents.length +
-      content.messages.length;
+    nextGroup.info.messageCount = nextGroup.messages.length;
     return nextGroup;
   });
 });

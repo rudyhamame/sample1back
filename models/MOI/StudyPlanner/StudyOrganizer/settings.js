@@ -23,6 +23,35 @@ const normalizePlannerSettingsStringList = (value) =>
         .filter((entry, index, entries) => entries.indexOf(entry) === index)
     : [];
 
+const buildHalfHour12hOptions = () => {
+  const options = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let minute = 0; minute <= 30; minute += 30) {
+      const period = hour >= 12 ? "PM" : "AM";
+      const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+      options.push(`${hour12}:${String(minute).padStart(2, "0")} ${period}`);
+    }
+  }
+  return options;
+};
+
+const buildAcademicYearOptions = (startYear = 2000, endYear = 2030) => {
+  const parsedEndYear = Number(endYear);
+  const end =
+    endYear !== null &&
+    endYear !== undefined &&
+    String(endYear).trim() !== "" &&
+    Number.isFinite(parsedEndYear)
+      ? parsedEndYear
+      : 2030;
+  const start = Math.min(Math.max(1900, Number(startYear) || 2000), end);
+  const options = [];
+  for (let year = end; year >= start; year -= 1) {
+    options.push(`${year} - ${year + 1}`);
+  }
+  return options;
+};
+
 const normalizePredictionToolEntry = (value = {}) => {
   const nextValue =
     value && typeof value === "object" ? toPlainObject(value) || {} : {};
@@ -135,6 +164,141 @@ const normalizePlannerRoomOptionsByBuilding = (value) =>
       ]);
       return accumulator;
     }, []);
+
+const normalizePlannerDependencyOptions = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => toPlainObject(entry) || {})
+    .map((entry) => ({
+      selectID: trimString(entry?.selectID),
+      options: normalizePlannerSettingsStringList(entry?.options),
+    }))
+    .filter((entry) => Boolean(entry.selectID));
+
+const normalizePlannerIndependentOptionsSelects = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => toPlainObject(entry) || {})
+    .map((entry) => ({
+      selectID: resolvePlannerSelectOptionsKey(entry?.selectID),
+      options: removeHardcodedPlannerSelectOptions(
+        entry?.selectID,
+        entry?.options,
+      ),
+    }))
+    .filter((entry) => Boolean(entry.selectID));
+
+const normalizePlannerDependentOptionsSelects = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => toPlainObject(entry) || {})
+    .map((entry) => ({
+      dependentSelectID: resolvePlannerSelectOptionsKey(
+        entry?.selectID || entry?.dependentSelectID,
+      ),
+      independentID: resolvePlannerSelectOptionsKey(entry?.independentID),
+      independentOption: trimString(entry?.independentOption),
+      dependentOptions: Array.isArray(entry?.options)
+        ? entry.options
+            .map((group) => normalizePlannerSettingsStringList(group))
+            .filter((group) => group.length > 0)
+        : Array.isArray(entry?.dependentOptions)
+          ? entry.dependentOptions
+            .map((group) => normalizePlannerSettingsStringList(group))
+            .filter((group) => group.length > 0)
+          : [],
+    }))
+    .filter(
+      (entry) =>
+        Boolean(entry.dependentSelectID) &&
+        Boolean(entry.independentID) &&
+        entry.dependentOptions.length > 0,
+    );
+
+const PLANNER_SELECT_OPTIONS_ID_ALIASES = {
+  componentClassOptions: [
+    "componentClassOptions",
+    "nogaPlanner_savedCourseSelect_course_classSelection",
+    "nogaPlanner_lecturesSelect_component",
+  ],
+  weekdayOptions: [
+    "weekdayOptions",
+    "nogaPlanner_savedCourseSelect_course_daySelection",
+  ],
+  hourOptions: [
+    "hourOptions",
+    "nogaPlanner_savedCourseSelect_course_timeSelection",
+  ],
+  termOptions: [
+    "termOptions",
+    "nogaPlanner_savedCourseSelect_normativeCourseTerm",
+  ],
+  academicYearOptions: [
+    "academicYearOptions",
+    "nogaPlanner_savedCourseSelect_normativeCourseYearInterval",
+  ],
+  locationBuildingOptions: [
+    "locationBuildingOptions",
+    "nogaPlanner_savedCourseSelect_course_locationBuilding",
+    "nogaPlanner_sharedSelect_locationBuilding",
+  ],
+  locationRoomOptions: [
+    "locationRoomOptions",
+    "nogaPlanner_savedCourseSelect_course_locationRoom",
+    "nogaPlanner_sharedSelect_locationRoom",
+  ],
+  lectureInstructorOptions: [
+    "lectureInstructorOptions",
+    "nogaPlanner_lecturesSelect_instructors",
+  ],
+  lectureWriterOptions: [
+    "lectureWriterOptions",
+    "nogaPlanner_lecturesSelect_writers",
+  ],
+};
+
+const HARD_CODED_OPTIONS_BY_SELECT_KEY = {
+  componentClassOptions: [
+    "Class",
+    "Lab",
+    "Hospital",
+    "Pharmacy",
+  ],
+  weekdayOptions: [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ],
+  hourOptions: buildHalfHour12hOptions(),
+  termOptions: ["first", "second", "third"],
+  academicYearOptions: buildAcademicYearOptions(2000, 2030),
+};
+
+const resolvePlannerSelectOptionsKey = (selectID = "") => {
+  const normalizedSelectID = trimString(selectID);
+  if (!normalizedSelectID) return "";
+  const matched = Object.entries(PLANNER_SELECT_OPTIONS_ID_ALIASES).find(
+    ([, aliases]) =>
+      Array.isArray(aliases) && aliases.includes(normalizedSelectID),
+  );
+  return matched?.[0] || normalizedSelectID;
+};
+
+const removeHardcodedPlannerSelectOptions = (selectKey = "", options = []) => {
+  const canonicalSelectKey = resolvePlannerSelectOptionsKey(selectKey);
+  const hardcodedSet = new Set(
+    normalizePlannerSettingsStringList(
+      HARD_CODED_OPTIONS_BY_SELECT_KEY[canonicalSelectKey],
+    ),
+  );
+  if (hardcodedSet.size === 0) {
+    return normalizePlannerSettingsStringList(options);
+  }
+  return normalizePlannerSettingsStringList(options).filter(
+    (option) => !hardcodedSet.has(option),
+  );
+};
 
 const normalizePlannerSettingsFieldDefaults = (value) =>
   Array.isArray(value)
@@ -284,6 +448,103 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     settings && typeof settings === "object"
       ? toPlainObject(settings) || {}
       : {};
+  const SELECT_OPTIONS_KEYS = [
+    "componentClassOptions",
+    "weekdayOptions",
+    "hourOptions",
+    "termOptions",
+    "academicYearOptions",
+    "locationBuildingOptions",
+    "locationRoomOptions",
+    "lectureInstructorOptions",
+    "lectureWriterOptions",
+  ];
+  const optionsSelectsRaw = normalizedSettings?.optionsSelects;
+  const optionsSelectsObject =
+    optionsSelectsRaw &&
+    typeof optionsSelectsRaw === "object" &&
+    !Array.isArray(optionsSelectsRaw)
+      ? toPlainObject(optionsSelectsRaw) || {}
+      : {};
+  const legacyFlatEntries = Array.isArray(optionsSelectsRaw)
+    ? optionsSelectsRaw.map((entry) => toPlainObject(entry) || {})
+    : [];
+  const independentEntries = [
+    ...normalizePlannerIndependentOptionsSelects(
+      optionsSelectsObject?.independent,
+    ),
+    ...legacyFlatEntries
+      .filter(
+        (entry) =>
+          String(entry?.mode || "")
+            .trim()
+            .toLowerCase() !== "dependent" &&
+          String(resolvePlannerSelectOptionsKey(entry?.selectID) || "").trim(),
+      )
+      .map((entry) => ({
+        selectID: resolvePlannerSelectOptionsKey(entry?.selectID),
+        options: removeHardcodedPlannerSelectOptions(
+          entry?.selectID,
+          entry?.options,
+        ),
+      })),
+  ].filter((entry) => Boolean(entry.selectID));
+  const dependentEntries = [
+    ...normalizePlannerDependentOptionsSelects(optionsSelectsObject?.dependent),
+    ...legacyFlatEntries
+      .filter(
+        (entry) =>
+          String(entry?.mode || "")
+            .trim()
+            .toLowerCase() === "dependent" &&
+          String(resolvePlannerSelectOptionsKey(entry?.selectID) || "").trim(),
+      )
+      .flatMap((entry) =>
+        (Array.isArray(entry?.dependencyOptions)
+          ? entry.dependencyOptions
+          : []
+        ).map((depEntry) => ({
+          dependentSelectID: resolvePlannerSelectOptionsKey(entry?.selectID),
+          independentID: resolvePlannerSelectOptionsKey(depEntry?.selectID),
+          independentOption: trimString(depEntry?.independentOption),
+          dependentOptions: [
+            normalizePlannerSettingsStringList(depEntry?.options),
+          ],
+        })),
+      ),
+  ];
+  const independentMap = new Map(
+    independentEntries.map((entry) => [entry.selectID, entry.options]),
+  );
+  const dependencyMap = new Map();
+  dependentEntries.forEach((entry) => {
+    const key = String(entry.dependentSelectID || "").trim();
+    if (!key) return;
+    const list = dependencyMap.get(key) || [];
+    list.push({
+      selectID: String(entry.independentID || "").trim(),
+      independentOption: String(entry.independentOption || "").trim(),
+      options: Array.isArray(entry.dependentOptions?.[0])
+        ? entry.dependentOptions[0]
+        : [],
+    });
+    dependencyMap.set(key, list);
+  });
+  const resolveSelectOptions = (key) => {
+    const entryFromSchema = independentMap.get(String(key || "").trim());
+    if (Array.isArray(entryFromSchema) && entryFromSchema.length > 0) {
+      return entryFromSchema;
+    }
+    const dependentEntries = dependencyMap.get(String(key || "").trim()) || [];
+    if (dependentEntries.length > 0) {
+      return normalizePlannerSettingsStringList(
+        dependentEntries.flatMap((entry) =>
+          Array.isArray(entry?.options) ? entry.options : [],
+        ),
+      );
+    }
+    return removeHardcodedPlannerSelectOptions(key, normalizedSettings?.[key]);
+  };
   const fieldDefaultsSource =
     normalizedSettings?.fieldDefaults &&
     typeof normalizedSettings.fieldDefaults === "object"
@@ -347,25 +608,24 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     );
 
   return {
-    componentClassOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.componentClassOptions,
-    ),
-    weekdayOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.weekdayOptions,
-    ),
-    hourOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.hourOptions,
-    ),
-    termOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.termOptions,
-    ),
-    academicYearOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.academicYearOptions,
-    ),
-    locationBuildingOptions: normalizePlannerSettingsStringList(
-      normalizedSettings?.locationBuildingOptions,
-    ),
-    locationRoomOptions: [],
+    componentClassOptions: resolveSelectOptions("componentClassOptions"),
+    weekdayOptions: resolveSelectOptions("weekdayOptions"),
+    hourOptions: resolveSelectOptions("hourOptions"),
+    termOptions: resolveSelectOptions("termOptions"),
+    academicYearOptions: resolveSelectOptions("academicYearOptions"),
+    locationBuildingOptions: resolveSelectOptions("locationBuildingOptions"),
+    locationRoomOptions: resolveSelectOptions("locationRoomOptions"),
+    lectureInstructorOptions: resolveSelectOptions("lectureInstructorOptions"),
+    lectureWriterOptions: resolveSelectOptions("lectureWriterOptions"),
+    optionsSelects: SELECT_OPTIONS_KEYS.map((selectID) => {
+      const dependentOptions = dependencyMap.get(selectID) || [];
+      return {
+        selectID,
+        mode: dependentOptions.length > 0 ? "dependent" : "independent",
+        options: resolveSelectOptions(selectID),
+        dependencyOptions: normalizePlannerDependencyOptions(dependentOptions),
+      };
+    }),
     locationRoomOptionsByBuilding,
     logoMotionEnabled:
       typeof normalizedSettings?.logoMotionEnabled === "boolean"
@@ -407,6 +667,12 @@ const getDefaultStudyOrganizerSettings = () => ({
   academicYearOptions: [],
   locationBuildingOptions: [],
   locationRoomOptions: [],
+  lectureInstructorOptions: [],
+  lectureWriterOptions: [],
+  optionsSelects: {
+    independent: [],
+    dependent: [],
+  },
   locationRoomOptionsByBuilding: [],
   logoMotionEnabled: true,
   voiceControlEnabled: false,
@@ -464,9 +730,89 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
     normalizeVoiceDictationNormalizationSettings(
       normalizedSettings?.voiceDictationNormalizations,
     );
+  const {
+    componentClassOptions: _componentClassOptions,
+    weekdayOptions: _weekdayOptions,
+    hourOptions: _hourOptions,
+    termOptions: _termOptions,
+    academicYearOptions: _academicYearOptions,
+    locationBuildingOptions: _locationBuildingOptions,
+    locationRoomOptions: _locationRoomOptions,
+    lectureInstructorOptions: _lectureInstructorOptions,
+    lectureWriterOptions: _lectureWriterOptions,
+    locationRoomOptionsByBuilding: _locationRoomOptionsByBuilding,
+    ...normalizedSettingsWithoutFlatSelectOptions
+  } = normalizedSettingsForStorage || {};
+
+  const independent = [
+    {
+      selectID: "componentClassOptions",
+      options: normalizedSettings?.componentClassOptions,
+    },
+    { selectID: "weekdayOptions", options: normalizedSettings?.weekdayOptions },
+    { selectID: "hourOptions", options: normalizedSettings?.hourOptions },
+    { selectID: "termOptions", options: normalizedSettings?.termOptions },
+    {
+      selectID: "academicYearOptions",
+      options: normalizedSettings?.academicYearOptions,
+    },
+    {
+      selectID: "locationBuildingOptions",
+      options: normalizedSettings?.locationBuildingOptions,
+    },
+    {
+      selectID: "locationRoomOptions",
+      options: normalizedSettings?.locationRoomOptions,
+    },
+    {
+      selectID: "lectureInstructorOptions",
+      options: normalizedSettings?.lectureInstructorOptions,
+    },
+    {
+      selectID: "lectureWriterOptions",
+      options: normalizedSettings?.lectureWriterOptions,
+    },
+  ].map((entry) => ({
+    selectID: trimString(entry.selectID),
+    options: normalizePlannerSettingsStringList(entry.options),
+  }));
+  const dependent = (
+    Array.isArray(normalizedSettings?.optionsSelects)
+      ? normalizedSettings.optionsSelects
+      : []
+  )
+    .flatMap((entry) =>
+      String(entry?.mode || "")
+        .trim()
+        .toLowerCase() === "dependent"
+        ? (Array.isArray(entry?.dependencyOptions)
+            ? entry.dependencyOptions
+            : []
+          ).map((dependencyEntry) => ({
+            selectID: trimString(entry?.selectID),
+            independentID: trimString(dependencyEntry?.selectID),
+            independentOption: trimString(dependencyEntry?.independentOption),
+            options: [
+              normalizePlannerSettingsStringList(dependencyEntry?.options),
+            ],
+            mode: "dependent",
+          }))
+        : [],
+    )
+    .filter(
+      (entry) =>
+        Boolean(entry.selectID) &&
+        Boolean(entry.independentID) &&
+        Array.isArray(entry.options?.[0]) &&
+        entry.options[0].length > 0,
+    );
 
   return {
-    ...normalizedSettingsForStorage,
+    ...normalizedSettingsWithoutFlatSelectOptions,
+    optionsSelects: {
+      independent,
+      dependent,
+    },
     messageFriend: {
       from: serializedMessageFriendFrom,
       to: serializedMessageFriendTo,
@@ -524,14 +870,29 @@ const PlannerRelationshipConditionSchema = new Schema(
   { _id: false },
 );
 
-const PlannerOptionsSelectsSchema = new Schema(
+const PlannerIndependentOptionsSelectsSchema = new Schema(
   {
     selectID: { type: String, trim: true, default: "" },
     options: { type: [String], default: [] },
+    mode: { type: String },
   },
   { _id: false, strict: "throw" },
 );
 
+const PlannerDependentOptionsSelectsSchema = new Schema(
+  {
+    independentID: { type: String, trim: true, default: "" },
+    independentOption: { type: String, trim: true, default: "" },
+    selectID: { type: String, trim: true, default: "" },
+    options: [{ type: [String], default: [] }],
+    mode: { type: String },
+  },
+  { _id: false, strict: "throw" },
+);
+const PlannerOptionsSelectsSchema = new Schema({
+  independent: { type: [PlannerIndependentOptionsSelectsSchema] },
+  dependent: { type: [PlannerDependentOptionsSelectsSchema] },
+});
 const PlannerRelationshipSchema = new Schema({
   mode: { type: String },
   causeField: { type: String },
@@ -579,27 +940,19 @@ const PlannerVoiceDictationNormalizationSchema = new Schema(
   { _id: false },
 );
 
+const locationRoomOptionsByBuilding = new Schema(
+  {
+    building: { type: String, trim: true, default: "" },
+    rooms: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
 const PlannerSettingsSchema = new Schema(
   {
-    optionsSelects: { type: PlannerOptionsSelectsSchema },
-    componentClassOptions: { type: [String], default: [] },
-    weekdayOptions: { type: [String], default: [] },
-    hourOptions: { type: [String], default: [] },
-    termOptions: { type: [String], default: [] },
-    academicYearOptions: { type: [String], default: [] },
-    locationBuildingOptions: { type: [String], default: [] },
-    locationRoomOptions: { type: [String], default: [] },
-    locationRoomOptionsByBuilding: {
-      type: [
-        new Schema(
-          {
-            building: { type: String, trim: true, default: "" },
-            rooms: { type: [String], default: [] },
-          },
-          { _id: false },
-        ),
-      ],
-      default: [],
+    optionsSelects: {
+      type: PlannerOptionsSelectsSchema,
+      default: () => ({ independent: [], dependent: [] }),
     },
     logoMotionEnabled: { type: Boolean, default: true },
     voiceControlEnabled: { type: Boolean, default: false },
@@ -625,11 +978,15 @@ const PlannerSettingsSchema = new Schema(
 );
 
 export {
+  PlannerIndependentOptionsSelectsSchema,
+  PlannerDependentOptionsSelectsSchema,
   PlannerRelationshipConditionSchema,
   PlannerFieldDefaultSchema,
   PlannerRelationshipSchema,
   PlannerSettingsSchema,
   normalizePlannerSettingsFieldDefaults,
+  resolvePlannerSelectOptionsKey,
+  removeHardcodedPlannerSelectOptions,
   getDefaultStudyOrganizerSettings,
   normalizeStudyOrganizerSettings,
   serializeStudyOrganizerSettingsForStorage,

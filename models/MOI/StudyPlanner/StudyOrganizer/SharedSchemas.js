@@ -109,12 +109,27 @@ const PageNonTextDataSchema = new Schema(
   { _id: true },
 );
 
+const StudyLecturePlanAidSchema = new Schema(
+  {
+    targetHours: { type: Number, default: 0, min: 0 },
+    difficulty: { type: String, trim: true, default: "" },
+    mastery: { type: String, trim: true, default: "" },
+    priority: { type: String, trim: true, default: "" },
+    studyTimePerPage: { type: Number, default: 0, min: 0 },
+    note: { type: String, trim: true, default: "" },
+  },
+  { _id: true },
+);
+
+const plan = StudyLecturePlanAidSchema;
+
 const LectureContentSchema = new Schema(
   {
     order: { type: Number, default: 0, min: 0 },
     textData: { type: [PageTextDataSchema], default: [] },
     nonTextData: { type: [PageNonTextDataSchema], default: [] },
     status: { type: String, default: "" },
+    plan: { type: StudyLecturePlanAidSchema, default: () => ({}) },
   },
   { _id: true },
 );
@@ -122,10 +137,11 @@ const LectureContentSchema = new Schema(
 const StudyLectureSchema = new Schema(
   {
     title: { type: String, default: "" },
-    instructors: { type: [String], default: [] },
-    writer: { type: [String], default: [] },
+    instructor: { type: String, default: "" },
+    writer: { type: String, default: "" },
     publishDate: { type: Date, default: null },
     volume: { type: StudyVolumeSchema, default: () => ({}) },
+    studyPlanAid: { type: StudyLecturePlanAidSchema, default: () => ({}) },
     content: { type: [LectureContentSchema], default: [] },
   },
   { _id: true },
@@ -140,6 +156,8 @@ export {
   StudyGradeSchema,
   PageTextDataSchema,
   PageNonTextDataSchema,
+  StudyLecturePlanAidSchema,
   LectureContentSchema,
+  plan,
   StudyLectureSchema,
 };

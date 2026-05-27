@@ -1,7 +1,8 @@
-import mongoose from "mongoose";
+﻿import mongoose from "mongoose";
 import {
   getDefaultStudyOrganizerSettings,
   normalizeStudyOrganizerSettings,
+  serializeStudyOrganizerSettingsForStorage,
 } from "../../../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 
 const DEFAULT_STUDY_ORGANIZER = {
@@ -12,9 +13,16 @@ const DEFAULT_STUDY_ORGANIZER = {
 
 const DEFAULT_STUDY_PLAN_AID = {
   enabled: false,
-  source: "normalized-page-text",
-  goal: "Help make the study plan more achievable from lecture page text.",
-  lectureAids: [],
+  viewMode: "timeline",
+  timelineUnit: "day",
+  defaults: {
+    defaultDailyHours: 0,
+    defaultDifficulty: "",
+    defaultMastery: "",
+    defaultPriority: "",
+  },
+  coursePlans: [],
+  dayPlans: [],
   note: "",
 };
 
@@ -108,7 +116,7 @@ const trimString = (value) => String(value || "").trim();
 const repairArabicMojibake = (value) => {
   const normalizedValue = trimString(value);
 
-  if (!/[ØÙøù]/.test(normalizedValue)) {
+  if (!/[Ã˜Ã™Ã¸Ã¹]/.test(normalizedValue)) {
     return normalizedValue;
   }
 
@@ -127,9 +135,26 @@ const normalizeOptionalPlannerString = (value) => {
 
 const normalizeStudyTerm = (value) => normalizeOptionalPlannerString(value);
 
-const normalizeComponentStatus = (value) => normalizeOptionalPlannerString(value);
+const normalizePlannerStatusValue = (value) => {
+  const normalizedValue = normalizeOptionalPlannerString(value).toLowerCase();
+  const aliases = {
+    pending: "pending",
+    "set later": "pending",
+    new: "new",
+    failed: "failed",
+    passed: "passed",
+    incomplete: "incomplete",
+    ongoing: "ongoing",
+    "not started": "pending",
+  };
+  return aliases[normalizedValue] || "new";
+};
 
-const normalizeCourseStatus = (value) => normalizeOptionalPlannerString(value);
+const normalizeComponentStatus = (value) => normalizePlannerStatusValue(value);
+
+const normalizeCourseStatus = (value) => normalizePlannerStatusValue(value);
+
+
 
 const normalizeExamType = (value) => normalizeOptionalPlannerString(value);
 
@@ -138,17 +163,15 @@ const classifyStudyTerm = (value) => {
   const termAliases = {
     first: "first",
     fall: "first",
-    "الأول": "first",
     second: "second",
     winter: "second",
-    "الثاني": "second",
     third: "third",
     summer: "third",
-    "الصيفي": "third",
   };
 
   return termAliases[normalizedValue] || normalizedValue;
 };
+
 
 const normalizeStringArray = (value) =>
   (Array.isArray(value) ? value : [value])
@@ -275,7 +298,7 @@ const getComponentTimingStatus = (component = {}) => {
 
   if (Number.isFinite(actualYearNum) && Number.isFinite(normativeYearNum)) {
     if (actualYearNum > normativeYearNum) {
-      return "راسب";
+      return "failed";
     }
 
     if (
@@ -284,11 +307,11 @@ const getComponentTimingStatus = (component = {}) => {
       actualTerm &&
       normativeTerm !== actualTerm
     ) {
-      return "راسب";
+      return "failed";
     }
 
     if (actualYearNum === normativeYearNum && normativeTerm && actualTerm) {
-      return normativeTerm === actualTerm ? "جديد" : "راسب";
+      return normativeTerm === actualTerm ? "new" : "failed";
     }
   }
 
@@ -359,22 +382,17 @@ const getComparableExamThreshold = (grade = {}) => {
 const classifyExamResultStatus = (value) => {
   const normalizedValue = repairArabicMojibake(value).toLowerCase();
   const statusAliases = {
-    passed: "ناجح",
-    pass: "ناجح",
-    success: "ناجح",
-    successful: "ناجح",
-    failed: "راسب",
-    fail: "راسب",
+    passed: "passed",
+    pass: "passed",
+    success: "passed",
+    successful: "passed",
+    failed: "failed",
+    fail: "failed",
     pending: "",
     new: "",
     "not started": "",
     "in progress": "",
-    "ناجح": "ناجح",
-    "ناجحة": "ناجح",
-    "راسب": "راسب",
-    "راسبة": "راسب",
   };
-
   return statusAliases[normalizedValue] || "";
 };
 
@@ -390,12 +408,10 @@ const deriveExamGradeStatusFromValues = (grade = {}, passGrade = {}) => {
     rawPassThreshold !== null && rawPassThreshold !== undefined;
   const gradeValue = hasGradeValue ? Number(rawGradeValue) : null;
   const passThreshold = hasPassThreshold ? Number(rawPassThreshold) : null;
-
   if (!Number.isFinite(gradeValue) || !Number.isFinite(passThreshold)) {
     return trimString(grade?.status || "");
   }
-
-  return gradeValue < passThreshold ? "راسب" : "ناجح";
+  return gradeValue < passThreshold ? "failed" : "passed";
 };
 
 const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
@@ -413,15 +429,12 @@ const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
     normalizedComponent?.normativeCourseTerm ||
       componentTime?.Normative?.courseTerm,
   );
-
   if (!normativeYearInterval || !normativeTerm) {
-    return "يحدّد لاحقاً";
+    return "pending";
   }
-
   if (hasExactPlannerComponentTimingMatch(normalizedComponent)) {
-    return "جديد";
+    return "new";
   }
-
   const componentExams = Array.isArray(normalizedComponent?.exams)
     ? normalizedComponent.exams.map((exam) => toPlainObject(exam) || {})
     : [];
@@ -432,15 +445,12 @@ const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
       ),
     )
     .filter(Boolean);
-
-  if (explicitExamStatuses.some((status) => status === "راسب")) {
-    return "راسب";
+  if (explicitExamStatuses.some((status) => status === "failed")) {
+    return "failed";
   }
-
-  if (explicitExamStatuses.some((status) => status === "ناجح")) {
-    return "ناجح";
+  if (explicitExamStatuses.some((status) => status === "passed")) {
+    return "passed";
   }
-
   const evaluatedExams = componentExams
     .map((exam) => ({
       gradeValue: getComparableExamThreshold(exam?.grade || {}),
@@ -452,48 +462,39 @@ const derivePlannerComponentStatus = (component = {}, plannerExams = []) => {
         Number.isFinite(passGradeValue) &&
         (gradeValue > 0 || passGradeValue > 0),
     );
-
   if (evaluatedExams.length > 0) {
     return evaluatedExams.some(
       ({ gradeValue, passGradeValue }) => gradeValue < passGradeValue,
     )
-      ? "راسب"
-      : "ناجح";
+      ? "failed"
+      : "passed";
   }
-
-  return "جديد";
+  return "new";
 };
 
 const derivePlannerCourseStatus = (components = [], plannerExams = []) => {
   const componentStatuses = (Array.isArray(components) ? components : [])
     .map((component) => derivePlannerComponentStatus(component))
     .filter(Boolean);
-
   if (componentStatuses.length === 0) {
-    return "جديد";
+    return "new";
   }
-
-  if (componentStatuses.every((status) => status === "يحدّد لاحقاً")) {
-    return "يحدّد لاحقاً";
+  if (componentStatuses.every((status) => status === "pending")) {
+    return "pending";
   }
-
-  if (componentStatuses.every((status) => status === "جديد")) {
-    return "جديد";
+  if (componentStatuses.every((status) => status === "new")) {
+    return "new";
   }
-
-  if (componentStatuses.every((status) => status === "راسب")) {
-    return "راسب";
+  if (componentStatuses.every((status) => status === "failed")) {
+    return "failed";
   }
-
-  if (componentStatuses.every((status) => status === "ناجح")) {
-    return "ناجح";
+  if (componentStatuses.every((status) => status === "passed")) {
+    return "passed";
   }
-
-  if (componentStatuses.some((status) => status === "ناجح")) {
-    return "غير مكتمل";
+  if (componentStatuses.some((status) => status === "passed")) {
+    return "incomplete";
   }
-
-  return "غير مكتمل";
+  return "incomplete";
 };
 
 const buildWeight = (value, previousWeight = {}) => {
@@ -505,7 +506,6 @@ const buildWeight = (value, previousWeight = {}) => {
       ? parsedValue
       : Number(previousWeight?.value) || 0,
     total: Number.isFinite(parsedTotal) ? parsedTotal : 100,
-    unit: trimString(previousWeight?.unit) || "percent",
   };
 };
 
@@ -516,9 +516,8 @@ const buildLocation = (payload = {}, previousLocation = {}) => ({
   room: trimString(payload?.course_locationRoom) || trimString(previousLocation?.room),
 });
 
-const buildVolume = (value, previousVolume = {}, unit = "pages") => ({
+const buildVolume = (value, previousVolume = {}) => ({
   value: toFiniteNumber(value, Number(previousVolume?.value) || 0),
-  unit: trimString(previousVolume?.unit) || unit,
   scope: trimString(previousVolume?.scope),
   note: trimString(previousVolume?.note),
 });
@@ -573,7 +572,6 @@ const buildGrade = (
     maxGrade: nextMax,
     max: nextMax,
     status: trimString(previousGrade?.status),
-    unit: trimString(previousGrade?.unit) || "points",
   };
 };
 
@@ -633,7 +631,6 @@ const sanitizeStudyTime = (value = {}) => {
 const sanitizeStudyWeight = (value = {}) => ({
   value: toFiniteNumber(value?.value, 0),
   total: toFiniteNumber(value?.total, 100),
-  unit: trimString(value?.unit) || "percent",
 });
 
 const normalizeComponentWeightNumber = (value, fallbackValue = 0) => {
@@ -683,7 +680,6 @@ const sanitizeStudyGrade = (value = {}) => ({
       ? null
       : toFiniteNumber(value?.max, null),
   status: trimString(value?.status),
-  unit: trimString(value?.unit) || "points",
 });
 
 const sanitizePageTextData = (value = {}) => ({
@@ -858,10 +854,242 @@ const ensureStudyOrganizer = (memoryDoc) => {
     exams: Array.isArray(currentOrganizer?.exams)
       ? currentOrganizer.exams.map((entry) => sanitizeStudyExam(toPlainObject(entry) || {}))
       : [],
-    settings: normalizeStudyOrganizerSettings(currentOrganizer?.settings),
+    settings: serializeStudyOrganizerSettingsForStorage(
+      normalizeStudyOrganizerSettings(currentOrganizer?.settings),
+    ),
   };
 
   return studyPlanner.studyOrganizer;
+};
+
+const normalizeStudyPlanAidNumber = (value, fallbackValue = 0) => {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) && parsedValue >= 0
+    ? parsedValue
+    : fallbackValue;
+};
+
+const normalizeStudyPlanAidIdString = (value) =>
+  normalizeIdString(value) || trimString(value);
+
+const normalizeStudyPlanAidLectureOverride = (entry = {}) => {
+  const normalizedEntry = toPlainObject(entry) || {};
+  const lectureId = normalizeStudyPlanAidIdString(normalizedEntry?.lectureId);
+  if (!lectureId) {
+    return null;
+  }
+
+  return {
+    ...(normalizedEntry?._id ? { _id: normalizedEntry._id } : {}),
+    lectureId,
+    targetHours: normalizeStudyPlanAidNumber(normalizedEntry?.targetHours, 0),
+    difficulty: trimString(normalizedEntry?.difficulty),
+    mastery: trimString(normalizedEntry?.mastery),
+    priority: trimString(normalizedEntry?.priority),
+    dailyHoursCap: normalizeStudyPlanAidNumber(
+      normalizedEntry?.dailyHoursCap,
+      0,
+    ),
+    note: trimString(normalizedEntry?.note),
+  };
+};
+
+const normalizeStudyPlanAidComponentPlan = (entry = {}) => {
+  const normalizedEntry = toPlainObject(entry) || {};
+  const componentId = normalizeStudyPlanAidIdString(normalizedEntry?.componentId);
+  if (!componentId) {
+    return null;
+  }
+
+  return {
+    ...(normalizedEntry?._id ? { _id: normalizedEntry._id } : {}),
+    componentId,
+    targetHours: normalizeStudyPlanAidNumber(normalizedEntry?.targetHours, 0),
+    difficulty: trimString(normalizedEntry?.difficulty),
+    mastery: trimString(normalizedEntry?.mastery),
+    priority: trimString(normalizedEntry?.priority),
+    dailyHoursCap: normalizeStudyPlanAidNumber(
+      normalizedEntry?.dailyHoursCap,
+      0,
+    ),
+    note: trimString(normalizedEntry?.note),
+    lectureOverrides: (Array.isArray(normalizedEntry?.lectureOverrides)
+      ? normalizedEntry.lectureOverrides
+      : []
+    )
+      .map((lectureOverrideEntry) =>
+        normalizeStudyPlanAidLectureOverride(lectureOverrideEntry),
+      )
+      .filter(Boolean),
+  };
+};
+
+const normalizeStudyPlanAidCoursePlan = (entry = {}) => {
+  const normalizedEntry = toPlainObject(entry) || {};
+  const courseId = normalizeStudyPlanAidIdString(normalizedEntry?.courseId);
+  if (!courseId) {
+    return null;
+  }
+
+  return {
+    ...(normalizedEntry?._id ? { _id: normalizedEntry._id } : {}),
+    courseId,
+    note: trimString(normalizedEntry?.note),
+    componentPlans: (Array.isArray(normalizedEntry?.componentPlans)
+      ? normalizedEntry.componentPlans
+      : []
+    )
+      .map((componentPlanEntry) =>
+        normalizeStudyPlanAidComponentPlan(componentPlanEntry),
+      )
+      .filter(Boolean),
+  };
+};
+
+const normalizeStudyPlanAidDayPlan = (entry = {}) => {
+  const normalizedEntry = toPlainObject(entry) || {};
+  const periodType = trimString(normalizedEntry?.periodType);
+  const groupKey = trimString(normalizedEntry?.groupKey);
+  const dayNumber = normalizeStudyPlanAidNumber(normalizedEntry?.dayNumber, 0);
+  if (!periodType || !groupKey || dayNumber <= 0) {
+    return null;
+  }
+
+  return {
+    ...(normalizedEntry?._id ? { _id: normalizedEntry._id } : {}),
+    periodType,
+    groupKey,
+    label: trimString(normalizedEntry?.label),
+    dayNumber,
+    dailyHoursCap: normalizeStudyPlanAidNumber(
+      normalizedEntry?.dailyHoursCap,
+      0,
+    ),
+    lectureIds: (Array.isArray(normalizedEntry?.lectureIds)
+      ? normalizedEntry.lectureIds
+      : []
+    )
+      .map((lectureId) =>
+        normalizeObjectIdValue(lectureId, { allowNull: false }),
+      )
+      .filter(Boolean),
+  };
+};
+
+const normalizeStudyPlanAidDefaults = (value = {}) => {
+  const normalizedValue = toPlainObject(value) || {};
+  return {
+    defaultDailyHours: normalizeStudyPlanAidNumber(
+      normalizedValue?.defaultDailyHours,
+      DEFAULT_STUDY_PLAN_AID.defaults.defaultDailyHours,
+    ),
+    defaultDifficulty:
+      trimString(normalizedValue?.defaultDifficulty) ||
+      DEFAULT_STUDY_PLAN_AID.defaults.defaultDifficulty,
+    defaultMastery:
+      trimString(normalizedValue?.defaultMastery) ||
+      DEFAULT_STUDY_PLAN_AID.defaults.defaultMastery,
+    defaultPriority:
+      trimString(normalizedValue?.defaultPriority) ||
+      DEFAULT_STUDY_PLAN_AID.defaults.defaultPriority,
+  };
+};
+
+const buildNormalizedStudyPlanAid = (value = {}) => {
+  const normalizedValue = toPlainObject(value) || {};
+  return {
+    enabled:
+      typeof normalizedValue?.enabled === "boolean"
+        ? normalizedValue.enabled
+        : DEFAULT_STUDY_PLAN_AID.enabled,
+    viewMode: trimString(normalizedValue?.viewMode) || DEFAULT_STUDY_PLAN_AID.viewMode,
+    timelineUnit:
+      trimString(normalizedValue?.timelineUnit) ||
+      DEFAULT_STUDY_PLAN_AID.timelineUnit,
+    defaults: normalizeStudyPlanAidDefaults(normalizedValue?.defaults),
+    coursePlans: (Array.isArray(normalizedValue?.coursePlans)
+      ? normalizedValue.coursePlans
+      : []
+    )
+      .map((coursePlanEntry) => normalizeStudyPlanAidCoursePlan(coursePlanEntry))
+      .filter(Boolean),
+    dayPlans: (Array.isArray(normalizedValue?.dayPlans)
+      ? normalizedValue.dayPlans
+      : []
+    )
+      .map((dayPlanEntry) => normalizeStudyPlanAidDayPlan(dayPlanEntry))
+      .filter(Boolean),
+    note: trimString(normalizedValue?.note),
+  };
+};
+
+const removeLectureOverrideFromStudyPlanAid = (studyPlanAid, lectureId = "") => {
+  const normalizedLectureId = normalizeIdString(lectureId);
+  if (!normalizedLectureId) {
+    return;
+  }
+
+  studyPlanAid.coursePlans = (Array.isArray(studyPlanAid?.coursePlans)
+    ? studyPlanAid.coursePlans
+    : []
+  )
+    .map((coursePlan) => ({
+      ...(toPlainObject(coursePlan) || {}),
+      componentPlans: (Array.isArray(coursePlan?.componentPlans)
+        ? coursePlan.componentPlans
+        : []
+      )
+        .map((componentPlan) => ({
+          ...(toPlainObject(componentPlan) || {}),
+          lectureOverrides: (Array.isArray(componentPlan?.lectureOverrides)
+            ? componentPlan.lectureOverrides
+            : []
+          ).filter(
+            (lectureOverride) =>
+              normalizeIdString(lectureOverride?.lectureId) !== normalizedLectureId,
+          ),
+        }))
+        .filter((componentPlan) => Boolean(componentPlan?.componentId)),
+    }))
+    .filter((coursePlan) => Boolean(coursePlan?.courseId));
+  studyPlanAid.dayPlans = (Array.isArray(studyPlanAid?.dayPlans)
+    ? studyPlanAid.dayPlans
+    : []
+  )
+    .map((dayPlan) => ({
+      ...(toPlainObject(dayPlan) || {}),
+      lectureIds: (Array.isArray(dayPlan?.lectureIds) ? dayPlan.lectureIds : []).filter(
+        (dayPlanLectureId) =>
+          normalizeIdString(dayPlanLectureId) !== normalizedLectureId,
+      ),
+    }))
+    .filter((dayPlan) => Array.isArray(dayPlan?.lectureIds) && dayPlan.lectureIds.length > 0);
+};
+
+const removeCourseOrComponentFromStudyPlanAid = (studyPlanAid, targetId = "") => {
+  const normalizedTargetId = normalizeIdString(targetId);
+  if (!normalizedTargetId) {
+    return;
+  }
+
+  studyPlanAid.coursePlans = (Array.isArray(studyPlanAid?.coursePlans)
+    ? studyPlanAid.coursePlans
+    : []
+  )
+    .filter(
+      (coursePlan) => normalizeIdString(coursePlan?.courseId) !== normalizedTargetId,
+    )
+    .map((coursePlan) => ({
+      ...(toPlainObject(coursePlan) || {}),
+      componentPlans: (Array.isArray(coursePlan?.componentPlans)
+        ? coursePlan.componentPlans
+        : []
+      ).filter(
+        (componentPlan) =>
+          normalizeIdString(componentPlan?.componentId) !== normalizedTargetId,
+      ),
+    }))
+    .filter((coursePlan) => Boolean(coursePlan?.courseId));
 };
 
 const ensureStudyPlanAid = (memoryDoc) => {
@@ -871,16 +1099,7 @@ const ensureStudyPlanAid = (memoryDoc) => {
       ? toPlainObject(studyPlanner.studyPlanAid)
       : {};
 
-  studyPlanner.studyPlanAid = {
-    enabled:
-      typeof currentAid?.enabled === "boolean"
-        ? currentAid.enabled
-        : DEFAULT_STUDY_PLAN_AID.enabled,
-    source: trimString(currentAid?.source) || DEFAULT_STUDY_PLAN_AID.source,
-    goal: trimString(currentAid?.goal) || DEFAULT_STUDY_PLAN_AID.goal,
-    lectureAids: Array.isArray(currentAid?.lectureAids) ? currentAid.lectureAids : [],
-    note: trimString(currentAid?.note),
-  };
+  studyPlanner.studyPlanAid = buildNormalizedStudyPlanAid(currentAid);
 
   return studyPlanner.studyPlanAid;
 };
@@ -892,47 +1111,40 @@ export const updateStudyPlanAidInPlanner = (memoryDoc, payload = {}) => {
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
 
-  const nextLectureAids = Array.isArray(normalizedPayload?.lectureAids)
-    ? normalizedPayload.lectureAids
-        .map((entry) => {
-          const normalizedEntry = toPlainObject(entry) || {};
-          return {
-            ...(normalizedEntry?._id ? { _id: normalizedEntry._id } : {}),
-            lectureId: normalizedEntry?.lectureId || null,
-            pageIds: Array.isArray(normalizedEntry?.pageIds)
-              ? normalizedEntry.pageIds.filter(Boolean)
-              : [],
-            normalizedPageText: Array.isArray(normalizedEntry?.normalizedPageText)
-              ? normalizedEntry.normalizedPageText
-                  .map((text) => trimString(text))
-                  .filter(Boolean)
-              : [],
-            studyNotes: trimString(normalizedEntry?.studyNotes),
-            memorizationTips: trimString(normalizedEntry?.memorizationTips),
-            practiceQuestions: Array.isArray(normalizedEntry?.practiceQuestions)
-              ? normalizedEntry.practiceQuestions
-                  .map((question) => trimString(question))
-                  .filter(Boolean)
-              : [],
-            note: trimString(normalizedEntry?.note),
-          };
-        })
-        .filter((entry) => entry.lectureId)
-    : studyPlanAid.lectureAids;
+  const nextDefaults =
+    normalizedPayload?.defaults && typeof normalizedPayload.defaults === "object"
+      ? normalizeStudyPlanAidDefaults(normalizedPayload.defaults)
+      : studyPlanAid.defaults;
+  const nextCoursePlans = Array.isArray(normalizedPayload?.coursePlans)
+    ? normalizedPayload.coursePlans
+        .map((entry) => normalizeStudyPlanAidCoursePlan(entry))
+        .filter(Boolean)
+    : studyPlanAid.coursePlans;
+  const nextDayPlans = Array.isArray(normalizedPayload?.dayPlans)
+    ? normalizedPayload.dayPlans
+        .map((entry) => normalizeStudyPlanAidDayPlan(entry))
+        .filter(Boolean)
+    : studyPlanAid.dayPlans;
 
   studyPlanAid.enabled =
     typeof normalizedPayload?.enabled === "boolean"
       ? normalizedPayload.enabled
       : studyPlanAid.enabled;
-  studyPlanAid.source =
-    trimString(normalizedPayload?.source) || trimString(studyPlanAid?.source);
-  studyPlanAid.goal =
-    trimString(normalizedPayload?.goal) || trimString(studyPlanAid?.goal);
+  studyPlanAid.viewMode =
+    trimString(normalizedPayload?.viewMode) || trimString(studyPlanAid?.viewMode);
+  studyPlanAid.timelineUnit =
+    trimString(normalizedPayload?.timelineUnit) ||
+    trimString(studyPlanAid?.timelineUnit) ||
+    DEFAULT_STUDY_PLAN_AID.timelineUnit;
+  studyPlanAid.defaults = nextDefaults;
   studyPlanAid.note =
-    trimString(normalizedPayload?.note) || trimString(studyPlanAid?.note);
-  studyPlanAid.lectureAids = nextLectureAids;
+    normalizedPayload?.note !== undefined
+      ? trimString(normalizedPayload?.note)
+      : trimString(studyPlanAid?.note);
+  studyPlanAid.coursePlans = nextCoursePlans;
+  studyPlanAid.dayPlans = nextDayPlans;
 
-  return studyPlanAid;
+  return buildNormalizedStudyPlanAid(studyPlanAid);
 };
 
 const getPlannerCourses = (memoryDoc) => {
@@ -997,10 +1209,17 @@ const buildLecturePages = (payload = {}, previousLecture = {}) => {
           .filter((pageNumber) => pageNumber > 0)
       : [],
   );
+  const pageStudyTimeEntries =
+    payload?.lecture_pageStudyTimes &&
+    typeof payload.lecture_pageStudyTimes === "object"
+      ? payload.lecture_pageStudyTimes
+      : {};
 
   return Array.from({ length: totalPages }, (_, index) => {
     const order = index + 1;
     const previousPage = previousPages[index] || {};
+    const payloadStudyTime = Number(pageStudyTimeEntries?.[order] || 0);
+    const previousStudyTime = Number(previousPage?.plan?.studyTimePerPage || 0);
 
     return {
       ...(previousPage?._id ? { _id: previousPage._id } : {}),
@@ -1010,6 +1229,19 @@ const buildLecturePages = (payload = {}, previousLecture = {}) => {
       nonTextData: Array.isArray(previousPage?.nonTextData)
         ? previousPage.nonTextData
         : [],
+      plan: {
+        ...(previousPage?.plan && typeof previousPage.plan === "object"
+          ? previousPage.plan
+          : {}),
+        studyTimePerPage: Math.max(
+          0,
+          Number.isFinite(payloadStudyTime)
+            ? payloadStudyTime
+            : Number.isFinite(previousStudyTime)
+              ? previousStudyTime
+              : 0,
+        ),
+      },
     };
   });
 };
@@ -1591,7 +1823,7 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
       normalizedPreviousLecture?.weight &&
       typeof normalizedPreviousLecture.weight === "object"
         ? normalizedPreviousLecture.weight
-        : { value: 0, unit: "percent" },
+        : { value: 0 },
     progress: finishedPages.length,
     content,
   };
@@ -2051,6 +2283,18 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
                 },
                 (_, index) => index + 1,
               );
+        const lecturePageStudyTimes = pages.reduce((result, page) => {
+          const normalizedPage = toPlainObject(page) || {};
+          const order = toPositiveInteger(normalizedPage?.order, 0);
+          if (!order) {
+            return result;
+          }
+          result[order] = Math.max(
+            0,
+            Number(normalizedPage?.plan?.studyTimePerPage || 0) || 0,
+          );
+          return result;
+        }, {});
 
         return {
           _id: normalizedLecture?._id || null,
@@ -2078,6 +2322,7 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
           lecture_length: pages.length,
           lecture_progress: finishedPages.length,
           lecture_pagesFinished: finishedPages,
+          lecture_pageStudyTimes: lecturePageStudyTimes,
           lecture_outlines: [],
           lecture_corrections: [],
           lecture_partOfPlan: true,
@@ -2095,33 +2340,37 @@ export const syncManualInstructors = (memoryDoc, instructorNames = []) => {
 export const addLectureToPlanner = (memoryDoc, payload = {}) => {
   const courses = getPlannerCourses(memoryDoc).map((course) => toPlainObject(course));
   const lectureCourseName = trimString(payload?.lecture_course);
-  let { courseIndex, componentIndex } = findCourseComponentByLabel(
-    courses,
-    lectureCourseName,
+  const targetComponentId = trimString(
+    payload?.lecture_componentId || payload?.componentId,
   );
+  const targetCourseId = trimString(payload?.lecture_courseId || payload?.courseId);
+
+  let courseIndex = -1;
+  let componentIndex = -1;
+
+  if (targetComponentId) {
+    const componentMatch = findCourseAndComponentById(courses, targetComponentId);
+    courseIndex = componentMatch.courseIndex;
+    componentIndex = componentMatch.componentIndex;
+  } else if (targetCourseId) {
+    const courseMatch = findCourseAndComponentById(courses, targetCourseId);
+    if (courseMatch.courseIndex !== -1) {
+      courseIndex = courseMatch.courseIndex;
+      componentIndex =
+        courseMatch.componentIndex !== -1
+          ? courseMatch.componentIndex
+          : 0;
+    }
+  }
 
   if (courseIndex === -1 || componentIndex === -1) {
-    const inferredNames = splitLectureCourseLabel(lectureCourseName);
-    const nextCourse = recalculateComponentAndCourseTotals({
-      name: inferredNames.baseCourseName || lectureCourseName || "-",
-      components: [
-        {
-          class: "",
-          time: {
-            startsAt: null,
-            endsAt: null,
-          },
-          location: { building: "", room: "" },
-          schedule: [],
-          weight: { value: 0, unit: "percent" },
-          lectures: [],
-        },
-      ],
-    });
+    const labelMatch = findCourseComponentByLabel(courses, lectureCourseName);
+    courseIndex = labelMatch.courseIndex;
+    componentIndex = labelMatch.componentIndex;
+  }
 
-    courses.push(nextCourse);
-    courseIndex = courses.length - 1;
-    componentIndex = 0;
+  if (courseIndex === -1 || componentIndex === -1) {
+    return null;
   }
 
   const nextLecture = {
@@ -2246,10 +2495,7 @@ export const removeLectureFromPlanner = (memoryDoc, lectureId = "") => {
   });
 
   setPlannerCourses(memoryDoc, nextCourses);
-  studyPlanAid.lectureAids = (Array.isArray(studyPlanAid?.lectureAids)
-    ? studyPlanAid.lectureAids
-    : []
-  ).filter((entry) => normalizeIdString(entry?.lectureId) !== String(lectureId || ""));
+  removeLectureOverrideFromStudyPlanAid(studyPlanAid, lectureId);
 };
 
 export const removeCourseOrComponentFromPlanner = (memoryDoc, targetId = "") => {
@@ -2303,10 +2549,10 @@ export const removeCourseOrComponentFromPlanner = (memoryDoc, targetId = "") => 
   }, []);
 
   setPlannerCourses(memoryDoc, nextCourses);
-  studyPlanAid.lectureAids = (Array.isArray(studyPlanAid?.lectureAids)
-    ? studyPlanAid.lectureAids
-    : []
-  ).filter((entry) => !removedLectureIds.has(normalizeIdString(entry?.lectureId)));
+  removeCourseOrComponentFromStudyPlanAid(studyPlanAid, targetId);
+  removedLectureIds.forEach((lectureId) =>
+    removeLectureOverrideFromStudyPlanAid(studyPlanAid, lectureId),
+  );
 };
 
 export const updateCourseInPlanner = (memoryDoc, courseId = "", payload = {}) => {

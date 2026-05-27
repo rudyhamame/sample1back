@@ -61,6 +61,7 @@ const ProfileSchema = new Schema(
       university: { type: String, default: "" },
       program: { type: String, default: "" },
       faculty: { type: String, default: "" },
+      componentsClass: [{ type: String }],
       time: {
         totalYearsNum: { type: Number, default: 0, min: 0 },
         start: {
@@ -75,9 +76,25 @@ const ProfileSchema = new Schema(
           programYearNum: { type: Number, default: null, min: 0 },
           programYearInterval: { type: String, default: null },
           programTerm: {
-            type: String,
-            enum: ["First", "Second", "Third"],
-            default: null,
+            number: {
+              type: String,
+              enum: ["First", "Second", "Third"],
+              default: null,
+            },
+            attendanceDate: [
+              {
+                component_class: { type: String, default: "" },
+                start_date: { type: Date, default: null },
+                end_date: { type: Date, default: null },
+              },
+            ],
+            examDate: [
+              {
+                component_class: { type: String, default: "" },
+                start_date: { type: Date, default: null },
+                end_date: { type: Date, default: null },
+              },
+            ],
           },
         },
       },

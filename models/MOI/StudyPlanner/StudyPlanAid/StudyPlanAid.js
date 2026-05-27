@@ -1,33 +1,86 @@
 import mongoose from "mongoose";
+import { StudyLecturePlanAidSchema } from "../StudyOrganizer/SharedSchemas.js";
 
 const { Schema } = mongoose;
 
-const StudyPlanAidLectureSchema = new Schema(
+const StudyPlanAidLectureOverrideSchema = new Schema(
   {
     lectureId: { type: Schema.Types.ObjectId, default: null },
-    pageIds: { type: [Schema.Types.ObjectId], default: [] },
-    normalizedPageText: { type: [String], default: [] },
-    studyNotes: { type: String, default: "" },
-    memorizationTips: { type: String, default: "" },
-    practiceQuestions: { type: [String], default: [] },
-    note: { type: String, default: "" },
+    ...StudyLecturePlanAidSchema.obj,
   },
   { _id: true },
+);
+
+const StudyPlanAidDayPlanSchema = new Schema(
+  {
+    periodType: { type: String, trim: true, default: "" },
+    groupKey: { type: String, trim: true, default: "" },
+    label: { type: String, trim: true, default: "" },
+    dayNumber: { type: Number, default: 0, min: 0 },
+    dailyHoursCap: { type: Number, default: 0, min: 0 },
+    lectureIds: {
+      type: [Schema.Types.ObjectId],
+      default: [],
+    },
+  },
+  { _id: true },
+);
+
+const StudyPlanAidComponentPlanSchema = new Schema(
+  {
+    componentId: { type: Schema.Types.ObjectId, default: null },
+    targetHours: { type: Number, default: 0, min: 0 },
+    difficulty: { type: String, trim: true, default: "" },
+    mastery: { type: String, trim: true, default: "" },
+    priority: { type: String, trim: true, default: "" },
+    dailyHoursCap: { type: Number, default: 0, min: 0 },
+    note: { type: String, trim: true, default: "" },
+    lectureOverrides: {
+      type: [StudyPlanAidLectureOverrideSchema],
+      default: [],
+    },
+  },
+  { _id: true },
+);
+
+const StudyPlanAidCoursePlanSchema = new Schema(
+  {
+    courseId: { type: Schema.Types.ObjectId, default: null },
+    note: { type: String, trim: true, default: "" },
+    componentPlans: { type: [StudyPlanAidComponentPlanSchema], default: [] },
+  },
+  { _id: true },
+);
+
+const StudyPlanAidDefaultsSchema = new Schema(
+  {
+    defaultDailyHours: { type: Number, default: 0, min: 0 },
+    defaultDifficulty: { type: String, trim: true, default: "" },
+    defaultMastery: { type: String, trim: true, default: "" },
+    defaultPriority: { type: String, trim: true, default: "" },
+  },
+  { _id: false },
 );
 
 const StudyPlanAidSchema = new Schema(
   {
     enabled: { type: Boolean, default: false },
-    source: { type: String, default: "normalized-page-text" },
-    goal: {
-      type: String,
-      default: "Help make the study plan more achievable from lecture page text.",
-    },
-    lectureAids: { type: [StudyPlanAidLectureSchema], default: [] },
-    note: { type: String, default: "" },
+    viewMode: { type: String, trim: true, default: "timeline" },
+    timelineUnit: { type: String, trim: true, default: "day" },
+    defaults: { type: StudyPlanAidDefaultsSchema },
+    coursePlans: { type: [StudyPlanAidCoursePlanSchema], default: [] },
+    dayPlans: { type: [StudyPlanAidDayPlanSchema], default: [] },
+    note: { type: String, trim: true, default: "" },
   },
   { _id: true },
 );
 
-export { StudyPlanAidLectureSchema, StudyPlanAidSchema };
+export {
+  StudyPlanAidLectureOverrideSchema,
+  StudyPlanAidDayPlanSchema,
+  StudyPlanAidComponentPlanSchema,
+  StudyPlanAidCoursePlanSchema,
+  StudyPlanAidDefaultsSchema,
+  StudyPlanAidSchema,
+};
 export default StudyPlanAidSchema;

@@ -47,6 +47,8 @@ import {
 import {
   normalizePlannerSettingsFieldDefaults,
   normalizeStudyOrganizerSettings,
+  removeHardcodedPlannerSelectOptions,
+  resolvePlannerSelectOptionsKey,
   serializeStudyOrganizerSettingsForStorage,
 } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 
@@ -116,6 +118,110 @@ const normalizeAcademicYearInterval = (value = "") => {
   return `${match[1]} - ${match[2]}`;
 };
 
+const normalizeMusicPlaylistEntry = (value = {}) => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const provider = String(value.provider || "jamendo").trim().toLowerCase();
+  const trackId = String(value.trackId || value.id || "").trim();
+  const previewUrl = String(value.previewUrl || value.src || value.url || "").trim();
+  const query = String(value.query || "").trim();
+  const songName = String(
+    value.songName || value.title || value.trackTitle || "",
+  ).trim();
+  const artist = String(value.artist || value.trackArtist || "").trim();
+
+  if (provider !== "jamendo") {
+    return null;
+  }
+
+  if (!trackId && !previewUrl && !query) {
+    return null;
+  }
+
+  return {
+    songName,
+    artist,
+    provider,
+    trackId,
+    previewUrl,
+    query,
+    addedAt: value.addedAt ? new Date(value.addedAt) : new Date(),
+  };
+};
+
+const normalizeMusicPlaylistForStorage = (value = []) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => normalizeMusicPlaylistEntry(entry))
+    .filter(Boolean);
+
+const normalizeProgramTermNumber = (value = "") => {
+  const normalizedValue = String(value || "").trim();
+  return ["First", "Second", "Third"].includes(normalizedValue)
+    ? normalizedValue
+    : "";
+};
+
+const normalizeProgramTermScheduleEntries = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      const component_class = String(entry?.component_class || "").trim();
+      const startDate = entry?.start_date ? new Date(entry.start_date) : null;
+      const endDate = entry?.end_date ? new Date(entry.end_date) : null;
+      return {
+        component_class,
+        start_date:
+          startDate instanceof Date && !Number.isNaN(startDate.getTime())
+            ? startDate
+            : null,
+        end_date:
+          endDate instanceof Date && !Number.isNaN(endDate.getTime())
+            ? endDate
+            : null,
+      };
+    })
+    .filter(
+      (entry) =>
+        entry.component_class || entry.start_date !== null || entry.end_date !== null,
+    );
+
+const normalizeComponentsClassList = (value) =>
+  Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [value])
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+const getProgramTermPayload = (value, fallbackNumber = "") => {
+  const rawValue =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const number = normalizeProgramTermNumber(
+    rawValue?.number ?? value ?? fallbackNumber,
+  );
+  return {
+    number: number || null,
+    attendanceDate: normalizeProgramTermScheduleEntries(rawValue?.attendanceDate),
+    examDate: normalizeProgramTermScheduleEntries(rawValue?.examDate),
+  };
+};
+
+const getProgramTermNumber = (...candidates) => {
+  for (const candidate of candidates) {
+    const normalizedValue = normalizeProgramTermNumber(
+      candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? candidate?.number
+        : candidate,
+    );
+    if (normalizedValue) {
+      return normalizedValue;
+    }
+  }
+  return "";
+};
+
 const buildNormativeCourseYearIntervalFromProfile = (
   startProgramYearInterval = "",
   courseYearNum = "",
@@ -173,7 +279,7 @@ const withAutoActualCourseTimingFromProfile = (user, payload = {}) => {
     currentStudyTime?.programYearInterval || "",
   );
   const normalizedCurrentProgramTerm = String(
-    currentStudyTime?.programTerm ||
+    getProgramTermNumber(currentStudyTime?.programTerm) ||
       user?.profile?.studying?.term ||
       "",
   ).trim();
@@ -209,6 +315,38 @@ const sanitizeStudyOrganizerSettingsOnMemoryDoc = (memoryDoc) => {
     );
 };
 
+const normalizePlannerOptionsSelectEntries = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => ({
+      selectID: String(entry?.selectID || "").trim(),
+      options: Array.isArray(entry?.options)
+        ? entry.options
+            .map((optionValue) => String(optionValue || "").trim())
+            .filter(Boolean)
+            .filter(
+              (optionValue, optionIndex, sourceOptions) =>
+                sourceOptions.indexOf(optionValue) === optionIndex,
+            )
+        : [],
+    }))
+    .filter((entry) => Boolean(entry.selectID));
+
+const sanitizeLegacyPlannerSelectOptionsPayload = (settingsValue) => {
+  if (!settingsValue || typeof settingsValue !== "object") {
+    return {};
+  }
+  const { selectOptions: legacySelectOptions, ...restSettings } = settingsValue;
+  const nextOptionsSelects = normalizePlannerOptionsSelectEntries(
+    Array.isArray(restSettings?.optionsSelects)
+      ? restSettings.optionsSelects
+      : legacySelectOptions,
+  );
+  return {
+    ...restSettings,
+    optionsSelects: nextOptionsSelects,
+  };
+};
+
 const persistStudyOrganizerMutation = async (
   userId = "",
   memoryDoc,
@@ -221,11 +359,14 @@ const persistStudyOrganizerMutation = async (
 
   const setPayload = {};
   if (persistCourses) {
+    const rawCourses = memoryDoc?.studyPlanner?.studyOrganizer?.courses;
     setPayload["memory.MOI.studyPlanner.studyOrganizer.courses"] = Array.isArray(
-      memoryDoc?.studyPlanner?.studyOrganizer?.courses,
+      rawCourses,
     )
-      ? memoryDoc.studyPlanner.studyOrganizer.courses
-      : [];
+      ? rawCourses
+      : rawCourses && typeof rawCourses === "object"
+        ? [rawCourses]
+        : [];
   }
   if (persistStudyPlanAid) {
     setPayload["memory.MOI.studyPlanner.studyPlanAid"] =
@@ -387,7 +528,11 @@ const buildLegacyIdentity = (user) => {
       university: String(bio?.studying?.university || "").trim(),
       year: String(current?.programYearNum || "").trim(),
       studyYear: String(current?.programYearNum || "").trim(),
-      term: String(current?.programTerm || bio?.studying?.term || "").trim(),
+      term: String(
+        getProgramTermNumber(current?.programTerm) ||
+          bio?.studying?.term ||
+          "",
+      ).trim(),
       profession: "",
       profilePicture: {
         picture: getLegacyProfilePicture(user),
@@ -1998,7 +2143,9 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
         studyingTime?.current && typeof studyingTime.current === "object"
           ? studyingTime.current
           : {};
-      const hasCurrentTerm = Boolean(String(current.programTerm || "").trim());
+      const hasCurrentTerm = Boolean(
+        getProgramTermNumber(current?.programTerm, studying?.term),
+      );
 
       if (!studying.program || !studying.university || !hasCurrentTerm) {
         return res.status(400).json({
@@ -2013,7 +2160,7 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
         String(start.programTerm || "").trim() ||
         String(current.programYearNum ?? "").trim() ||
         String(current.programYearInterval || "").trim() ||
-        String(current.programTerm || "").trim()
+        getProgramTermNumber(current?.programTerm, studying?.term)
       ) {
         if (
           !normalizeNullableNumber(studyingTime.totalYearsNum, null) ||
@@ -2021,7 +2168,7 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
           !String(start.programTerm || "").trim() ||
           !normalizeNullableNumber(current.programYearNum, null) ||
           !String(current.programYearInterval || "").trim() ||
-          !String(current.programTerm || "").trim()
+          !getProgramTermNumber(current?.programTerm, studying?.term)
         ) {
           return res.status(400).json({
             message:
@@ -2111,14 +2258,20 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
       const normalizedCurrentProgramYearInterval = String(
         current.programYearInterval || "",
       ).trim();
-      const normalizedCurrentProgramTerm = String(
-        current.programTerm || studying.term || "",
-      ).trim();
+      const normalizedCurrentProgramTerm = getProgramTermNumber(
+        current?.programTerm,
+        studying?.term,
+      );
+      const normalizedCurrentProgramTermPayload = getProgramTermPayload(
+        current?.programTerm,
+        normalizedCurrentProgramTerm,
+      );
 
       user.profile.studying = {
         university: studying.university,
         program: studying.program,
         faculty: studying.faculty || "",
+        componentsClass: normalizeComponentsClassList(studying?.componentsClass),
         programStartYear:
           studying.programStartYear ||
           normalizedStartProgramYearInterval ||
@@ -2127,6 +2280,7 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
         language: studying.language || "",
         time: {
           totalYearsNum: normalizedTotalYearsNum || 0,
+          currentAcademicYear: normalizedCurrentProgramYearInterval || null,
           start: {
             programYearInterval: normalizedStartProgramYearInterval || null,
             programTerm: normalizedStartProgramTerm || null,
@@ -2134,7 +2288,7 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
           current: {
             programYearNum: normalizedCurrentProgramYearNum,
             programYearInterval: normalizedCurrentProgramYearInterval || null,
-            programTerm: normalizedCurrentProgramTerm || null,
+            programTerm: normalizedCurrentProgramTermPayload,
           },
         },
       };
@@ -2269,6 +2423,65 @@ UserRouter.patch(
       return res.status(200).json({
         startMenuLayout: normalizeStartMenuLayoutForStorage(
           user.ui?.startMenuLayout,
+        ),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get(
+  "/settings/music-playlist",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "settings.musicPlaylist",
+      );
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        musicPlaylist: normalizeMusicPlaylistForStorage(
+          user?.settings?.musicPlaylist,
+        ),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.put(
+  "/settings/music-playlist",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const nextPlaylist = normalizeMusicPlaylistForStorage(
+        req.body?.musicPlaylist,
+      );
+
+      const user = await UserModel.findByIdAndUpdate(
+        req.authentication.userId,
+        {
+          $set: {
+            "settings.musicPlaylist": nextPlaylist,
+          },
+        },
+        { returnDocument: "after" },
+      ).select("settings.musicPlaylist");
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      return res.status(200).json({
+        message: "Music playlist saved.",
+        musicPlaylist: normalizeMusicPlaylistForStorage(
+          user?.settings?.musicPlaylist,
         ),
       });
     } catch (error) {
@@ -2622,7 +2835,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const hasField = (fieldName) =>
       Object.prototype.hasOwnProperty.call(body, fieldName);
     const existingUser = await UserModel.findById(req.authentication.userId)
-      .select("auth.username profile.firstname profile.lastname")
+      .select(
+        "auth.username profile.firstname profile.lastname profile.studying.time.current.programTerm",
+      )
       .lean();
     if (!existingUser?._id) {
       return res.status(404).json({ message: "User not found." });
@@ -2673,6 +2888,15 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const nextProgram = String(body?.program ?? "").trim();
     const nextUniversity = String(body?.university ?? "").trim();
     const nextFaculty = String(body?.faculty ?? "").trim();
+    const nextComponentsClassFromBody = normalizeComponentsClassList(
+      body?.componentsClass,
+    );
+    const existingComponentsClass = normalizeComponentsClassList(
+      existingUser?.profile?.studying?.componentsClass,
+    );
+    const nextComponentsClass = hasField("componentsClass")
+      ? nextComponentsClassFromBody
+      : existingComponentsClass;
     const nextLanguage = String(body?.language ?? "").trim();
     const nextTotalYearsNum = String(body?.totalYearsNum ?? "").trim();
     const nextStartProgramYearInterval = String(
@@ -2685,9 +2909,19 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const nextCurrentProgramYearInterval = String(
       body?.currentProgramYearInterval ?? body?.currentAcademicYear ?? "",
     ).trim();
-    const nextCurrentProgramTerm = String(
-      body?.currentProgramTerm ?? body?.term ?? "",
-    ).trim();
+    const nextCurrentProgramTerm = getProgramTermNumber(
+      body?.currentProgramTerm,
+      body?.term,
+    );
+    const nextCurrentProgramTermPayload = getProgramTermPayload(
+      body?.currentProgramTerm,
+      nextCurrentProgramTerm,
+    );
+    const existingCurrentProgramTerm =
+      existingUser?.profile?.studying?.time?.current?.programTerm &&
+      typeof existingUser.profile.studying.time.current.programTerm === "object"
+        ? existingUser.profile.studying.time.current.programTerm
+        : {};
     const nextBio = String(body?.bio ?? "").trim();
     const nextEmail = String(body?.email ?? "").trim();
     const nextPhone = String(body?.phone ?? "").trim();
@@ -2749,6 +2983,9 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     if (hasField("faculty")) {
       updateSet["profile.studying.faculty"] = nextFaculty;
     }
+    if (hasField("componentsClass")) {
+      updateSet["profile.studying.componentsClass"] = nextComponentsClass;
+    }
     if (hasField("language")) {
       updateSet["profile.studying.language"] = nextLanguage;
     }
@@ -2776,10 +3013,28 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     if (hasField("currentProgramYearInterval") || hasField("currentAcademicYear")) {
       updateSet["profile.studying.time.current.programYearInterval"] =
         nextCurrentProgramYearInterval || null;
+      updateSet["profile.studying.time.currentAcademicYear"] =
+        nextCurrentProgramYearInterval || null;
     }
     if (hasField("currentProgramTerm") || hasField("term")) {
       updateSet["profile.studying.time.current.programTerm"] =
-        nextCurrentProgramTerm || null;
+        {
+          ...existingCurrentProgramTerm,
+          ...nextCurrentProgramTermPayload,
+          attendanceDate: Array.isArray(
+            nextCurrentProgramTermPayload?.attendanceDate,
+          )
+            ? nextCurrentProgramTermPayload.attendanceDate
+            : Array.isArray(existingCurrentProgramTerm?.attendanceDate)
+              ? existingCurrentProgramTerm.attendanceDate
+              : [],
+          examDate: Array.isArray(nextCurrentProgramTermPayload?.examDate)
+            ? nextCurrentProgramTermPayload.examDate
+            : Array.isArray(existingCurrentProgramTerm?.examDate)
+              ? existingCurrentProgramTerm.examDate
+              : [],
+        };
+      updateSet["profile.studying.term"] = nextCurrentProgramTerm || null;
     }
     if (hasField("company")) {
       updateSet["profile.working.company"] = nextCompany;
@@ -2913,6 +3168,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       hometownCountry: nextHometownCountry,
       hometownCity: nextHometownCity,
       faculty: nextFaculty,
+      componentsClass: nextComponentsClass,
       program: nextProgram,
       university: nextUniversity,
       language: nextLanguage,
@@ -2925,6 +3181,21 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       currentProgramYearNum: nextCurrentProgramYearNum,
       currentProgramYearInterval: nextCurrentProgramYearInterval,
       currentProgramTerm: nextCurrentProgramTerm,
+      currentProgramTermDetails: {
+        ...existingCurrentProgramTerm,
+        ...nextCurrentProgramTermPayload,
+        number: nextCurrentProgramTerm,
+        attendanceDate: Array.isArray(nextCurrentProgramTermPayload?.attendanceDate)
+          ? nextCurrentProgramTermPayload.attendanceDate
+          : Array.isArray(existingCurrentProgramTerm?.attendanceDate)
+            ? existingCurrentProgramTerm.attendanceDate
+            : [],
+        examDate: Array.isArray(nextCurrentProgramTermPayload?.examDate)
+          ? nextCurrentProgramTermPayload.examDate
+          : Array.isArray(existingCurrentProgramTerm?.examDate)
+            ? existingCurrentProgramTerm.examDate
+            : [],
+      },
       company: nextCompany,
       position: nextPosition,
       aiProvider: nextAiProvider,
@@ -4302,6 +4573,46 @@ UserRouter.post(
         typeof req.body.settingsPatch === "object"
           ? req.body.settingsPatch
           : null;
+      const optionsSelectsPayload =
+        req.body &&
+        typeof req.body === "object" &&
+        Array.isArray(req.body.optionsSelects)
+          ? req.body.optionsSelects
+          : null;
+      const selectIDRaw =
+        req.body && typeof req.body === "object"
+          ? String(req.body.selectID || "").trim()
+          : "";
+      const selectID = selectIDRaw;
+      const options =
+        req.body && typeof req.body === "object" && Array.isArray(req.body.options)
+          ? req.body.options
+          : null;
+      const optionsMode =
+        req.body && typeof req.body === "object"
+          ? String(req.body.mode || "").trim().toLowerCase()
+          : "";
+      const dependencySelectIDRaw =
+        req.body && typeof req.body === "object"
+          ? String(req.body.dependencySelectID || "").trim()
+          : "";
+      const dependencySelectID = resolvePlannerSelectOptionsKey(
+        dependencySelectIDRaw,
+      );
+      const dependentSelectID = resolvePlannerSelectOptionsKey(
+        String(req.body?.dependentSelectID || "").trim(),
+      );
+      const independentID = resolvePlannerSelectOptionsKey(
+        String(req.body?.independentID || "").trim(),
+      );
+      const independentOption = String(req.body?.independentOption || "").trim();
+      const dependentOptions =
+        Array.isArray(req.body?.dependentOptions) ? req.body.dependentOptions : null;
+      const dependentOptionsFromSchemaBody =
+        Array.isArray(req.body?.options) &&
+        req.body.options.every((entry) => Array.isArray(entry))
+          ? req.body.options[0]
+          : null;
       const predictionToolInput =
         req.body &&
         typeof req.body === "object" &&
@@ -4388,7 +4699,212 @@ UserRouter.post(
         await memoryDoc.save();
         return res.status(200).json({
           message: "Prediction tool entry saved successfully.",
-          settings: normalizeStudyOrganizerSettings(storedMergedSettings),
+          settings: serializeStudyOrganizerSettingsForStorage(
+            storedMergedSettings,
+          ),
+        });
+      }
+      if (
+        (selectID && Array.isArray(options)) ||
+        (
+          (dependentSelectID || selectID) &&
+          independentID &&
+          (Array.isArray(dependentOptions) ||
+            Array.isArray(dependentOptionsFromSchemaBody))
+        )
+      ) {
+        const existingUser = await UserModel.findById(userId)
+          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .lean();
+        if (!existingUser?._id) {
+          return res.status(404).json({ message: "User not found." });
+        }
+        const rawSettings =
+          existingUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
+          typeof existingUser.memory.MOI.studyPlanner.studyOrganizer.settings === "object"
+            ? existingUser.memory.MOI.studyPlanner.studyOrganizer.settings
+            : {};
+        const sourceOptions = Array.isArray(dependentOptionsFromSchemaBody)
+          ? dependentOptionsFromSchemaBody
+          : Array.isArray(dependentOptions)
+            ? dependentOptions
+            : options;
+        const normalizedOptions = sourceOptions
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+          .filter(
+            (entry, entryIndex, sourceEntries) =>
+              sourceEntries.indexOf(entry) === entryIndex,
+          );
+        const canonicalSelectID = resolvePlannerSelectOptionsKey(
+          selectID || dependentSelectID,
+        );
+        const filteredOptions = removeHardcodedPlannerSelectOptions(
+          canonicalSelectID,
+          normalizedOptions,
+        );
+        const normalizedMode =
+          optionsMode === "dependent" ? "dependent" : "independent";
+        const currentNormalizedSettings = normalizeStudyOrganizerSettings(
+          rawSettings || {},
+        );
+        const nextOptionsSelects = Array.isArray(
+          currentNormalizedSettings?.optionsSelects,
+        )
+          ? [...currentNormalizedSettings.optionsSelects]
+          : [];
+        const existingIndex = nextOptionsSelects.findIndex(
+          (entry) =>
+            String(entry?.selectID || "").trim() ===
+            String(canonicalSelectID || "").trim(),
+        );
+        const baseEntry =
+          existingIndex >= 0
+            ? nextOptionsSelects[existingIndex]
+            : {
+                selectID: canonicalSelectID,
+                mode: "independent",
+                options: [],
+                dependencyOptions: [],
+              };
+        if (normalizedMode === "dependent") {
+          const normalizedDependencySelectID = independentID || dependencySelectID;
+          const currentDependencyOptions = Array.isArray(baseEntry?.dependencyOptions)
+            ? [...baseEntry.dependencyOptions]
+            : [];
+          const depIndex = currentDependencyOptions.findIndex(
+            (entry) =>
+              String(entry?.selectID || "").trim() ===
+                String(normalizedDependencySelectID || "").trim() &&
+              String(entry?.independentOption || "").trim() ===
+                String(independentOption || "").trim(),
+          );
+          const nextDependencyEntry = {
+            selectID: String(normalizedDependencySelectID || "").trim(),
+            independentOption: String(independentOption || "").trim(),
+            options: filteredOptions,
+          };
+          if (depIndex >= 0) {
+            currentDependencyOptions[depIndex] = nextDependencyEntry;
+          } else {
+            currentDependencyOptions.push(nextDependencyEntry);
+          }
+          baseEntry.mode = "dependent";
+          baseEntry.dependencyOptions = currentDependencyOptions.filter(
+            (entry) => Boolean(String(entry?.selectID || "").trim()),
+          );
+        } else {
+          baseEntry.mode = "independent";
+          baseEntry.options = filteredOptions;
+        }
+        if (existingIndex >= 0) {
+          nextOptionsSelects[existingIndex] = baseEntry;
+        } else {
+          nextOptionsSelects.push(baseEntry);
+        }
+        const nextSettingsRaw = {
+          ...rawSettings,
+          optionsSelects: nextOptionsSelects,
+        };
+        const nextStoredSettings =
+          serializeStudyOrganizerSettingsForStorage(nextSettingsRaw);
+        await UserModel.updateOne(
+          { _id: userId },
+          {
+            $set: {
+              "memory.MOI.studyPlanner.studyOrganizer.settings":
+                nextStoredSettings,
+            },
+          },
+        );
+        const refreshedUser = await UserModel.findById(userId)
+          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .lean();
+        const refreshedSettings =
+          refreshedUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
+          typeof refreshedUser.memory.MOI.studyPlanner.studyOrganizer.settings ===
+            "object"
+            ? refreshedUser.memory.MOI.studyPlanner.studyOrganizer.settings
+            : rawSettings;
+        const { selectOptions: _legacySelectOptions, ...rawSettingsWithoutLegacySelectOptions } =
+          refreshedSettings || {};
+        const responseStoredSettings = serializeStudyOrganizerSettingsForStorage({
+          ...rawSettingsWithoutLegacySelectOptions,
+        });
+        return res.status(200).json({
+          message: "Planner select options saved successfully.",
+          settings: responseStoredSettings,
+        });
+      }
+      if (Array.isArray(optionsSelectsPayload)) {
+        const existingUser = await UserModel.findById(userId)
+          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .lean();
+        if (!existingUser?._id) {
+          return res.status(404).json({ message: "User not found." });
+        }
+        const rawSettings =
+          existingUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
+          typeof existingUser.memory.MOI.studyPlanner.studyOrganizer.settings ===
+            "object"
+            ? existingUser.memory.MOI.studyPlanner.studyOrganizer.settings
+            : {};
+        const { selectOptions: _legacySelectOptions, ...rawSettingsWithoutLegacySelectOptions } =
+          rawSettings || {};
+        const normalizedOptionsSelects = optionsSelectsPayload
+          .map((entry) => ({
+            selectID: resolvePlannerSelectOptionsKey(entry?.selectID),
+            mode:
+              String(entry?.mode || "").trim().toLowerCase() === "dependent"
+                ? "dependent"
+                : "independent",
+            options: removeHardcodedPlannerSelectOptions(
+              resolvePlannerSelectOptionsKey(entry?.selectID),
+              (Array.isArray(entry?.options) ? entry.options : [])
+                .map((value) => String(value || "").trim())
+                .filter(Boolean),
+            ),
+            dependencyOptions: (
+              Array.isArray(entry?.dependencyOptions)
+                ? entry.dependencyOptions
+                : []
+            )
+              .map((dependencyEntry) => ({
+                selectID: resolvePlannerSelectOptionsKey(
+                  dependencyEntry?.selectID,
+                ),
+                options: removeHardcodedPlannerSelectOptions(
+                  resolvePlannerSelectOptionsKey(entry?.selectID),
+                  (Array.isArray(dependencyEntry?.options)
+                    ? dependencyEntry.options
+                    : []
+                  )
+                    .map((value) => String(value || "").trim())
+                    .filter(Boolean),
+                ),
+              }))
+              .filter((dependencyEntry) => Boolean(dependencyEntry.selectID)),
+          }))
+          .filter((entry) => Boolean(entry.selectID));
+        const nextSettingsRaw = {
+          ...rawSettingsWithoutLegacySelectOptions,
+          optionsSelects: normalizedOptionsSelects,
+        };
+        const storedSettings = serializeStudyOrganizerSettingsForStorage(
+          nextSettingsRaw,
+        );
+        await UserModel.updateOne(
+          { _id: userId },
+          {
+            $set: {
+              "memory.MOI.studyPlanner.studyOrganizer.settings":
+                storedSettings,
+            },
+          },
+        );
+        return res.status(200).json({
+          message: "Planner optionsSelects saved successfully.",
+          settings: serializeStudyOrganizerSettingsForStorage(storedSettings),
         });
       }
       if (settingsPatch) {
@@ -4405,16 +4921,18 @@ UserRouter.post(
         const existingSettings = normalizeStudyOrganizerSettings(
           memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
         );
+        const sanitizedSettingsPatch =
+          sanitizeLegacyPlannerSelectOptionsPayload(settingsPatch);
         const normalizedPatch = normalizeStudyOrganizerSettings({
           ...existingSettings,
-          ...settingsPatch,
+          ...sanitizedSettingsPatch,
           fieldDefaults:
-            settingsPatch?.fieldDefaults &&
-            typeof settingsPatch.fieldDefaults === "object"
+            sanitizedSettingsPatch?.fieldDefaults &&
+            typeof sanitizedSettingsPatch.fieldDefaults === "object"
               ? {
                   ...(existingSettings?.fieldDefaults || {}),
                   ...Object.fromEntries(
-                    Object.entries(settingsPatch.fieldDefaults).map(
+                    Object.entries(sanitizedSettingsPatch.fieldDefaults).map(
                       ([fieldKey, fieldValue]) => [
                         String(fieldKey || "").trim(),
                         String(fieldValue ?? "").trim(),
@@ -4433,11 +4951,13 @@ UserRouter.post(
         await memoryDoc.save();
         return res.status(200).json({
           message: "Planner settings patch saved successfully.",
-          settings: normalizeStudyOrganizerSettings(storedMergedSettings),
+          settings: serializeStudyOrganizerSettingsForStorage(
+            storedMergedSettings,
+          ),
         });
       }
       const normalizedIncomingSettings = normalizeStudyOrganizerSettings(
-        nextSettings,
+        sanitizeLegacyPlannerSelectOptionsPayload(nextSettings),
       );
       const existingUser = await UserModel.findById(userId).select("memory");
       if (!existingUser?._id) {
@@ -4467,7 +4987,7 @@ UserRouter.post(
             : existingNormalizedSettings?.fieldDefaults || {},
       });
       const storedSettings = serializeStudyOrganizerSettingsForStorage(
-        mergedSettings,
+        sanitizeLegacyPlannerSelectOptionsPayload(mergedSettings),
       );
       memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
       memoryDoc.studyPlanner.studyOrganizer =
@@ -4484,7 +5004,7 @@ UserRouter.post(
         message: noChangesApplied
           ? "No settings changes were applied."
           : "Settings saved successfully.",
-        settings: persistedSettings,
+        settings: serializeStudyOrganizerSettingsForStorage(storedSettings),
       });
     } catch (error) {
       return next(error);
@@ -4595,7 +5115,9 @@ UserRouter.post(
           normalizeStudyOrganizerSettings(storedMergedSettings)?.fieldDefaults ||
             {},
         ),
-        settings: normalizeStudyOrganizerSettings(storedMergedSettings),
+        settings: serializeStudyOrganizerSettingsForStorage(
+          storedMergedSettings,
+        ),
       });
     } catch (error) {
       return next(error);
@@ -4812,11 +5334,19 @@ UserRouter.post(
           .json({ message: "Failed to access user memory." });
       }
 
-      addLectureToPlanner(memoryDoc, req.body);
+      const createdLecture = addLectureToPlanner(memoryDoc, req.body);
+      if (!createdLecture) {
+        return res.status(400).json({
+          message:
+            "Course/component must already exist. Select an existing course component before adding a lecture.",
+        });
+      }
       recalculateCourseLectureTotals(memoryDoc);
       await persistStudyOrganizerMutation(req.params.my_id, memoryDoc);
 
-      return res.status(201).json();
+      return res.status(201).json({
+        lecture: createdLecture,
+      });
     } catch (error) {
       return next(error);
     }
@@ -5089,3 +5619,15 @@ UserRouter.post(
 //....................
 //Attach all the routes to router\
 export default UserRouter;
+const PLANNER_SELECT_ID_TO_KEY = {
+  nogaPlanner_savedCourseSelect_course_classSelection: "componentClassOptions",
+  nogaPlanner_lecturesSelect_component: "componentClassOptions",
+  nogaPlanner_savedCourseSelect_course_daySelection: "weekdayOptions",
+  nogaPlanner_savedCourseSelect_course_timeSelection: "hourOptions",
+  nogaPlanner_savedCourseSelect_normativeCourseTerm: "termOptions",
+  nogaPlanner_savedCourseSelect_normativeCourseYearInterval: "academicYearOptions",
+  nogaPlanner_savedCourseSelect_course_locationBuilding: "locationBuildingOptions",
+  nogaPlanner_savedCourseSelect_course_locationRoom: "locationRoomOptions",
+  nogaPlanner_lecturesSelect_instructors: "lectureInstructorOptions",
+  nogaPlanner_lecturesSelect_writers: "lectureWriterOptions",
+};
