@@ -375,26 +375,69 @@ io.on("connection", (socket) => {
     }
 
     try {
-      await UserModel.updateOne(
-        { _id: senderUserId },
-        {
-          $set: {
-            "chat.$[thread].conversation.$[message].status": "read",
-            "chat.$[thread].conversation.$[message].date.read": new Date(),
-          },
-        },
-        {
-          arrayFilters: [
-            {
-              "thread.friend": readerUserId,
-            },
-            {
-              "message.from": "me",
-              "message.status": { $ne: "read" },
-            },
-          ],
-        },
+      const senderUser = await UserModel.findById(senderUserId).select(
+        "connections",
       );
+      if (!senderUser) {
+        return;
+      }
+
+      const connections = Array.isArray(senderUser.connections)
+        ? senderUser.connections
+        : [];
+      const now = new Date();
+      let mutated = false;
+
+      connections.forEach((connectionEntry) => {
+        if (
+          String(connectionEntry?.kind || "").trim().toLowerCase() !==
+            "friend" ||
+          String(connectionEntry?.id || "").trim() !== readerUserId
+        ) {
+          return;
+        }
+
+        const chatThreads = Array.isArray(connectionEntry.chat)
+          ? connectionEntry.chat
+          : [];
+
+        chatThreads.forEach((thread) => {
+          const messages = Array.isArray(thread?.messages) ? thread.messages : [];
+          messages.forEach((messageEntry) => {
+            const senderRole = String(messageEntry?.index?.sender || "")
+              .trim()
+              .toUpperCase();
+            if (senderRole !== "ME") {
+              return;
+            }
+
+            const statusHistory = Array.isArray(messageEntry.status)
+              ? messageEntry.status
+              : [];
+            const alreadyRead = statusHistory.some(
+              (statusEntry) =>
+                String(statusEntry?.value || "").trim().toLowerCase() === "read",
+            );
+            if (alreadyRead) {
+              return;
+            }
+
+            if (!Array.isArray(messageEntry.status)) {
+              messageEntry.status = [];
+            }
+            messageEntry.status.push({
+              value: "read",
+              updatedAt: now,
+            });
+            mutated = true;
+          });
+        });
+      });
+
+      if (mutated) {
+        senderUser.markModified("connections");
+        await senderUser.save();
+      }
 
       emitUserRefresh(io, [readerUserId, senderUserId], "chat:read", {
         friendId: readerUserId,
