@@ -828,8 +828,49 @@ const buildLegacyChatFromConnections = (connections = []) => {
       return;
     }
 
-    const messages = Array.isArray(entry?.messages) ? entry.messages : [];
-    messages.forEach((messageEntry) => {
+    const chatThreads = Array.isArray(entry?.chat) ? entry.chat : [];
+    chatThreads.forEach((threadEntry) => {
+      const threadMessages = Array.isArray(threadEntry?.messages)
+        ? threadEntry.messages
+        : [];
+
+      threadMessages.forEach((messageEntry) => {
+        const messageBody = String(messageEntry?.body || "").trim();
+        if (!messageBody) {
+          return;
+        }
+
+        const statusHistory = Array.isArray(messageEntry?.status)
+          ? messageEntry.status
+          : [];
+        const latestStatusEntry =
+          statusHistory.length > 0
+            ? statusHistory[statusHistory.length - 1]
+            : null;
+        const statusValue = String(latestStatusEntry?.value || "sent")
+          .trim()
+          .toLowerCase();
+        const normalizedDate = messageEntry?.index?.timestamp
+          ? new Date(messageEntry.index.timestamp).toISOString()
+          : latestStatusEntry?.updatedAt
+            ? new Date(latestStatusEntry.updatedAt).toISOString()
+            : new Date().toISOString();
+        const senderTag = String(messageEntry?.index?.sender || "ME")
+          .trim()
+          .toUpperCase();
+
+        chatRows.push({
+          _id: friendId,
+          from: senderTag === "THEM" ? "them" : "me",
+          message: messageBody,
+          date: normalizedDate,
+          status: statusValue,
+        });
+      });
+    });
+
+    const legacyMessages = Array.isArray(entry?.messages) ? entry.messages : [];
+    legacyMessages.forEach((messageEntry) => {
       const messageBody = String(messageEntry?.messageBody || "").trim();
       if (!messageBody) {
         return;
@@ -856,9 +897,7 @@ const buildLegacyChatFromConnections = (connections = []) => {
 
       chatRows.push({
         _id: friendId,
-        from: ["sent", "read", "received"].includes(statusValue)
-          ? "me"
-          : "them",
+        from: ["sent", "read", "received"].includes(statusValue) ? "me" : "them",
         message: messageBody,
         date: normalizedDate,
         status: statusValue,

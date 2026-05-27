@@ -38,23 +38,51 @@ const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
       kind: "friend",
       id: friendId,
       mode: "stranger",
-      messages: [],
+      chat: [],
     };
     user.connections.push(friendEntry);
   }
 
-  friendEntry.messages = Array.isArray(friendEntry.messages)
-    ? friendEntry.messages
+  friendEntry.chat = Array.isArray(friendEntry.chat)
+    ? friendEntry.chat
     : [];
 
-  friendEntry.messages.push({
-    messageBody: message,
-    messageStatus: [
+  const connectionIdValue = friendEntry.id || friendId;
+  let chatThread = friendEntry.chat.find(
+    (entry) =>
+      String(entry?.connectionId || "").trim() === String(connectionIdValue || "").trim(),
+  );
+
+  if (!chatThread) {
+    chatThread = {
+      connectionId: connectionIdValue,
+      messages: [],
+    };
+    friendEntry.chat.push(chatThread);
+  }
+
+  chatThread.messages = Array.isArray(chatThread.messages)
+    ? chatThread.messages
+    : [];
+
+  const senderPerspective = status === "delivered" ? "THEM" : "ME";
+  const receiverPerspective = senderPerspective === "ME" ? "THEM" : "ME";
+
+  chatThread.messages.push({
+    index: {
+      sender: senderPerspective,
+      receiver: receiverPerspective,
+      timestamp: sentAt,
+    },
+    body: message,
+    status: [
       {
         value: status,
         updatedAt: sentAt,
       },
     ],
+    reply: [],
+    reaction: {},
   });
 };
 

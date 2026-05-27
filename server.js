@@ -406,16 +406,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("call:offer", ({ toUserId, offer, callType, metadata }) => {
-    const fromUserId = String(socket.data.userId || "").trim();
+  socket.on("call:offer", ({ toUserId, fromUserId, offer, callType, metadata }) => {
+    const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
-    if (!fromUserId || !targetUserId || !offer) {
+    if (!callerUserId || !targetUserId || !offer) {
       return;
     }
 
     io.to(getUserRoom(targetUserId)).emit("call:offer", {
-      fromUserId,
+      fromUserId: callerUserId,
       toUserId: targetUserId,
       callType: callType === "video" ? "video" : "audio",
       offer,
@@ -423,61 +423,61 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("call:answer", ({ toUserId, answer }) => {
-    const fromUserId = String(socket.data.userId || "").trim();
+  socket.on("call:answer", ({ toUserId, fromUserId, answer }) => {
+    const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
-    if (!fromUserId || !targetUserId || !answer) {
+    if (!callerUserId || !targetUserId || !answer) {
       return;
     }
 
     io.to(getUserRoom(targetUserId)).emit("call:answer", {
-      fromUserId,
+      fromUserId: callerUserId,
       toUserId: targetUserId,
       answer,
     });
   });
 
-  socket.on("call:ice-candidate", ({ toUserId, candidate }) => {
-    const fromUserId = String(socket.data.userId || "").trim();
+  socket.on("call:ice-candidate", ({ toUserId, fromUserId, candidate }) => {
+    const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
-    if (!fromUserId || !targetUserId || !candidate) {
+    if (!callerUserId || !targetUserId || !candidate) {
       return;
     }
 
     io.to(getUserRoom(targetUserId)).emit("call:ice-candidate", {
-      fromUserId,
+      fromUserId: callerUserId,
       toUserId: targetUserId,
       candidate,
     });
   });
 
-  socket.on("call:reject", ({ toUserId, reason }) => {
-    const fromUserId = String(socket.data.userId || "").trim();
+  socket.on("call:reject", ({ toUserId, fromUserId, reason }) => {
+    const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
-    if (!fromUserId || !targetUserId) {
+    if (!callerUserId || !targetUserId) {
       return;
     }
 
     io.to(getUserRoom(targetUserId)).emit("call:reject", {
-      fromUserId,
+      fromUserId: callerUserId,
       toUserId: targetUserId,
       reason: String(reason || "rejected").trim() || "rejected",
     });
   });
 
-  socket.on("call:end", ({ toUserId, reason }) => {
-    const fromUserId = String(socket.data.userId || "").trim();
+  socket.on("call:end", ({ toUserId, fromUserId, reason }) => {
+    const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
-    if (!fromUserId || !targetUserId) {
+    if (!callerUserId || !targetUserId) {
       return;
     }
 
     io.to(getUserRoom(targetUserId)).emit("call:end", {
-      fromUserId,
+      fromUserId: callerUserId,
       toUserId: targetUserId,
       reason: String(reason || "ended").trim() || "ended",
     });
