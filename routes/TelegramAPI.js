@@ -6055,10 +6055,10 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
 
     client = await withFastTimeout(
       ensureTelegramClient(config),
-      12000,
+      25000,
       "Telegram connection timed out.",
     );
-    const mediaTimeoutMs = attachmentKind === "photo" ? 15000 : 20000;
+    const mediaTimeoutMs = attachmentKind === "photo" ? 30000 : 45000;
     const media = await withFastTimeout(
       downloadTelegramMessageMedia({
         client,

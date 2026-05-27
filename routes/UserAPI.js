@@ -815,6 +815,63 @@ const mapFriendEntryForClient = (entry) => {
   };
 };
 
+const buildLegacyChatFromConnections = (connections = []) => {
+  const chatRows = [];
+
+  (Array.isArray(connections) ? connections : []).forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+
+    const friendId = String(entry?.id || entry?.userID || entry?._id || "").trim();
+    if (!friendId) {
+      return;
+    }
+
+    const messages = Array.isArray(entry?.messages) ? entry.messages : [];
+    messages.forEach((messageEntry) => {
+      const messageBody = String(messageEntry?.messageBody || "").trim();
+      if (!messageBody) {
+        return;
+      }
+
+      const statusHistory = Array.isArray(messageEntry?.messageStatus)
+        ? messageEntry.messageStatus
+        : [];
+      const latestStatusEntry =
+        statusHistory.length > 0
+          ? statusHistory[statusHistory.length - 1]
+          : null;
+      const statusValue = String(latestStatusEntry?.value || "sent")
+        .trim()
+        .toLowerCase();
+      const statusUpdatedAt =
+        latestStatusEntry?.updatedAt ||
+        messageEntry?.updatedAt ||
+        messageEntry?.createdAt ||
+        null;
+      const normalizedDate = statusUpdatedAt
+        ? new Date(statusUpdatedAt).toISOString()
+        : new Date().toISOString();
+
+      chatRows.push({
+        _id: friendId,
+        from: ["sent", "read", "received"].includes(statusValue)
+          ? "me"
+          : "them",
+        message: messageBody,
+        date: normalizedDate,
+        status: statusValue,
+      });
+    });
+  });
+
+  return chatRows.sort(
+    (leftRow, rightRow) =>
+      new Date(leftRow?.date || 0).getTime() - new Date(rightRow?.date || 0).getTime(),
+  );
+};
+
 const normalizeUserId = (value) => String(value || "").trim();
 
 const getFriendRelationshipEntry = (user, otherUserId) => {
@@ -2665,6 +2722,7 @@ UserRouter.get("/update/:id", async function (req, res, next) {
       profile: subjectProfile,
       bio: subjectProfile,
       friends: friends,
+      chat: buildLegacyChatFromConnections(profile.connections),
       settings: profile.settings || {},
       memory: {
         ...(memoryDoc || {}),
