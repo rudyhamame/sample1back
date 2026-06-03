@@ -79,9 +79,12 @@ const isAllowedOrigin = (origin) => {
   try {
     const parsedOrigin = new URL(origin);
     const hostname = parsedOrigin.hostname;
-    const port = String(parsedOrigin.port || "").trim();
+    const protocol = String(parsedOrigin.protocol || "").toLowerCase();
 
-    if (port === "5173" && isPrivateDevelopmentHost(hostname)) {
+    if (
+      isPrivateDevelopmentHost(hostname) &&
+      (protocol === "http:" || protocol === "https:")
+    ) {
       return true;
     }
 
