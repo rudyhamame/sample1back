@@ -2207,23 +2207,23 @@ const buildMessagePayload = (message, options = {}) => {
 };
 
 const ARABIC_KEYWORD_STOPWORDS = new Set([
-  "في",
-  "من",
-  "على",
-  "الى",
-  "إلى",
-  "عن",
-  "مع",
-  "هذا",
-  "هذه",
-  "ذلك",
-  "تلك",
-  "تم",
-  "كما",
-  "أن",
-  "إن",
-  "او",
-  "أو",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
   "the",
   "and",
   "for",
@@ -2232,10 +2232,12 @@ const ARABIC_KEYWORD_STOPWORDS = new Set([
 const normalizeArabicConceptText = (value = "") =>
   String(value || "")
     .toLowerCase()
-    .replace(/[إأآا]/g, "ا")
+    // Remove Arabic diacritics and tatweel.
+    .replace(/[\u064B-\u0652\u0670\u0640]/g, "")
+    // Normalize common Arabic letter variants.
+    .replace(/[أإآٱ]/g, "ا")
     .replace(/ى/g, "ي")
     .replace(/ة/g, "ه")
-    .replace(/[ًٌٍَُِّْـ]/g, "")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -2292,7 +2294,7 @@ const buildPlannerOntologyFromMemory = (memoryDoc) => {
 
   const splitConceptList = (value) =>
     String(value || "")
-      .split(/[|,،;/]+/g)
+      .split(/[|,;/]+/g)
       .map((entry) => normalizeString(entry))
       .filter(Boolean);
   const registerConcept = (key, rawValue) => {
@@ -2379,19 +2381,19 @@ const tagMessageConcepts = (messageText = "", ontology = {}) => {
     const hasContextWord = (patterns = []) =>
       patterns.some((pattern) => normalizedText.includes(pattern));
     if (key === "course_name") {
-      return hasContextWord(["مقرر", "ماده", "ماده", "الكورس", "course"]) ? 0.1 : 0;
+      return hasContextWord(["", "", "", "", "course"]) ? 0.1 : 0;
     }
     if (key === "course_class") {
-      return hasContextWord(["نظري", "عملي", "مخبر", "سكشن", "section"]) ||
-        ["نظري", "عملي", "مخبر"].includes(normalizedToken)
+      return hasContextWord(["", "", "", "", "section"]) ||
+        ["", "", ""].includes(normalizedToken)
         ? 0.12
         : 0;
     }
     if (key === "course_instructors") {
-      return hasContextWord(["دكتور", "مدرس", "استاذ", "شرح"]) ? 0.1 : 0;
+      return hasContextWord(["", "", "", ""]) ? 0.1 : 0;
     }
     if (key === "course_writers") {
-      return hasContextWord(["كاتب", "تلخيص", "ملاحظات", "مذكرة"]) ? 0.1 : 0;
+      return hasContextWord(["", "", "", ""]) ? 0.1 : 0;
     }
     return 0;
   };
@@ -6024,7 +6026,12 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       messageId,
     );
     if (!storedMessage) {
-      return res.status(404).json({ message: "Media not found." });
+      return res.status(404).json({
+        message: "Media not found.",
+        reason: "stored-message-mismatch",
+        groupReference,
+        messageId,
+      });
     }
 
     const attachmentKind = normalizeString(storedMessage?.attachmentKind).toLowerCase();
@@ -6083,9 +6090,14 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
     res.setHeader("Cache-Control", "private, max-age=120");
     return res.status(200).send(media.buffer);
   } catch (error) {
+    const normalizedErrorCode = normalizeString(error?.code || "").toLowerCase();
+    const reason =
+      normalizedErrorCode === "telegram_timeout"
+        ? "telegram-timeout"
+        : normalizedErrorCode || "telegram-download-failed";
     return res.status(404).json({
       message: normalizeString(error?.message) || "Media not found.",
-      reason: normalizeString(error?.code || "telegram-download-failed"),
+      reason,
     });
   } finally {
     if (client) {

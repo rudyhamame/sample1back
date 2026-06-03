@@ -41,6 +41,11 @@ import {
   removeLectureFromPlanner,
   updateCourseInPlanner,
   updateCoursePagesInPlanner,
+  updateStudyPlannerComponentsInPlanner,
+  updateStudyPlannerMetaInPlanner,
+  updateStudyPlannerProgramInPlanner,
+  updateStudyPlannerIntervalsInPlanner,
+  updateStudyPlannerIntervalStatusInPlanner,
   updateStudyPlanAidInPlanner,
   updateLectureInPlanner,
 } from "./user/helpers/studyPlannerService.js";
@@ -253,7 +258,9 @@ const withAutoNormativeCourseYearInterval = (user, payload = {}) => {
     return nextPayload;
   }
   const generatedInterval = buildNormativeCourseYearIntervalFromProfile(
-    user?.profile?.studying?.time?.start?.programYearInterval || "",
+    user?.profile?.studying?.academicYearsIntervals?.first?.interval ||
+      user?.profile?.studying?.time?.start?.programYearInterval ||
+      "",
     nextPayload?.normativeCourseYearNum,
   );
 
@@ -272,15 +279,23 @@ const withAutoActualCourseTimingFromProfile = (user, payload = {}) => {
     typeof user.profile.studying.time.current === "object"
       ? user.profile.studying.time.current
       : {};
+  const currentStudyIntervals =
+    user?.profile?.studying?.academicYearsIntervals?.current &&
+    typeof user.profile.studying.academicYearsIntervals.current === "object"
+      ? user.profile.studying.academicYearsIntervals.current
+      : {};
   const normalizedCurrentYearNum = Number(
-    String(currentStudyTime?.programYearNum || "").trim(),
+    String(currentStudyTime?.programYearNum ?? currentStudyIntervals?.num ?? "").trim(),
   );
   const normalizedCurrentYearInterval = normalizeAcademicYearInterval(
-    currentStudyTime?.programYearInterval || "",
+    currentStudyTime?.programYearInterval ||
+      currentStudyIntervals?.interval ||
+      "",
   );
   const normalizedCurrentProgramTerm = String(
-    getProgramTermNumber(currentStudyTime?.programTerm) ||
-      user?.profile?.studying?.term ||
+    getProgramTermNumber(
+      currentStudyTime?.programTerm || currentStudyIntervals?.term,
+    ) ||
       "",
   ).trim();
 
@@ -2358,35 +2373,29 @@ UserRouter.put("/signup/personal", checkAuth, async function (req, res, next) {
         current?.programTerm,
         studying?.term,
       );
-      const normalizedCurrentProgramTermPayload = getProgramTermPayload(
-        current?.programTerm,
-        normalizedCurrentProgramTerm,
-      );
 
       user.profile.studying = {
-        university: studying.university,
-        program: studying.program,
-        faculty: studying.faculty || "",
-        componentsClass: normalizeComponentsClassList(studying?.componentsClass),
-        programStartYear:
-          studying.programStartYear ||
-          normalizedStartProgramYearInterval ||
-          "",
-        term: normalizedCurrentProgramTerm,
-        language: studying.language || "",
-        time: {
-          totalYearsNum: normalizedTotalYearsNum || 0,
-          currentAcademicYear: normalizedCurrentProgramYearInterval || null,
-          start: {
-            programYearInterval: normalizedStartProgramYearInterval || null,
-            programTerm: normalizedStartProgramTerm || null,
+        id: {
+          program: studying.program,
+          components: normalizeComponentsClassList(studying?.componentsClass),
+        },
+        location: {
+          university: studying.university,
+          faculty: studying.faculty || "",
+        },
+        academicYearsIntervals: {
+          total: normalizedTotalYearsNum || 0,
+          first: {
+            interval: normalizedStartProgramYearInterval || null,
+            term: normalizedStartProgramTerm || null,
           },
           current: {
-            programYearNum: normalizedCurrentProgramYearNum,
-            programYearInterval: normalizedCurrentProgramYearInterval || null,
-            programTerm: normalizedCurrentProgramTermPayload,
+            num: normalizedCurrentProgramYearNum,
+            interval: normalizedCurrentProgramYearInterval || null,
+            term: normalizedCurrentProgramTerm || null,
           },
         },
+        language: studying.language || "",
       };
     }
 
@@ -2893,6 +2902,201 @@ UserRouter.get(
 );
 
 UserRouter.post(
+  "/editStudyPlannerMeta/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanner = updateStudyPlannerMetaInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanner: updatedStudyPlanner,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerProgram/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanner = updateStudyPlannerProgramInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanner: updatedStudyPlanner,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get(
+  "/studyPlanner/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const studyPlanner =
+        memoryDoc?.studyPlanner && typeof memoryDoc.studyPlanner === "object"
+          ? memoryDoc.studyPlanner
+          : {};
+
+      return res.status(200).json({ studyPlanner });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerComponents/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanner = updateStudyPlannerComponentsInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanner: updatedStudyPlanner,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerIntervals/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanner = updateStudyPlannerIntervalsInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanner: updatedStudyPlanner,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerIntervalStatus/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res
+          .status(500)
+          .json({ message: "Failed to access user memory." });
+      }
+
+      const updatedStudyPlanner = updateStudyPlannerIntervalStatusInPlanner(
+        memoryDoc,
+        req.body,
+      );
+      await memoryDoc.save();
+
+      return res.status(201).json({
+        studyPlanner: updatedStudyPlanner,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
   "/editStudyPlanAid/:my_id",
   checkAuth,
   requireSelfParam("my_id"),
@@ -2910,15 +3114,24 @@ UserRouter.post(
           .json({ message: "Failed to access user memory." });
       }
 
-      const updatedStudyPlanAid = updateStudyPlanAidInPlanner(
-        memoryDoc,
-        req.body,
-      );
+      updateStudyPlanAidInPlanner(memoryDoc, req.body);
       await memoryDoc.save();
+      const studyPlannerRoot =
+        memoryDoc?.studyPlanner && typeof memoryDoc.studyPlanner === "object"
+          ? memoryDoc.studyPlanner
+          : {};
+      const programComponents = Array.isArray(studyPlannerRoot?.programComponents)
+        ? studyPlannerRoot.programComponents
+        : [];
+      const componentIntervals = programComponents.map((componentEntry) => ({
+        componentId: String(componentEntry?.componentId || "").trim(),
+        componentIntervals: Array.isArray(componentEntry?.componentIntervals)
+          ? componentEntry.componentIntervals
+          : [],
+      }));
 
       return res.status(201).json({
-        studyPlanAid: getStudyPlanAid(memoryDoc),
-        updatedStudyPlanAid,
+        componentIntervals,
       });
     } catch (error) {
       return next(error);
@@ -3010,15 +3223,6 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       body?.currentProgramTerm,
       body?.term,
     );
-    const nextCurrentProgramTermPayload = getProgramTermPayload(
-      body?.currentProgramTerm,
-      nextCurrentProgramTerm,
-    );
-    const existingCurrentProgramTerm =
-      existingUser?.profile?.studying?.time?.current?.programTerm &&
-      typeof existingUser.profile.studying.time.current.programTerm === "object"
-        ? existingUser.profile.studying.time.current.programTerm
-        : {};
     const nextBio = String(body?.bio ?? "").trim();
     const nextEmail = String(body?.email ?? "").trim();
     const nextPhone = String(body?.phone ?? "").trim();
@@ -3072,66 +3276,48 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       updateSet["profile.hometown.City"] = nextHometownCity;
     }
     if (hasField("program")) {
-      updateSet["profile.studying.program"] = nextProgram;
+      updateSet["profile.studying.id.program"] = nextProgram;
     }
     if (hasField("university")) {
-      updateSet["profile.studying.university"] = nextUniversity;
+      updateSet["profile.studying.location.university"] = nextUniversity;
     }
     if (hasField("faculty")) {
-      updateSet["profile.studying.faculty"] = nextFaculty;
+      updateSet["profile.studying.location.faculty"] = nextFaculty;
     }
     if (hasField("componentsClass")) {
-      updateSet["profile.studying.componentsClass"] = nextComponentsClass;
+      updateSet["profile.studying.id.components"] = nextComponentsClass;
     }
     if (hasField("language")) {
       updateSet["profile.studying.language"] = nextLanguage;
     }
     if (hasField("totalYearsNum")) {
-      updateSet["profile.studying.time.totalYearsNum"] =
+      updateSet["profile.studying.academicYearsIntervals.total"] =
         nextTotalYearsNum === "" || !Number.isFinite(nextTotalYearsNumNumber)
           ? null
           : nextTotalYearsNumNumber;
     }
     if (hasField("startProgramYearInterval")) {
-      updateSet["profile.studying.time.start.programYearInterval"] =
+      updateSet["profile.studying.academicYearsIntervals.first.interval"] =
         nextStartProgramYearInterval || null;
     }
     if (hasField("startProgramTerm")) {
-      updateSet["profile.studying.time.start.programTerm"] =
+      updateSet["profile.studying.academicYearsIntervals.first.term"] =
         nextStartProgramTerm || null;
     }
     if (hasField("currentProgramYearNum") || hasField("studyYear")) {
-      updateSet["profile.studying.time.current.programYearNum"] =
+      updateSet["profile.studying.academicYearsIntervals.current.num"] =
         nextCurrentProgramYearNum === "" ||
         !Number.isFinite(nextCurrentProgramYearNumNumber)
           ? null
           : nextCurrentProgramYearNumNumber;
     }
     if (hasField("currentProgramYearInterval") || hasField("currentAcademicYear")) {
-      updateSet["profile.studying.time.current.programYearInterval"] =
-        nextCurrentProgramYearInterval || null;
-      updateSet["profile.studying.time.currentAcademicYear"] =
+      updateSet["profile.studying.academicYearsIntervals.current.interval"] =
         nextCurrentProgramYearInterval || null;
     }
     if (hasField("currentProgramTerm") || hasField("term")) {
-      updateSet["profile.studying.time.current.programTerm"] =
-        {
-          ...existingCurrentProgramTerm,
-          ...nextCurrentProgramTermPayload,
-          attendanceDate: Array.isArray(
-            nextCurrentProgramTermPayload?.attendanceDate,
-          )
-            ? nextCurrentProgramTermPayload.attendanceDate
-            : Array.isArray(existingCurrentProgramTerm?.attendanceDate)
-              ? existingCurrentProgramTerm.attendanceDate
-              : [],
-          examDate: Array.isArray(nextCurrentProgramTermPayload?.examDate)
-            ? nextCurrentProgramTermPayload.examDate
-            : Array.isArray(existingCurrentProgramTerm?.examDate)
-              ? existingCurrentProgramTerm.examDate
-              : [],
-        };
-      updateSet["profile.studying.term"] = nextCurrentProgramTerm || null;
+      updateSet["profile.studying.academicYearsIntervals.current.term"] =
+        nextCurrentProgramTerm || null;
     }
     if (hasField("company")) {
       updateSet["profile.working.company"] = nextCompany;
@@ -3278,21 +3464,6 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       currentProgramYearNum: nextCurrentProgramYearNum,
       currentProgramYearInterval: nextCurrentProgramYearInterval,
       currentProgramTerm: nextCurrentProgramTerm,
-      currentProgramTermDetails: {
-        ...existingCurrentProgramTerm,
-        ...nextCurrentProgramTermPayload,
-        number: nextCurrentProgramTerm,
-        attendanceDate: Array.isArray(nextCurrentProgramTermPayload?.attendanceDate)
-          ? nextCurrentProgramTermPayload.attendanceDate
-          : Array.isArray(existingCurrentProgramTerm?.attendanceDate)
-            ? existingCurrentProgramTerm.attendanceDate
-            : [],
-        examDate: Array.isArray(nextCurrentProgramTermPayload?.examDate)
-          ? nextCurrentProgramTermPayload.examDate
-          : Array.isArray(existingCurrentProgramTerm?.examDate)
-            ? existingCurrentProgramTerm.examDate
-            : [],
-      },
       company: nextCompany,
       position: nextPosition,
       aiProvider: nextAiProvider,

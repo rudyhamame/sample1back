@@ -332,6 +332,7 @@ const normalizeMemoryPayload = (memory) => {
   const studyPlanner =
     sourceStudyPlanner && typeof sourceStudyPlanner === "object"
       ? {
+          ...cloneValue(sourceStudyPlanner),
           studyOrganizer:
             sourceStudyPlanner?.studyOrganizer &&
             typeof sourceStudyPlanner.studyOrganizer === "object"

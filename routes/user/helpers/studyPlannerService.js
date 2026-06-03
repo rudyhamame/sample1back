@@ -43,25 +43,32 @@ const getStudyPlannerRoot = (memoryDoc) => {
       : memoryDoc?.studyPlanAid && typeof memoryDoc.studyPlanAid === "object"
         ? toPlainObject(memoryDoc.studyPlanAid)
         : {};
+  const currentProgramComponents = Array.isArray(currentPlanner?.programComponents)
+    ? currentPlanner.programComponents.map((entry) => toPlainObject(entry) || {})
+    : [];
+  const currentProgramIntervals = Array.isArray(currentPlanner?.programIntervals)
+    ? currentPlanner.programIntervals.map((entry) => toPlainObject(entry) || {})
+    : [];
+  const currentExams = Array.isArray(currentPlanner?.exams)
+    ? currentPlanner.exams.map((entry) => toPlainObject(entry) || {})
+    : [];
 
+  const { _id: plannerId, ...plannerWithoutId } = currentPlanner || {};
+  void plannerId;
   memoryDoc.studyPlanner = {
+    ...plannerWithoutId,
+    programComponents: currentProgramComponents,
+    programIntervals: currentProgramIntervals,
     studyOrganizer: (() => {
       const { _id, ...organizerWithoutId } = currentOrganizer || {};
       void _id;
       return organizerWithoutId;
     })(),
-    studyPlanAid: (() => {
-      const { _id, ...aidWithoutId } = currentStudyPlanAid || {};
-      void _id;
-      return aidWithoutId;
-    })(),
+    exams: currentExams,
   };
 
   if (memoryDoc?.studyOrganizer) {
     delete memoryDoc.studyOrganizer;
-  }
-  if (memoryDoc?.studyPlanAid) {
-    delete memoryDoc.studyPlanAid;
   }
 
   return memoryDoc.studyPlanner;
@@ -997,29 +1004,50 @@ const normalizeStudyPlanAidDefaults = (value = {}) => {
 
 const buildNormalizedStudyPlanAid = (value = {}) => {
   const normalizedValue = toPlainObject(value) || {};
+  const normalizedIntervals = (Array.isArray(normalizedValue?.intervals)
+    ? normalizedValue.intervals
+  : []
+  )
+    .map((entry) => {
+      const source = toPlainObject(entry) || {};
+      const intervalIdFromPayload = trimString(source?.intervalId);
+      if (intervalIdFromPayload) {
+        return {
+          intervalId: intervalIdFromPayload,
+          intervalCourses: Array.isArray(source?.intervalCourses)
+            ? source.intervalCourses
+            : [],
+        };
+      }
+      const year = trimString(source?.year);
+      const term = trimString(source?.term);
+      if (year && term) {
+        return {
+          intervalId: `${year}${term}`,
+          intervalCourses: [],
+        };
+      }
+      const componentClass = trimString(
+        source?.componentClass || source?.component_class,
+      );
+      const startDate = trimString(source?.startDate);
+      const endDate = trimString(source?.endDate);
+      if (!componentClass || !startDate || !endDate) {
+        return null;
+      }
+      const inferredIntervalId = buildPlannerIntervalId({
+        componentClass,
+        startDate,
+        endDate,
+      });
+      return {
+        intervalId: inferredIntervalId,
+        intervalCourses: [],
+      };
+    })
+    .filter(Boolean);
   return {
-    enabled:
-      typeof normalizedValue?.enabled === "boolean"
-        ? normalizedValue.enabled
-        : DEFAULT_STUDY_PLAN_AID.enabled,
-    viewMode: trimString(normalizedValue?.viewMode) || DEFAULT_STUDY_PLAN_AID.viewMode,
-    timelineUnit:
-      trimString(normalizedValue?.timelineUnit) ||
-      DEFAULT_STUDY_PLAN_AID.timelineUnit,
-    defaults: normalizeStudyPlanAidDefaults(normalizedValue?.defaults),
-    coursePlans: (Array.isArray(normalizedValue?.coursePlans)
-      ? normalizedValue.coursePlans
-      : []
-    )
-      .map((coursePlanEntry) => normalizeStudyPlanAidCoursePlan(coursePlanEntry))
-      .filter(Boolean),
-    dayPlans: (Array.isArray(normalizedValue?.dayPlans)
-      ? normalizedValue.dayPlans
-      : []
-    )
-      .map((dayPlanEntry) => normalizeStudyPlanAidDayPlan(dayPlanEntry))
-      .filter(Boolean),
-    note: trimString(normalizedValue?.note),
+    intervals: normalizedIntervals,
   };
 };
 
@@ -1093,58 +1121,533 @@ const removeCourseOrComponentFromStudyPlanAid = (studyPlanAid, targetId = "") =>
 };
 
 const ensureStudyPlanAid = (memoryDoc) => {
-  const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const currentAid =
-    studyPlanner?.studyPlanAid && typeof studyPlanner.studyPlanAid === "object"
-      ? toPlainObject(studyPlanner.studyPlanAid)
+    memoryDoc?.studyPlanAid && typeof memoryDoc.studyPlanAid === "object"
+      ? toPlainObject(memoryDoc.studyPlanAid)
       : {};
-
-  studyPlanner.studyPlanAid = buildNormalizedStudyPlanAid(currentAid);
-
-  return studyPlanner.studyPlanAid;
+  memoryDoc.studyPlanAid = buildNormalizedStudyPlanAid(currentAid);
+  return memoryDoc.studyPlanAid;
 };
 
 export const getStudyPlanAid = (memoryDoc) => ensureStudyPlanAid(memoryDoc);
+
+const inferIntervalTerm = (entry = {}) => {
+  const explicitTerm = trimString(entry?.term);
+  if (explicitTerm) {
+    return explicitTerm;
+  }
+  const startDate = trimString(entry?.startDate);
+  const monthMatch = startDate.match(/^\d{4}-(\d{2})-\d{2}$/);
+  const month = Number(monthMatch?.[1] || 0);
+  if (month >= 9 && month <= 12) {
+    return "1";
+  }
+  if (month >= 1 && month <= 5) {
+    return "2";
+  }
+  if (month >= 6 && month <= 8) {
+    return "3";
+  }
+  return "";
+};
+
+const inferIntervalYear = (entry = {}) => {
+  const explicitYear = trimString(entry?.year);
+  if (explicitYear) {
+    return explicitYear;
+  }
+  const startDate = trimString(entry?.startDate);
+  const yearMatch = startDate.match(/^(\d{4})-\d{2}-\d{2}$/);
+  return trimString(yearMatch?.[1] || "");
+};
+
+const buildPlannerSubIntervalId = (entry = {}) => {
+  const explicitSubIntervalId = trimString(
+    entry?.subIntervalId || entry?.subintervalId,
+  );
+  if (explicitSubIntervalId) {
+    return explicitSubIntervalId;
+  }
+  const year = inferIntervalYear(entry);
+  const term = inferIntervalTerm(entry);
+  if (!year || !term) {
+    return "";
+  }
+  return `${year}${term}`;
+};
+
+const normalizePlannerIntervalStatusValue = (value = "TBD") => {
+  if (Array.isArray(value)) {
+    const firstValue = trimString(value[0]);
+    return firstValue || "TBD";
+  }
+  return trimString(value) || "TBD";
+};
+
+const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const intervalIds = Array.from(
+    new Set(
+      (Array.isArray(intervals) ? intervals : [])
+        .map((entry) => buildPlannerSubIntervalId(entry))
+        .filter(Boolean),
+    ),
+  );
+  studyPlanner.programIntervals = intervalIds.map((subIntervalId, index) => ({
+    intervalId: String(index + 1),
+    intervalStatus: ["TBD"],
+    intervalsubIntervals: [
+      {
+        subIntervalId,
+        subIntervalCourses: [],
+      },
+    ],
+  }));
+};
+
+const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
+  (Array.isArray(intervalCourses) ? intervalCourses : [])
+    .map((courseEntry) => {
+      const source =
+        courseEntry && typeof courseEntry === "object"
+          ? toPlainObject(courseEntry) || {}
+          : {};
+      return {
+        courseId: trimString(source?.courseId),
+        courseCode: trimString(source?.courseCode),
+        courseComponents: (Array.isArray(source?.courseComponents)
+          ? source.courseComponents
+          : []
+        ).map((componentEntry) => {
+          const normalizedComponentEntry =
+            componentEntry && typeof componentEntry === "object"
+              ? toPlainObject(componentEntry) || {}
+              : {};
+          return {
+            componentId: trimString(normalizedComponentEntry?.componentId),
+            componentLectures: Array.isArray(
+              normalizedComponentEntry?.componentLectures,
+            )
+              ? normalizedComponentEntry.componentLectures
+              : [],
+          };
+        }),
+      };
+    })
+    .filter((courseEntry) => Boolean(courseEntry.courseId));
+
+const normalizePlannerIntervalEntries = (intervals = []) => {
+  const flattenedEntries = (Array.isArray(intervals) ? intervals : []).flatMap(
+    (entry) => {
+      const baseEntry =
+        entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+      const intervalId = trimString(baseEntry?.intervalId);
+      const intervalStatus = normalizePlannerIntervalStatusValue(
+        baseEntry?.intervalStatus,
+      );
+      const nestedSubIntervals = Array.isArray(baseEntry?.intervalsubIntervals)
+        ? baseEntry.intervalsubIntervals
+        : [];
+
+      if (nestedSubIntervals.length > 0) {
+        return nestedSubIntervals
+          .map((subIntervalEntry) => {
+            const normalizedSubIntervalEntry =
+              subIntervalEntry && typeof subIntervalEntry === "object"
+                ? toPlainObject(subIntervalEntry) || {}
+                : {};
+            const subIntervalId = buildPlannerSubIntervalId(
+              normalizedSubIntervalEntry,
+            );
+            if (!subIntervalId) {
+              return null;
+            }
+            return {
+              intervalId: intervalId || subIntervalId,
+              subIntervalId,
+              intervalStatus,
+              intervalCourses: normalizePlannerIntervalCourseEntries(
+                normalizedSubIntervalEntry?.subIntervalCourses,
+              ),
+            };
+          })
+          .filter(Boolean);
+      }
+
+      const subIntervalId = buildPlannerSubIntervalId(baseEntry);
+      if (!subIntervalId) {
+        return [];
+      }
+      return [
+        {
+          intervalId:
+            intervalId ||
+            (typeof baseEntry?.regular === "boolean" && baseEntry.regular === false
+              ? subIntervalId
+              : subIntervalId),
+          subIntervalId,
+          intervalStatus,
+          intervalCourses: normalizePlannerIntervalCourseEntries(
+            baseEntry?.intervalCourses,
+          ),
+        },
+      ];
+    },
+  );
+
+  const groupedIntervals = flattenedEntries.reduce((map, entry) => {
+    const subIntervalId = trimString(entry?.subIntervalId);
+    if (!subIntervalId) {
+      return map;
+    }
+    const intervalId =
+      trimString(entry?.intervalId) ||
+      (typeof entry?.regular === "boolean" && entry.regular === false
+        ? subIntervalId
+        : subIntervalId);
+    const storageIntervalId = intervalId || subIntervalId;
+    const previousInterval = map.get(storageIntervalId) || {
+      intervalId: storageIntervalId,
+      intervalStatus: "TBD",
+      intervalsubIntervals: [],
+    };
+    const nextSubIntervals = Array.from(
+      new Map(
+        [
+          ...(Array.isArray(previousInterval.intervalsubIntervals)
+            ? previousInterval.intervalsubIntervals
+            : []),
+          {
+            subIntervalId,
+            subIntervalCourses: normalizePlannerIntervalCourseEntries(
+              entry?.intervalCourses,
+            ),
+          },
+        ].map((subEntry) => [
+          trimString(subEntry?.subIntervalId),
+          {
+            subIntervalId: trimString(subEntry?.subIntervalId),
+            subIntervalCourses: normalizePlannerIntervalCourseEntries(
+              subEntry?.subIntervalCourses,
+            ),
+          },
+        ]),
+      ).values(),
+    ).filter((subEntry) => Boolean(subEntry?.subIntervalId));
+
+    map.set(storageIntervalId, {
+      intervalId: storageIntervalId,
+      intervalStatus:
+        normalizePlannerIntervalStatusValue(entry?.intervalStatus) ||
+        previousInterval.intervalStatus ||
+        "TBD",
+      intervalsubIntervals: nextSubIntervals,
+    });
+    return map;
+  }, new Map());
+
+  return Array.from(groupedIntervals.values());
+};
 
 export const updateStudyPlanAidInPlanner = (memoryDoc, payload = {}) => {
   const studyPlanAid = ensureStudyPlanAid(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-
-  const nextDefaults =
-    normalizedPayload?.defaults && typeof normalizedPayload.defaults === "object"
-      ? normalizeStudyPlanAidDefaults(normalizedPayload.defaults)
-      : studyPlanAid.defaults;
-  const nextCoursePlans = Array.isArray(normalizedPayload?.coursePlans)
-    ? normalizedPayload.coursePlans
-        .map((entry) => normalizeStudyPlanAidCoursePlan(entry))
-        .filter(Boolean)
-    : studyPlanAid.coursePlans;
-  const nextDayPlans = Array.isArray(normalizedPayload?.dayPlans)
-    ? normalizedPayload.dayPlans
-        .map((entry) => normalizeStudyPlanAidDayPlan(entry))
-        .filter(Boolean)
-    : studyPlanAid.dayPlans;
-
-  studyPlanAid.enabled =
-    typeof normalizedPayload?.enabled === "boolean"
-      ? normalizedPayload.enabled
-      : studyPlanAid.enabled;
-  studyPlanAid.viewMode =
-    trimString(normalizedPayload?.viewMode) || trimString(studyPlanAid?.viewMode);
-  studyPlanAid.timelineUnit =
-    trimString(normalizedPayload?.timelineUnit) ||
-    trimString(studyPlanAid?.timelineUnit) ||
-    DEFAULT_STUDY_PLAN_AID.timelineUnit;
-  studyPlanAid.defaults = nextDefaults;
-  studyPlanAid.note =
-    normalizedPayload?.note !== undefined
-      ? trimString(normalizedPayload?.note)
-      : trimString(studyPlanAid?.note);
-  studyPlanAid.coursePlans = nextCoursePlans;
-  studyPlanAid.dayPlans = nextDayPlans;
+  const nextIntervals = Array.isArray(normalizedPayload?.intervals)
+    ? normalizedPayload.intervals
+    : studyPlanAid?.intervals;
+  studyPlanAid.intervals = nextIntervals;
+  syncPlannerComponentIntervalsFromStudyPlanAid(memoryDoc, nextIntervals);
 
   return buildNormalizedStudyPlanAid(studyPlanAid);
+};
+
+export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const normalizedIntervals = normalizePlannerIntervalEntries(
+    normalizedPayload?.intervals,
+  );
+  studyPlanner.programIntervals = normalizedIntervals.map((intervalEntry) => ({
+    intervalId: String(intervalEntry?.intervalId || "").trim(),
+    intervalStatus: [
+      normalizePlannerIntervalStatusValue(intervalEntry?.intervalStatus),
+    ],
+    intervalsubIntervals: (Array.isArray(intervalEntry?.intervalsubIntervals)
+      ? intervalEntry.intervalsubIntervals
+      : []
+    ).map((subIntervalEntry) => ({
+      subIntervalId: String(subIntervalEntry?.subIntervalId || "").trim(),
+      subIntervalCourses: normalizePlannerIntervalCourseEntries(
+        subIntervalEntry?.subIntervalCourses,
+      ),
+    })),
+  }));
+
+  return studyPlanner;
+};
+
+export const updateStudyPlannerIntervalStatusInPlanner = (
+  memoryDoc,
+  payload = {},
+) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const targetSubIntervalId = trimString(
+    normalizedPayload?.subIntervalId || normalizedPayload?.subintervalId,
+  );
+  const targetIntervalId = trimString(normalizedPayload?.intervalId);
+  const requestedStatus =
+    trimString(normalizedPayload?.intervalStatus).toLowerCase() === "current"
+      ? "current"
+      : "TBD";
+
+  if (!targetSubIntervalId && !targetIntervalId) {
+    throw new Error("SubInterval ID is required.");
+  }
+  const currentProgramIntervals = Array.isArray(studyPlanner?.programIntervals)
+    ? studyPlanner.programIntervals
+    : [];
+  studyPlanner.programIntervals = currentProgramIntervals.map((intervalEntry) => {
+    const baseInterval =
+      intervalEntry && typeof intervalEntry === "object"
+        ? toPlainObject(intervalEntry) || {}
+        : {};
+    const intervalId = trimString(baseInterval?.intervalId);
+    const subIntervals = Array.isArray(baseInterval?.intervalsubIntervals)
+      ? baseInterval.intervalsubIntervals.map((subIntervalEntry) =>
+          subIntervalEntry && typeof subIntervalEntry === "object"
+            ? toPlainObject(subIntervalEntry) || {}
+            : {},
+        )
+      : [];
+    const hasTargetSubInterval = subIntervals.some(
+      (subIntervalEntry) =>
+        trimString(subIntervalEntry?.subIntervalId) === targetSubIntervalId,
+    );
+    const isTargetInterval = targetSubIntervalId
+      ? hasTargetSubInterval
+      : intervalId === targetIntervalId;
+    const currentStatus =
+      normalizePlannerIntervalStatusValue(baseInterval?.intervalStatus).toLowerCase() ===
+      "current"
+        ? "current"
+        : "TBD";
+
+    return {
+      ...baseInterval,
+      intervalStatus: [
+        isTargetInterval
+          ? requestedStatus
+          : currentStatus === "current"
+            ? "TBD"
+            : currentStatus,
+      ],
+      intervalsubIntervals: subIntervals.map((subIntervalEntry) => ({
+        ...subIntervalEntry,
+        subIntervalCourses: normalizePlannerIntervalCourseEntries(
+          subIntervalEntry?.subIntervalCourses,
+        ),
+      })),
+    };
+  });
+
+  return studyPlanner;
+};
+
+export const updateStudyPlannerProgramInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const programId = trimString(normalizedPayload?.programId);
+
+  if (!programId) {
+    throw new Error("Program ID is required.");
+  }
+
+  studyPlanner.programId = programId;
+  if (!Array.isArray(studyPlanner.programComponents)) {
+    studyPlanner.programComponents = [];
+  }
+  if (!Array.isArray(studyPlanner.programIntervals)) {
+    studyPlanner.programIntervals = [];
+  }
+  if (!Array.isArray(studyPlanner.exams)) {
+    studyPlanner.exams = [];
+  }
+
+  ensureStudyOrganizer(memoryDoc);
+  ensureStudyPlanAid(memoryDoc);
+
+  return studyPlanner;
+};
+
+export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const nextProgramLanguage = trimString(normalizedPayload?.programLanguage);
+  const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
+  const nextProgramFaculty = trimString(normalizedPayload?.programFaculty);
+  const hasProgramStartYear = "programStartYear" in normalizedPayload;
+  const hasProgramTotalYears = "programTotalYears" in normalizedPayload;
+  const hasProgramTermsPerYear = "programTermsPerYear" in normalizedPayload;
+  const hasProgramPassingThresholdPerInterval =
+    "programPassingThresholdPerInterval" in normalizedPayload;
+  const nextProgramStartYear = hasProgramStartYear
+    ? toFiniteNumber(normalizedPayload?.programStartYear, null)
+    : null;
+  const nextProgramTotalYears = hasProgramTotalYears
+    ? toFiniteNumber(normalizedPayload?.programTotalYears, null)
+    : null;
+  const nextProgramTermsPerYear = hasProgramTermsPerYear
+    ? toFiniteNumber(normalizedPayload?.programTermsPerYear, null)
+    : null;
+  const nextProgramPassingThresholdPerInterval =
+    hasProgramPassingThresholdPerInterval &&
+    normalizedPayload?.programPassingThresholdPerInterval &&
+    typeof normalizedPayload.programPassingThresholdPerInterval === "object"
+      ? toPlainObject(normalizedPayload.programPassingThresholdPerInterval) || {}
+      : {};
+  const nextThresholdUnit = trimString(
+    nextProgramPassingThresholdPerInterval?.thresholdUnit,
+  );
+  const nextThresholdMode = trimString(
+    nextProgramPassingThresholdPerInterval?.thresholdMode,
+  );
+  const nextThresholdNumber = hasProgramPassingThresholdPerInterval
+    ? toFiniteNumber(
+        nextProgramPassingThresholdPerInterval?.thresholdNumber,
+        null,
+      )
+    : null;
+
+  if (
+    !nextProgramLanguage &&
+    !nextProgramUniversity &&
+    !nextProgramFaculty &&
+    !hasProgramStartYear &&
+    !hasProgramTotalYears &&
+    !hasProgramTermsPerYear &&
+    !hasProgramPassingThresholdPerInterval
+  ) {
+    throw new Error(
+      "At least one studyPlanner meta field is required.",
+    );
+  }
+
+  if ("programLanguage" in normalizedPayload) {
+    studyPlanner.programLanguage = nextProgramLanguage;
+  }
+  if ("programUniversity" in normalizedPayload) {
+    studyPlanner.programUniversity = nextProgramUniversity;
+  }
+  if ("programFaculty" in normalizedPayload) {
+    studyPlanner.programFaculty = nextProgramFaculty;
+  }
+  if (hasProgramStartYear) {
+    studyPlanner.programStartYear = Number.isFinite(nextProgramStartYear)
+      ? nextProgramStartYear
+      : null;
+  }
+  if (hasProgramTotalYears) {
+    studyPlanner.programTotalYears = Number.isFinite(nextProgramTotalYears)
+      ? nextProgramTotalYears
+      : null;
+  }
+  if (hasProgramTermsPerYear) {
+    studyPlanner.programTermsPerYear = Number.isFinite(nextProgramTermsPerYear)
+      ? nextProgramTermsPerYear
+      : null;
+  }
+  if (hasProgramPassingThresholdPerInterval) {
+    studyPlanner.programPassingThresholdPerInterval = {
+      thresholdMode: nextThresholdMode || null,
+      thresholdUnit: nextThresholdUnit || null,
+      thresholdNumber: Number.isFinite(nextThresholdNumber)
+        ? nextThresholdNumber
+        : null,
+    };
+  }
+  if (!Array.isArray(studyPlanner.programComponents)) {
+    studyPlanner.programComponents = [];
+  }
+  if (!Array.isArray(studyPlanner.programIntervals)) {
+    studyPlanner.programIntervals = [];
+  }
+  if (!Array.isArray(studyPlanner.exams)) {
+    studyPlanner.exams = [];
+  }
+
+  ensureStudyOrganizer(memoryDoc);
+  ensureStudyPlanAid(memoryDoc);
+
+  return studyPlanner;
+};
+
+export const updateStudyPlannerComponentsInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const currentProgramComponents = Array.isArray(studyPlanner?.programComponents)
+    ? studyPlanner.programComponents
+    : [];
+  const currentComponentsById = new Map(
+    currentProgramComponents
+      .map((entry) => {
+        const normalizedEntry =
+          entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+        const componentId = trimString(normalizedEntry?.componentId);
+        if (!componentId) {
+          return null;
+        }
+        return [componentId, normalizedEntry];
+      })
+      .filter(Boolean),
+  );
+  const componentEntries = Array.from(
+    new Map(
+      (Array.isArray(normalizedPayload?.componentIds)
+        ? normalizedPayload.componentIds
+        : []
+      )
+        .map((entry) => {
+          const componentId = trimString(
+            entry && typeof entry === "object" ? entry?.componentId : entry,
+          );
+          const existingEntry = currentComponentsById.get(componentId) || {};
+          return {
+            componentId,
+            componentWeight: trimString(
+              entry && typeof entry === "object"
+                ? entry?.componentWeight
+                : existingEntry?.componentWeight,
+            ),
+          };
+        })
+        .filter((entry) => Boolean(entry.componentId))
+        .map((entry) => [entry.componentId, entry]),
+    ).values(),
+  );
+
+  if (componentEntries.length === 0) {
+    throw new Error("At least one componentId is required.");
+  }
+
+  studyPlanner.programComponents = componentEntries;
+  if (!Array.isArray(studyPlanner.programIntervals)) {
+    studyPlanner.programIntervals = [];
+  }
+  if (!Array.isArray(studyPlanner.exams)) {
+    studyPlanner.exams = [];
+  }
+
+  ensureStudyOrganizer(memoryDoc);
+  ensureStudyPlanAid(memoryDoc);
+
+  return studyPlanner;
 };
 
 const getPlannerCourses = (memoryDoc) => {

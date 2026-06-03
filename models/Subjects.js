@@ -45,6 +45,30 @@ const ClinicalRealitySchema = new Schema(
   { _id: false },
 );
 
+const pointOfTime = new Schema(
+  {
+    yearDate: { type: Number },
+    yearNum: { type: Number, min: 1 },
+    termNum: { type: Number, min: 1 },
+  },
+  { _id: false },
+);
+
+const ProgramModeTermSchema = new Schema(
+  {
+    year: { type: Number, default: null },
+    order: { type: Number, default: null },
+  },
+  { _id: false },
+);
+
+const ProgramModeSchema = new Schema(
+  {
+    terms: { type: [ProgramModeTermSchema], default: [] },
+  },
+  { _id: false },
+);
+
 // Profile Sub-Schema
 const ProfileSchema = new Schema(
   {
@@ -56,49 +80,6 @@ const ProfileSchema = new Schema(
     hometown: {
       Country: { type: String, default: "" },
       City: { type: String, default: "" },
-    },
-    studying: {
-      university: { type: String, default: "" },
-      program: { type: String, default: "" },
-      faculty: { type: String, default: "" },
-      componentsClass: [{ type: String }],
-      time: {
-        totalYearsNum: { type: Number, default: 0, min: 0 },
-        start: {
-          programYearInterval: { type: String, default: null },
-          programTerm: {
-            type: String,
-            enum: ["First", "Second", "Third"],
-            default: null,
-          },
-        },
-        current: {
-          programYearNum: { type: Number, default: null, min: 0 },
-          programYearInterval: { type: String, default: null },
-          programTerm: {
-            number: {
-              type: String,
-              enum: ["First", "Second", "Third"],
-              default: null,
-            },
-            attendanceDate: [
-              {
-                component_class: { type: String, default: "" },
-                start_date: { type: Date, default: null },
-                end_date: { type: Date, default: null },
-              },
-            ],
-            examDate: [
-              {
-                component_class: { type: String, default: "" },
-                start_date: { type: Date, default: null },
-                end_date: { type: Date, default: null },
-              },
-            ],
-          },
-        },
-      },
-      language: { type: String, default: "" },
     },
     working: {
       company: { type: String, default: "" },
@@ -167,6 +148,51 @@ const SubjectsSchema = new Schema(
 );
 
 SubjectsSchema.pre("validate", function () {
+  const profileStudying =
+    this?.profile?.studying && typeof this.profile.studying === "object"
+      ? this.profile.studying
+      : null;
+  if (profileStudying) {
+    const totalModes = Number(profileStudying.programTotalModes);
+    if (Number.isInteger(totalModes) && totalModes >= 1) {
+      const currentModes = Array.isArray(profileStudying.programModes)
+        ? profileStudying.programModes
+        : [];
+      profileStudying.programModes = Array.from(
+        { length: totalModes },
+        (_, index) => {
+          const existingMode =
+            currentModes[index] && typeof currentModes[index] === "object"
+              ? currentModes[index]
+              : {};
+          const existingTerms = Array.isArray(existingMode.terms)
+            ? existingMode.terms
+                .map((termEntry) => ({
+                  year:
+                    termEntry?.year === null || termEntry?.year === undefined
+                      ? null
+                      : Number(termEntry.year),
+                  order:
+                    termEntry?.order === null || termEntry?.order === undefined
+                      ? null
+                      : Number(termEntry.order),
+                }))
+                .filter(
+                  (termEntry) =>
+                    termEntry.year === null ||
+                    Number.isFinite(termEntry.year) ||
+                    termEntry.order === null ||
+                    Number.isFinite(termEntry.order),
+                )
+            : [];
+          return {
+            terms: existingTerms,
+          };
+        },
+      );
+    }
+  }
+
   if (!this.memory || typeof this.memory !== "object") {
     return;
   }
