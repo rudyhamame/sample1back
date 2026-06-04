@@ -21,6 +21,7 @@ import JamendoAPI from "./routes/JamendoAPI.js";
 import UserModel from "./compat/UserModel.js";
 import { setUserConnectionState } from "./helpers/connectionStatus.js";
 import { emitUserRefresh } from "./helpers/realtime.js";
+import { getUserAndFriendIds } from "./routes/user/helpers/friends.js";
 
 import "dotenv/config";
 
@@ -131,6 +132,7 @@ app.locals.io = io;
 
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
+const activeSocketIdsByUser = new Map();
 const getUserRoom = (userId) => `user:${userId}`;
 const USER_STALE_OFFLINE_AFTER_MS = 90 * 1000;
 const USER_STALE_CHECK_INTERVAL_MS = 30 * 1000;
@@ -282,6 +284,95 @@ const emitTypingPresenceForPair = ({ userId, friendId }) => {
   });
 };
 
+const getRecipientLocalStatusForPair = ({ userId, friendId }) => {
+  if (!userId || !friendId) {
+    return null;
+  }
+
+  const normalizedUserId = String(userId);
+  const normalizedFriendId = String(friendId);
+
+  if (activeTypingPartnersByUser.get(normalizedUserId) === normalizedFriendId) {
+    return "typing";
+  }
+
+  if (activeChatPartnersByUser.get(normalizedUserId) === normalizedFriendId) {
+    return "in my chat";
+  }
+
+  return null;
+};
+
+const updateConnectionLocalStatus = async ({
+  userId,
+  friendId,
+  value = null,
+  updatedAt = new Date(),
+}) => {
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedFriendId = String(friendId || "").trim();
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  const nextValue = ["in my chat", "typing"].includes(normalizedValue)
+    ? normalizedValue
+    : null;
+
+  if (!normalizedUserId || !normalizedFriendId) {
+    return;
+  }
+
+  try {
+    const userDoc = await UserModel.findById(normalizedUserId)
+      .select("connections")
+      .maxTimeMS(4000);
+
+    if (!userDoc || !Array.isArray(userDoc.connections)) {
+      return;
+    }
+
+    let mutated = false;
+
+    userDoc.connections.forEach((connectionEntry) => {
+      if (
+        String(connectionEntry?.kind || "").trim().toLowerCase() !== "friend" ||
+        String(connectionEntry?.id || "").trim() !== normalizedFriendId
+      ) {
+        return;
+      }
+
+      connectionEntry.localStatus =
+        connectionEntry.localStatus &&
+        typeof connectionEntry.localStatus === "object"
+          ? connectionEntry.localStatus
+          : {};
+
+      connectionEntry.localStatus.value = nextValue;
+      connectionEntry.localStatus.updatedAt = updatedAt;
+      if (nextValue === "in my chat") {
+        connectionEntry.localStatus.lastChatAt = updatedAt;
+      }
+      if (nextValue === "typing") {
+        connectionEntry.localStatus.lastTypingAt = updatedAt;
+      }
+      mutated = true;
+    });
+
+    if (mutated) {
+      userDoc.markModified("connections");
+      await userDoc.save();
+      emitUserRefresh(io, normalizedUserId, "connection:changed", {
+        friendId: normalizedFriendId,
+        localStatus: nextValue,
+        targetUserId: normalizedUserId,
+      });
+    }
+  } catch (error) {
+    console.error(
+      "[presence] failed to update local connection status:",
+      error?.message || error,
+    );
+  }
+};
+
 io.on("connection", (socket) => {
   socket.on("user:join", ({ userId }) => {
     if (!userId) {
@@ -289,9 +380,25 @@ io.on("connection", (socket) => {
     }
 
     const normalizedUserId = String(userId).trim();
+    const previousUserId = socket.data.userId ? String(socket.data.userId) : "";
+
+    if (previousUserId && previousUserId !== normalizedUserId) {
+      const previousSockets = activeSocketIdsByUser.get(previousUserId);
+
+      if (previousSockets) {
+        previousSockets.delete(socket.id);
+
+        if (previousSockets.size === 0) {
+          activeSocketIdsByUser.delete(previousUserId);
+        }
+      }
+    }
 
     socket.data.userId = normalizedUserId;
     socket.join(getUserRoom(normalizedUserId));
+    const userSocketIds = activeSocketIdsByUser.get(normalizedUserId) || new Set();
+    userSocketIds.add(socket.id);
+    activeSocketIdsByUser.set(normalizedUserId, userSocketIds);
 
     const activeFriendId = activeChatPartnersByUser.get(normalizedUserId);
     if (activeFriendId) {
@@ -350,6 +457,21 @@ io.on("connection", (socket) => {
       userId: String(userId),
       friendId: String(friendId),
     });
+
+    updateConnectionLocalStatus({
+      userId,
+      friendId,
+      value: null,
+    });
+
+    updateConnectionLocalStatus({
+      userId: friendId,
+      friendId: userId,
+      value: getRecipientLocalStatusForPair({
+        userId,
+        friendId,
+      }),
+    });
   });
 
   socket.on("user:typing-status", ({ userId, friendId, isTyping }) => {
@@ -366,6 +488,21 @@ io.on("connection", (socket) => {
     emitTypingPresenceForPair({
       userId: String(userId),
       friendId: String(friendId),
+    });
+
+    updateConnectionLocalStatus({
+      userId,
+      friendId,
+      value: null,
+    });
+
+    updateConnectionLocalStatus({
+      userId: friendId,
+      friendId: userId,
+      value: getRecipientLocalStatusForPair({
+        userId,
+        friendId,
+      }),
     });
   });
 
@@ -549,6 +686,25 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     const userId = socket.data.userId ? String(socket.data.userId) : "";
+    const userSocketIds = userId ? activeSocketIdsByUser.get(userId) : null;
+
+    if (userSocketIds) {
+      userSocketIds.delete(socket.id);
+
+      if (userSocketIds.size === 0) {
+        activeSocketIdsByUser.delete(userId);
+      }
+    }
+
+    const userStillConnected =
+      Boolean(userId) &&
+      activeSocketIdsByUser.has(userId) &&
+      activeSocketIdsByUser.get(userId)?.size > 0;
+
+    if (userStillConnected) {
+      return;
+    }
+
     const friendId = activeChatPartnersByUser.get(userId);
     const typingFriendId = activeTypingPartnersByUser.get(userId);
 
@@ -558,6 +714,16 @@ io.on("connection", (socket) => {
         userId,
         friendId,
       });
+      updateConnectionLocalStatus({
+        userId,
+        friendId,
+        value: null,
+      });
+      updateConnectionLocalStatus({
+        userId: friendId,
+        friendId: userId,
+        value: null,
+      });
     }
 
     if (userId && typingFriendId) {
@@ -565,6 +731,55 @@ io.on("connection", (socket) => {
       emitTypingPresenceForPair({
         userId,
         friendId: typingFriendId,
+      });
+      updateConnectionLocalStatus({
+        userId,
+        friendId: typingFriendId,
+        value: null,
+      });
+      updateConnectionLocalStatus({
+        userId: typingFriendId,
+        friendId: userId,
+        value: getRecipientLocalStatusForPair({
+          userId,
+          friendId: typingFriendId,
+        }),
+      });
+    }
+
+    if (userId) {
+      setImmediate(async () => {
+        try {
+          const disconnectedUser = await UserModel.findById(userId)
+            .select("_id connections friends status")
+            .maxTimeMS(4000);
+
+          if (!disconnectedUser) {
+            return;
+          }
+
+          setUserConnectionState(disconnectedUser, {
+            statusValue: "offline",
+            at: new Date(),
+          });
+
+          await disconnectedUser.save();
+
+          emitUserRefresh(
+            io,
+            getUserAndFriendIds(disconnectedUser),
+            "connection:changed",
+            {
+              statusValue: "offline",
+              targetUserId: String(disconnectedUser._id),
+            },
+          );
+        } catch (error) {
+          console.error(
+            "[disconnect] offline reconciliation failed:",
+            error?.message || error,
+          );
+        }
       });
     }
   });
@@ -603,13 +818,13 @@ setInterval(async () => {
   try {
     const staleThreshold = new Date(Date.now() - USER_STALE_OFFLINE_AFTER_MS);
     const staleUsers = await UserModel.find({
-      "status.value": "online",
+      "status.value": { $in: ["online", "busy", "studying"] },
       "status.updatedAt": { $lt: staleThreshold },
     }).select("_id connections status");
 
     for (const staleUser of staleUsers) {
       setUserConnectionState(staleUser, {
-        isConnected: false,
+        statusValue: "offline",
         at: new Date(),
       });
 
@@ -628,7 +843,7 @@ setInterval(async () => {
         ],
         "connection:changed",
         {
-          isConnected: false,
+          statusValue: "offline",
           targetUserId: String(staleUser._id),
         },
       );

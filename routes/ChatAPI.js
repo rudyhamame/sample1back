@@ -39,6 +39,12 @@ const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
       id: friendId,
       mode: "stranger",
       chat: [],
+      localStatus: {
+        value: null,
+        updatedAt: null,
+        lastChatAt: null,
+        lastTypingAt: null,
+      },
     };
     user.connections.push(friendEntry);
   }

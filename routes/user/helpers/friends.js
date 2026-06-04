@@ -38,15 +38,29 @@ const mapFriendForClient = (friend) => {
     typeof friend.toObject === "function" ? friend.toObject() : { ...friend };
   const identity = normalizedFriend?.identity || {};
   const personal = identity?.personal || {};
-  const identityStatus = identity?.status || {};
   const existingInfo = normalizedFriend?.info || {};
   const existingStatus = normalizedFriend?.status || {};
   const existingMedia = normalizedFriend?.media || {};
+  const existingLocalStatus = normalizedFriend?.localStatus || {};
   const profilePicture = personal?.profilePicture?.picture || {};
   const mediaProfilePicture =
     existingMedia?.profilePicture && typeof existingMedia.profilePicture === "object"
       ? existingMedia.profilePicture
       : {};
+  const statusValue = String(
+    existingStatus?.value || "",
+  )
+    .trim()
+    .toLowerCase();
+  const normalizedStatusValue = ["online", "busy", "studying", "offline"].includes(
+    statusValue,
+  )
+    ? statusValue
+    : "offline";
+  const statusUpdatedAt =
+    existingStatus?.updatedAt ||
+    existingStatus?.lastSeenAt ||
+    null;
 
   return {
     ...normalizedFriend,
@@ -64,8 +78,14 @@ const mapFriendForClient = (friend) => {
     },
     status: {
       ...existingStatus,
-      ...identityStatus,
-      isConnected: Boolean(existingStatus?.isConnected ?? identityStatus?.isLoggedIn),
+      value: normalizedStatusValue,
+      updatedAt: statusUpdatedAt,
+      lastSeenAt: statusUpdatedAt,
+      loggedInAt: existingStatus?.loggedInAt || null,
+      loggedOutAt:
+        normalizedStatusValue === "offline"
+          ? existingStatus?.loggedOutAt || statusUpdatedAt
+          : existingStatus?.loggedOutAt || null,
     },
     media: {
       ...existingMedia,
@@ -74,6 +94,12 @@ const mapFriendForClient = (friend) => {
         ...mediaProfilePicture,
         url: String(mediaProfilePicture?.url || profilePicture?.url || "").trim(),
       },
+    },
+    localStatus: {
+      value: String(existingLocalStatus?.value || "").trim() || null,
+      updatedAt: existingLocalStatus?.updatedAt || null,
+      lastChatAt: existingLocalStatus?.lastChatAt || null,
+      lastTypingAt: existingLocalStatus?.lastTypingAt || null,
     },
   };
 };
@@ -109,4 +135,3 @@ export const mapFriendEntryForClient = (entry) => {
     },
   };
 };
-

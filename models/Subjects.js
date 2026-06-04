@@ -138,10 +138,13 @@ const SubjectsSchema = new Schema(
     status: {
       value: {
         type: String,
-        enum: ["online", "offline"],
-        default: "online",
+        enum: ["online", "offline", "studying", "busy"],
+        default: "offline",
       },
       updatedAt: { type: Date, default: Date.now },
+      lastSeenAt: { type: Date, default: null },
+      loggedInAt: { type: Date, default: null },
+      loggedOutAt: { type: Date, default: null },
     },
   },
   { strict: "throw" },

@@ -1,14 +1,13 @@
 export const getUserPresence = (user) => {
   const status = user?.status || {};
-  const isLoggedIn =
-    status?.value === "online" ||
-    Boolean(user?.identity?.status?.isLoggedIn);
-  const updatedAt = status?.updatedAt || null;
+  const statusValue = String(status?.value || "").trim().toLowerCase();
+  const isLoggedIn = ["online", "busy", "studying"].includes(statusValue);
+  const updatedAt = status?.lastSeenAt || status?.updatedAt || null;
   return {
     isLoggedIn,
     lastSeenAt: updatedAt,
-    loggedInAt: isLoggedIn ? updatedAt : null,
-    loggedOutAt: isLoggedIn ? null : updatedAt,
+    loggedInAt: isLoggedIn ? status?.loggedInAt || updatedAt : null,
+    loggedOutAt: isLoggedIn ? null : status?.loggedOutAt || updatedAt,
   };
 };
 

@@ -454,6 +454,18 @@ const isProfileComplete = (user) => {
 const getSubjectStatus = (user) =>
   user?.status && typeof user.status === "object" ? user.status : {};
 
+const normalizePresenceStatusValue = (value, fallback = "offline") => {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  if (["online", "busy", "studying", "offline"].includes(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  const normalizedFallback = String(fallback || "").trim().toLowerCase();
+  return ["online", "busy", "studying", "offline"].includes(normalizedFallback)
+    ? normalizedFallback
+    : "offline";
+};
+
 const getLegacyProfilePicture = (user) => {
   const bio = getSubjectBio(user);
   const pictureRoot =
@@ -555,11 +567,19 @@ const buildLegacyIdentity = (user) => {
       },
     },
     status: {
-      isLoggedIn: status?.value === "online",
-      lastSeenAt: status?.updatedAt || null,
-      loggedInAt: status?.value === "online" ? status?.updatedAt || null : null,
+      value: normalizePresenceStatusValue(status?.value, "offline"),
+      isLoggedIn:
+        normalizePresenceStatusValue(status?.value, "offline") !== "offline",
+      lastSeenAt: status?.lastSeenAt || status?.updatedAt || null,
+      updatedAt: status?.updatedAt || status?.lastSeenAt || null,
+      loggedInAt:
+        normalizePresenceStatusValue(status?.value, "offline") !== "offline"
+          ? status?.loggedInAt || status?.updatedAt || null
+          : null,
       loggedOutAt:
-        status?.value === "offline" ? status?.updatedAt || null : null,
+        normalizePresenceStatusValue(status?.value, "offline") === "offline"
+          ? status?.loggedOutAt || status?.updatedAt || null
+          : null,
     },
   };
 };
@@ -744,8 +764,15 @@ const mapFriendForClient = (friend) => {
   const legacyIdentity = buildLegacyIdentity(normalizedFriend);
   const identity = legacyIdentity;
   const personal = identity?.personal || {};
-  const identityStatus = identity?.status || {};
   const profilePicture = personal?.profilePicture?.picture || {};
+  const statusValue = normalizePresenceStatusValue(
+    existingStatus?.value,
+    "offline",
+  );
+  const statusUpdatedAt =
+    existingStatus?.updatedAt ||
+    existingStatus?.lastSeenAt ||
+    null;
 
   return {
     ...normalizedFriend,
@@ -769,10 +796,14 @@ const mapFriendForClient = (friend) => {
     },
     status: {
       ...existingStatus,
-      ...identityStatus,
-      isConnected: Boolean(
-        existingStatus?.isConnected ?? identityStatus?.isLoggedIn,
-      ),
+      value: statusValue,
+      updatedAt: statusUpdatedAt,
+      lastSeenAt: statusUpdatedAt,
+      loggedInAt: existingStatus?.loggedInAt || null,
+      loggedOutAt:
+        statusValue === "offline"
+          ? existingStatus?.loggedOutAt || statusUpdatedAt
+          : existingStatus?.loggedOutAt || null,
     },
     media: {
       ...existingMedia,
@@ -817,6 +848,10 @@ const mapFriendEntryForClient = (entry) => {
   const userMode = String(
     normalizedEntry.userMode || normalizedEntry.mode || "stranger",
   ).trim();
+  const existingLocalStatus =
+    normalizedEntry?.localStatus && typeof normalizedEntry.localStatus === "object"
+      ? normalizedEntry.localStatus
+      : {};
 
   return {
     ...mappedUser,
@@ -824,8 +859,20 @@ const mapFriendEntryForClient = (entry) => {
     id: friendId,
     userID: friendId,
     userMode,
+    localStatus: {
+      value: String(existingLocalStatus?.value || "").trim() || null,
+      updatedAt: existingLocalStatus?.updatedAt || null,
+      lastChatAt: existingLocalStatus?.lastChatAt || null,
+      lastTypingAt: existingLocalStatus?.lastTypingAt || null,
+    },
     relationship: {
       userMode,
+      localStatus: {
+        value: String(existingLocalStatus?.value || "").trim() || null,
+        updatedAt: existingLocalStatus?.updatedAt || null,
+        lastChatAt: existingLocalStatus?.lastChatAt || null,
+        lastTypingAt: existingLocalStatus?.lastTypingAt || null,
+      },
     },
   };
 };
@@ -985,6 +1032,12 @@ const ensureFriendRelationship = (user, otherUserId, userMode) => {
     id: normalizedOtherId,
     mode: normalizedMode,
     messages: [],
+    localStatus: {
+      value: null,
+      updatedAt: null,
+      lastChatAt: null,
+      lastTypingAt: null,
+    },
   });
   return true;
 };
@@ -1978,6 +2031,9 @@ UserRouter.post("/login", function (req, res, next) {
                     $set: {
                       "status.value": "online",
                       "status.updatedAt": now,
+                      "status.lastSeenAt": now,
+                      "status.loggedInAt": now,
+                      "status.loggedOutAt": null,
                     },
                   },
                   {
@@ -2016,7 +2072,7 @@ UserRouter.post("/login", function (req, res, next) {
                   getUserAndFriendIds(updatedUser),
                   "connection:changed",
                   {
-                    isConnected: true,
+                    statusValue: "online",
                     targetUserId: String(updatedUser._id),
                   },
                 );
@@ -2098,6 +2154,9 @@ UserRouter.post("/logout", checkAuth, async function (req, res, next) {
             $set: {
               "status.value": "offline",
               "status.updatedAt": now,
+              "status.lastSeenAt": now,
+              "status.loggedOutAt": now,
+              "status.loggedInAt": null,
             },
           },
           { maxTimeMS: 4000 },
@@ -2110,7 +2169,7 @@ UserRouter.post("/logout", checkAuth, async function (req, res, next) {
 
         if (notifyUser) {
           emitUserRefresh(io, getUserAndFriendIds(notifyUser), "connection:changed", {
-            isConnected: false,
+            statusValue: "offline",
             targetUserId: String(notifyUser._id),
           });
         }
@@ -2167,7 +2226,7 @@ UserRouter.post("/signup", async function (req, res, next) {
     });
 
     setUserConnectionState(createdUser, {
-      isConnected: true,
+      statusValue: "online",
       at: new Date(),
       markLogin: true,
     });
@@ -4755,6 +4814,10 @@ UserRouter.put(
 //////////////////////Posting update for a user before leaving app
 UserRouter.put("/isOnline/:id", function (req, res, next) {
   const io = req.app.locals.io;
+  const requestedStatusValue = normalizePresenceStatusValue(
+    req.body?.statusValue,
+    "offline",
+  );
   UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
@@ -4765,7 +4828,7 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
       }
 
       setUserConnectionState(user, {
-        isConnected: req.body.isConnected,
+        statusValue: requestedStatusValue,
         at: new Date(),
       });
 
@@ -4777,7 +4840,7 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
       }
 
       emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
-        isConnected: Boolean(req.body.isConnected),
+        statusValue: requestedStatusValue,
         targetUserId: String(req.params.id),
       });
       res.status(201).json(user);
@@ -4786,6 +4849,11 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
 });
 
 UserRouter.put("/heartbeat/:id", function (req, res, next) {
+  const io = req.app.locals.io;
+  const requestedStatusValue = normalizePresenceStatusValue(
+    req.body?.statusValue,
+    "online",
+  );
   UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
@@ -4796,7 +4864,7 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
       }
 
       setUserConnectionState(user, {
-        isConnected: true,
+        statusValue: requestedStatusValue,
         at: new Date(),
       });
 
@@ -4807,6 +4875,10 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
         return null;
       }
 
+      emitUserRefresh(io, getUserAndFriendIds(user), "connection:changed", {
+        statusValue: requestedStatusValue,
+        targetUserId: String(user._id),
+      });
       return res.status(200).json({
         ok: true,
         userId: String(user._id),
