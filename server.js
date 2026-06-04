@@ -452,7 +452,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("call:offer", ({ toUserId, fromUserId, offer, callType, metadata }) => {
+  socket.on("call:offer", ({ toUserId, fromUserId, offer, callType, metadata, callId }) => {
     const callerUserId = String(socket.data.userId || fromUserId || "").trim();
     const targetUserId = String(toUserId || "").trim();
 
@@ -465,7 +465,25 @@ io.on("connection", (socket) => {
       toUserId: targetUserId,
       callType: callType === "video" ? "video" : "audio",
       offer,
+      callId: String(callId || "").trim(),
       metadata: metadata && typeof metadata === "object" ? metadata : {},
+    });
+  });
+
+  socket.on("call:offer-received", ({ toUserId, fromUserId, callId, callType }) => {
+    const receiverUserId = String(socket.data.userId || fromUserId || "").trim();
+    const targetUserId = String(toUserId || "").trim();
+    const normalizedCallId = String(callId || "").trim();
+
+    if (!receiverUserId || !targetUserId || !normalizedCallId) {
+      return;
+    }
+
+    io.to(getUserRoom(targetUserId)).emit("call:offer-received", {
+      fromUserId: receiverUserId,
+      toUserId: targetUserId,
+      callId: normalizedCallId,
+      callType: callType === "video" ? "video" : "audio",
     });
   });
 
