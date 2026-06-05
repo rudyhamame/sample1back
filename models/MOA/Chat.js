@@ -41,10 +41,19 @@ const MessageIndexSchema = new Schema(
   },
   { _id: false },
 );
+const MessageBody = new Schema(
+  {
+    text: { type: String, default: "" },
+    images: { type: [String], default: [] },
+    videos: { type: [String], default: [] },
+    documents: { type: [String], default: [] },
+  },
+  { _id: false, strict: "throw" },
+);
 
 const MessagesSchema = new Schema({
   index: { type: MessageIndexSchema, required: true },
-  body: { type: String, default: "" },
+  body: { type: MessageBody, default: () => ({}) },
   status: { type: [MessageStatusSchema], default: [] },
   reply: { type: [MessageReplySchema], default: [] },
   reaction: { type: MessageReactionSchema, default: () => ({}) },

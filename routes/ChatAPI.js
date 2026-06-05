@@ -6,6 +6,30 @@ import { sendTelegramSavedMessageForUser } from "./TelegramAPI.js";
 
 const ChatRouter = express.Router();
 
+const normalizeChatMessageBody = (value = {}) => {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : {};
+  const text = String(source?.text ?? source?.message ?? "").trim();
+  const images = (Array.isArray(source?.images) ? source.images : [])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  const videos = (Array.isArray(source?.videos) ? source.videos : [])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  const documents = (Array.isArray(source?.documents) ? source.documents : [])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+
+  return {
+    text,
+    images,
+    videos,
+    documents,
+  };
+};
+
 const getUserNameParts = (user) => {
   const firstname = String(user?.bio?.firstname || "").trim();
   const lastname = String(user?.bio?.lastname || "").trim();
@@ -25,7 +49,7 @@ const ensureConnections = (user) => {
     : user.connections?.toObject?.() || [];
 };
 
-const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
+const appendRelationshipMessage = (user, friendId, messageBody, status, sentAt) => {
   ensureConnections(user);
 
   const friendIdString = String(friendId);
@@ -73,6 +97,7 @@ const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
 
   const senderPerspective = status === "delivered" ? "THEM" : "ME";
   const receiverPerspective = senderPerspective === "ME" ? "THEM" : "ME";
+  const normalizedBody = normalizeChatMessageBody(messageBody);
 
   chatThread.messages.push({
     index: {
@@ -80,7 +105,7 @@ const appendRelationshipMessage = (user, friendId, message, status, sentAt) => {
       receiver: receiverPerspective,
       timestamp: sentAt,
     },
-    body: message,
+    body: normalizedBody,
     status: [
       {
         value: status,
@@ -97,13 +122,30 @@ ChatRouter.post(
   async function (req, res, next) {
     const senderId = String(req.params.my_id || "").trim();
     const friendId = String(req.params.friendID || "").trim();
-    const message = String(req.body?.message || "");
+    const messageBody = normalizeChatMessageBody({
+      text: req.body?.body?.text ?? req.body?.message ?? "",
+      images: req.body?.body?.images ?? req.body?.images,
+      videos: req.body?.body?.videos ?? req.body?.videos,
+      documents: req.body?.body?.documents ?? req.body?.documents,
+    });
     const io = req.app.locals.io;
     const sentAt = new Date();
 
     if (!senderId || !friendId) {
       return res.status(400).json({
         message: "Sender and friend IDs are required.",
+      });
+    }
+
+    const hasPayload =
+      messageBody.text ||
+      messageBody.images.length > 0 ||
+      messageBody.videos.length > 0 ||
+      messageBody.documents.length > 0;
+
+    if (!hasPayload) {
+      return res.status(400).json({
+        message: "Message body must include text or attachments.",
       });
     }
 
@@ -126,14 +168,14 @@ ChatRouter.post(
       appendRelationshipMessage(
         senderUser,
         friendUser._id,
-        message,
+        messageBody,
         "sent",
         sentAt,
       );
       appendRelationshipMessage(
         friendUser,
         senderUser._id,
-        message,
+        messageBody,
         "delivered",
         sentAt,
       );
@@ -149,7 +191,13 @@ ChatRouter.post(
 
       if (!isUserOnline(friendUser)) {
         const senderUsername = senderIdentity.username;
-        const messagePreview = message.trim();
+        const messagePreview = messageBody.text;
+        const attachmentLines = [];
+        if (messageBody.images.length > 0) {
+          attachmentLines.push(
+            `${messageBody.images.length} image${messageBody.images.length === 1 ? "" : "s"}`,
+          );
+        }
         const telegramAlert = [
           `New PhenoMed message for ${recipientLabel}`,
           `From: ${senderName}${senderUsername ? ` (@${senderUsername})` : ""}`,
@@ -158,6 +206,9 @@ ChatRouter.post(
           "",
           "Message:",
           messagePreview || "[No text]",
+          ...(attachmentLines.length > 0
+            ? ["", "Attachments:", ...attachmentLines]
+            : []),
         ].join("\n");
 
         await sendTelegramSavedMessageForUser({
@@ -172,6 +223,16 @@ ChatRouter.post(
 
       return res.status(201).json({
         message: "Message sent.",
+        chatMessage: {
+          _id: friendId,
+          from: "me",
+          message: messageBody.text,
+          images: messageBody.images,
+          videos: messageBody.videos,
+          documents: messageBody.documents,
+          date: sentAt.toISOString(),
+          status: "sent",
+        },
       });
     } catch (error) {
       return next(error);

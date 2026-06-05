@@ -12,6 +12,42 @@ const normalizeGalleryVisibility = (visibility) => {
     : "public";
 };
 
+const deriveCloudinaryPublicIdFromUrl = (value) => {
+  const rawUrl = String(value || "").trim();
+  if (!rawUrl) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const pathSegments = parsedUrl.pathname
+      .split("/")
+      .map((segment) => String(segment || "").trim())
+      .filter(Boolean);
+    const uploadIndex = pathSegments.findIndex((segment) => segment === "upload");
+    if (uploadIndex === -1) {
+      return "";
+    }
+
+    const publicIdSegments = pathSegments
+      .slice(uploadIndex + 1)
+      .filter((segment) => !/^v\d+$/i.test(segment));
+    if (publicIdSegments.length === 0) {
+      return "";
+    }
+
+    const lastSegment = publicIdSegments[publicIdSegments.length - 1];
+    publicIdSegments[publicIdSegments.length - 1] = lastSegment.replace(
+      /\.[^.]+$/,
+      "",
+    );
+
+    return publicIdSegments.join("/");
+  } catch {
+    return "";
+  }
+};
+
 const normalizeStoredGalleryImage = (image) => {
   if (!image) {
     return null;
@@ -24,6 +60,7 @@ const normalizeStoredGalleryImage = (image) => {
       image?.public_id ||
       identity?.publicId ||
       identity?.fileName ||
+      deriveCloudinaryPublicIdFromUrl(url) ||
       "",
   ).trim();
   const mimeType = String(

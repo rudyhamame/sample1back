@@ -897,8 +897,19 @@ const buildLegacyChatFromConnections = (connections = []) => {
         : [];
 
       threadMessages.forEach((messageEntry) => {
-        const messageBody = String(messageEntry?.body || "").trim();
-        if (!messageBody) {
+        const messageBodySource =
+          messageEntry?.body && typeof messageEntry.body === "object"
+            ? messageEntry.body
+            : {};
+        const messageText = String(
+          messageBodySource?.text ?? messageEntry?.body ?? "",
+        ).trim();
+        const messageImages = (
+          Array.isArray(messageBodySource?.images) ? messageBodySource.images : []
+        )
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean);
+        if (!messageText && messageImages.length === 0) {
           return;
         }
 
@@ -924,7 +935,8 @@ const buildLegacyChatFromConnections = (connections = []) => {
         chatRows.push({
           _id: friendId,
           from: senderTag === "THEM" ? "them" : "me",
-          message: messageBody,
+          message: messageText,
+          images: messageImages,
           date: normalizedDate,
           status: statusValue,
         });
@@ -1365,6 +1377,42 @@ const normalizeGalleryVisibility = (visibility) => {
     : "public";
 };
 
+const deriveCloudinaryPublicIdFromUrl = (value) => {
+  const rawUrl = String(value || "").trim();
+  if (!rawUrl) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const pathSegments = parsedUrl.pathname
+      .split("/")
+      .map((segment) => String(segment || "").trim())
+      .filter(Boolean);
+    const uploadIndex = pathSegments.findIndex((segment) => segment === "upload");
+    if (uploadIndex === -1) {
+      return "";
+    }
+
+    const publicIdSegments = pathSegments
+      .slice(uploadIndex + 1)
+      .filter((segment) => !/^v\d+$/i.test(segment));
+    if (publicIdSegments.length === 0) {
+      return "";
+    }
+
+    const lastSegment = publicIdSegments[publicIdSegments.length - 1];
+    publicIdSegments[publicIdSegments.length - 1] = lastSegment.replace(
+      /\.[^.]+$/,
+      "",
+    );
+
+    return publicIdSegments.join("/");
+  } catch {
+    return "";
+  }
+};
+
 const normalizeStoredGalleryImage = (image) => {
   if (!image) {
     return null;
@@ -1379,6 +1427,7 @@ const normalizeStoredGalleryImage = (image) => {
       image?.public_id ||
       identity?.publicId ||
       identity?.fileName ||
+      deriveCloudinaryPublicIdFromUrl(url) ||
       "",
   ).trim();
   const mimeType = String(
