@@ -3205,7 +3205,14 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       Object.prototype.hasOwnProperty.call(body, fieldName);
     const existingUser = await UserModel.findById(req.authentication.userId)
       .select(
-        "auth.username profile.firstname profile.lastname profile.studying.time.current.programTerm",
+        [
+          "auth.username",
+          "profile.firstname",
+          "profile.lastname",
+          "profile.studying.time.current.programTerm",
+          "settings.ui.scale",
+          "settings.ui.updatedAt",
+        ].join(" "),
       )
       .lean();
     if (!existingUser?._id) {
@@ -3306,6 +3313,34 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     const nextPosition = String(body?.position ?? "").trim();
     const nextTotalYearsNumNumber = Number(nextTotalYearsNum);
     const nextCurrentProgramYearNumNumber = Number(nextCurrentProgramYearNum);
+    const requestedSettings =
+      body?.settings && typeof body.settings === "object" ? body.settings : null;
+    const requestedSettingsUi =
+      requestedSettings?.ui && typeof requestedSettings.ui === "object"
+        ? requestedSettings.ui
+        : null;
+    const normalizeUiScaleEntries = (value) =>
+      (Array.isArray(value) ? value : [])
+        .map((entry) => {
+          const element = String(entry?.element || "").trim();
+          const scaleNum = Number(entry?.scaleNum);
+
+          if (!element) {
+            return null;
+          }
+
+          return {
+            element,
+            scaleNum: Number.isFinite(scaleNum) ? scaleNum : 1,
+          };
+        })
+        .filter(Boolean);
+    const requestedSettingsScaleSource =
+      requestedSettingsUi?.scale ?? requestedSettings?.scale;
+    const nextUiScaleEntries =
+      requestedSettingsScaleSource !== undefined
+        ? normalizeUiScaleEntries(requestedSettingsScaleSource)
+        : null;
 
     const updateSet = {
       "profile.firstname": nextFirstname,
@@ -3383,6 +3418,10 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
     }
     if (hasField("position")) {
       updateSet["profile.working.position"] = nextPosition;
+    }
+    if (nextUiScaleEntries !== null) {
+      updateSet["settings.ui.scale"] = nextUiScaleEntries;
+      updateSet["settings.ui.updatedAt"] = new Date();
     }
 
     let nextProfilePictureViewport = null;
@@ -3496,6 +3535,10 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       });
     }
 
+    const updatedSettings = await UserModel.findById(req.authentication.userId)
+      .select("settings")
+      .lean();
+
     const responseInfo = {
       firstname: nextFirstname,
       lastname: nextLastname,
@@ -3539,6 +3582,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       message: "Personal information updated.",
       info: responseInfo,
       media: responseMedia,
+      settings: updatedSettings?.settings || null,
     });
   } catch (error) {
     next(error);

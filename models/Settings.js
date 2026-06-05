@@ -53,6 +53,10 @@ const SettingsSchema = new Schema(
       // App UI language for the subject interface, not the AI reply language.
       language: { type: String, default: "en" },
       theme: { type: String, default: "light" },
+      scale: [{
+        scaleNum: { type: Number, default: 1 },
+        element: { type: String, default: "" },
+      }],
       updatedAt: { type: Date, default: null },
     },
     telegram: {
