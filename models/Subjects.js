@@ -41,6 +41,7 @@ const normalizeEmbeddedChatMessageBody = (value) => {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return {
       text: String(value || "").trim(),
+      audio: "",
       images: [],
       videos: [],
       documents: [],
@@ -50,6 +51,7 @@ const normalizeEmbeddedChatMessageBody = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
       text: "",
+      audio: "",
       images: [],
       videos: [],
       documents: [],
@@ -58,6 +60,7 @@ const normalizeEmbeddedChatMessageBody = (value) => {
 
   return {
     text: String(value.text ?? value.message ?? "").trim(),
+    audio: String(value.audio || "").trim(),
     images: (Array.isArray(value.images) ? value.images : [])
       .map((entry) => String(entry || "").trim())
       .filter(Boolean),

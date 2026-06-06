@@ -132,6 +132,7 @@ app.locals.io = io;
 
 const activeChatPartnersByUser = new Map();
 const activeTypingPartnersByUser = new Map();
+const activeTypingDraftStateByUser = new Map();
 const activeSocketIdsByUser = new Map();
 const getUserRoom = (userId) => `user:${userId}`;
 const USER_STALE_OFFLINE_AFTER_MS = 90 * 1000;
@@ -271,16 +272,22 @@ const emitTypingPresenceForPair = ({ userId, friendId }) => {
     activeTypingPartnersByUser.get(String(userId)) === String(friendId);
   const friendIsTypingToUser =
     activeTypingPartnersByUser.get(String(friendId)) === String(userId);
+  const userHasTextForFriend =
+    activeTypingDraftStateByUser.get(String(userId))?.get(String(friendId)) === true;
+  const friendHasTextForUser =
+    activeTypingDraftStateByUser.get(String(friendId))?.get(String(userId)) === true;
 
   io.to(`user:${userId}`).emit("chat:typing", {
     userId: String(friendId),
     friendId: String(userId),
     isTyping: friendIsTypingToUser,
+    hasText: friendHasTextForUser,
   });
   io.to(`user:${friendId}`).emit("chat:typing", {
     userId: String(userId),
     friendId: String(friendId),
     isTyping: userIsTypingToFriend,
+    hasText: userHasTextForFriend,
   });
 };
 
@@ -592,34 +599,45 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("user:typing-status", ({ userId, friendId, isTyping }) => {
+  socket.on("user:typing-status", ({ userId, friendId, isTyping, hasText }) => {
     if (!userId || !friendId) {
       return;
     }
 
+    const normalizedUserId = String(userId);
+    const normalizedFriendId = String(friendId);
+    let draftStateForUser = activeTypingDraftStateByUser.get(normalizedUserId);
+
+    if (!draftStateForUser) {
+      draftStateForUser = new Map();
+      activeTypingDraftStateByUser.set(normalizedUserId, draftStateForUser);
+    }
+
+    draftStateForUser.set(normalizedFriendId, Boolean(hasText));
+
     if (isTyping) {
-      activeTypingPartnersByUser.set(String(userId), String(friendId));
+      activeTypingPartnersByUser.set(normalizedUserId, normalizedFriendId);
     } else {
-      activeTypingPartnersByUser.delete(String(userId));
+      activeTypingPartnersByUser.delete(normalizedUserId);
     }
 
     emitTypingPresenceForPair({
-      userId: String(userId),
-      friendId: String(friendId),
+      userId: normalizedUserId,
+      friendId: normalizedFriendId,
     });
 
     updateConnectionLocalStatus({
-      userId,
-      friendId,
+      userId: normalizedUserId,
+      friendId: normalizedFriendId,
       value: null,
     });
 
     updateConnectionLocalStatus({
-      userId: friendId,
-      friendId: userId,
+      userId: normalizedFriendId,
+      friendId: normalizedUserId,
       value: getRecipientLocalStatusForPair({
-        userId,
-        friendId,
+        userId: normalizedUserId,
+        friendId: normalizedFriendId,
       }),
     });
   });
@@ -859,6 +877,7 @@ io.on("connection", (socket) => {
 
     if (userId && typingFriendId) {
       activeTypingPartnersByUser.delete(userId);
+      activeTypingDraftStateByUser.delete(userId);
       emitTypingPresenceForPair({
         userId,
         friendId: typingFriendId,
@@ -876,6 +895,10 @@ io.on("connection", (socket) => {
           friendId: typingFriendId,
         }),
       });
+    }
+
+    if (userId) {
+      activeTypingDraftStateByUser.delete(userId);
     }
 
     if (userId) {

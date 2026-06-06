@@ -197,6 +197,7 @@ ChatRouter.post(
     const friendId = String(req.params.friendID || "").trim();
     const messageBody = normalizeChatMessageBody({
       text: req.body?.body?.text ?? req.body?.message ?? "",
+      audio: req.body?.body?.audio ?? req.body?.audio,
       images: req.body?.body?.images ?? req.body?.images,
       videos: req.body?.body?.videos ?? req.body?.videos,
       documents: req.body?.body?.documents ?? req.body?.documents,
