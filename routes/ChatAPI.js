@@ -115,11 +115,10 @@ const appendRelationshipMessage = (
   messageBody,
   status,
   sentAt,
+  senderPerspective = "ME",
   messageId = createChatMessageId(),
 ) => {
   const chatThread = getOrCreateFriendThread(user, friendId);
-
-  const senderPerspective = status === "delivered" ? "THEM" : "ME";
   const receiverPerspective = senderPerspective === "ME" ? "THEM" : "ME";
   const normalizedBody = normalizeChatMessageBody(messageBody);
 
@@ -238,12 +237,16 @@ ChatRouter.post(
         });
       }
 
+      const recipientIsOnline = isUserOnline(friendUser);
+      const senderInitialStatus = recipientIsOnline ? "delivered" : "sent";
+
       appendRelationshipMessage(
         senderUser,
         friendUser._id,
         messageBody,
-        "sent",
+        senderInitialStatus,
         sentAt,
+        "ME",
         messageId,
       );
       appendRelationshipMessage(
@@ -252,6 +255,7 @@ ChatRouter.post(
         messageBody,
         "delivered",
         sentAt,
+        "THEM",
         messageId,
       );
 
@@ -307,7 +311,7 @@ ChatRouter.post(
           videos: messageBody.videos,
           documents: messageBody.documents,
           date: sentAt.toISOString(),
-          status: "sent",
+          status: senderInitialStatus,
         },
       });
     } catch (error) {

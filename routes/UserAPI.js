@@ -4098,7 +4098,12 @@ UserRouter.put(
 
       return res.status(200).json({
         message: "Profile picture updated.",
-        profilePicture: getLegacyProfilePicture(user),
+        profilePicture: {
+          ...getLegacyProfilePicture(user),
+          assetId: String(selectedImage?.assetId || "").trim(),
+          contentHash: String(selectedImage?.contentHash || "").trim(),
+          updatedAt: selectedImage?.updatedAt || new Date(),
+        },
         imageGallery: sortGalleryImages(imageGallery),
       });
     } catch (error) {

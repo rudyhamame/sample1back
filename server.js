@@ -373,6 +373,122 @@ const updateConnectionLocalStatus = async ({
   }
 };
 
+const messageHasStatusValue = (messageEntry, statusValue) =>
+  Array.isArray(messageEntry?.status) &&
+  messageEntry.status.some(
+    (statusEntry) =>
+      String(statusEntry?.value || "")
+        .trim()
+        .toLowerCase() === String(statusValue || "").trim().toLowerCase(),
+  );
+
+const appendMessageStatusIfMissing = (messageEntry, statusValue, updatedAt) => {
+  if (!messageEntry) {
+    return false;
+  }
+
+  if (messageHasStatusValue(messageEntry, statusValue)) {
+    return false;
+  }
+
+  if (!Array.isArray(messageEntry.status)) {
+    messageEntry.status = [];
+  }
+
+  messageEntry.status.push({
+    value: statusValue,
+    updatedAt,
+  });
+  return true;
+};
+
+const markDeliveredMessagesForOnlineUser = async (onlineUserId) => {
+  const normalizedOnlineUserId = String(onlineUserId || "").trim();
+  if (!normalizedOnlineUserId) {
+    return;
+  }
+
+  try {
+    const senderUsers = await UserModel.find({
+      connections: {
+        $elemMatch: {
+          kind: "friend",
+          id: normalizedOnlineUserId,
+        },
+      },
+    })
+      .select("connections")
+      .maxTimeMS(4000);
+
+    const now = new Date();
+    const refreshedUserIds = new Set([normalizedOnlineUserId]);
+
+    await Promise.all(
+      (Array.isArray(senderUsers) ? senderUsers : []).map(async (senderUser) => {
+        if (!senderUser || !Array.isArray(senderUser.connections)) {
+          return;
+        }
+
+        let mutated = false;
+
+        senderUser.connections.forEach((connectionEntry) => {
+          if (
+            String(connectionEntry?.kind || "").trim().toLowerCase() !== "friend" ||
+            String(connectionEntry?.id || "").trim() !== normalizedOnlineUserId
+          ) {
+            return;
+          }
+
+          const chatThreads = Array.isArray(connectionEntry.chat)
+            ? connectionEntry.chat
+            : [];
+
+          chatThreads.forEach((thread) => {
+            const messages = Array.isArray(thread?.messages) ? thread.messages : [];
+            messages.forEach((messageEntry) => {
+              const senderRole = String(messageEntry?.index?.sender || "")
+                .trim()
+                .toUpperCase();
+              if (senderRole !== "ME") {
+                return;
+              }
+
+              if (
+                messageHasStatusValue(messageEntry, "read") ||
+                messageHasStatusValue(messageEntry, "delivered") ||
+                messageHasStatusValue(messageEntry, "deleted") ||
+                !messageHasStatusValue(messageEntry, "sent")
+              ) {
+                return;
+              }
+
+              if (appendMessageStatusIfMissing(messageEntry, "delivered", now)) {
+                mutated = true;
+              }
+            });
+          });
+        });
+
+        if (!mutated) {
+          return;
+        }
+
+        senderUser.markModified("connections");
+        await senderUser.save();
+        refreshedUserIds.add(String(senderUser._id || "").trim());
+      }),
+    );
+
+    if (refreshedUserIds.size > 1) {
+      emitUserRefresh(io, [...refreshedUserIds], "chat:delivery", {
+        userId: normalizedOnlineUserId,
+      });
+    }
+  } catch (error) {
+    console.error("Failed to mark messages as delivered", error);
+  }
+};
+
 io.on("connection", (socket) => {
   socket.on("user:join", ({ userId }) => {
     if (!userId) {
@@ -440,6 +556,8 @@ io.on("connection", (socket) => {
         });
       }
     });
+
+    markDeliveredMessagesForOnlineUser(normalizedUserId);
   });
 
   socket.on("user:chat-status", ({ userId, friendId, isChatting }) => {
@@ -515,68 +633,81 @@ io.on("connection", (socket) => {
     }
 
     try {
-      const senderUser = await UserModel.findById(senderUserId).select(
-        "connections",
-      );
-      if (!senderUser) {
+      const [readerUser, senderUser] = await Promise.all([
+        UserModel.findById(readerUserId).select("connections"),
+        UserModel.findById(senderUserId).select("connections"),
+      ]);
+
+      if (!readerUser || !senderUser) {
         return;
       }
 
-      const connections = Array.isArray(senderUser.connections)
-        ? senderUser.connections
-        : [];
       const now = new Date();
-      let mutated = false;
+      let senderMutated = false;
+      let readerMutated = false;
 
-      connections.forEach((connectionEntry) => {
-        if (
-          String(connectionEntry?.kind || "").trim().toLowerCase() !==
-            "friend" ||
-          String(connectionEntry?.id || "").trim() !== readerUserId
-        ) {
-          return;
-        }
+      const markThreadMessagesRead = (userDoc, counterpartId, expectedSenderRole) => {
+        const connections = Array.isArray(userDoc?.connections) ? userDoc.connections : [];
 
-        const chatThreads = Array.isArray(connectionEntry.chat)
-          ? connectionEntry.chat
-          : [];
+        connections.forEach((connectionEntry) => {
+          if (
+            String(connectionEntry?.kind || "").trim().toLowerCase() !== "friend" ||
+            String(connectionEntry?.id || "").trim() !== String(counterpartId || "").trim()
+          ) {
+            return;
+          }
 
-        chatThreads.forEach((thread) => {
-          const messages = Array.isArray(thread?.messages) ? thread.messages : [];
-          messages.forEach((messageEntry) => {
-            const senderRole = String(messageEntry?.index?.sender || "")
-              .trim()
-              .toUpperCase();
-            if (senderRole !== "ME") {
-              return;
-            }
+          const chatThreads = Array.isArray(connectionEntry.chat)
+            ? connectionEntry.chat
+            : [];
 
-            const statusHistory = Array.isArray(messageEntry.status)
-              ? messageEntry.status
-              : [];
-            const alreadyRead = statusHistory.some(
-              (statusEntry) =>
-                String(statusEntry?.value || "").trim().toLowerCase() === "read",
-            );
-            if (alreadyRead) {
-              return;
-            }
+          chatThreads.forEach((thread) => {
+            const messages = Array.isArray(thread?.messages) ? thread.messages : [];
+            messages.forEach((messageEntry) => {
+              const senderRole = String(messageEntry?.index?.sender || "")
+                .trim()
+                .toUpperCase();
 
-            if (!Array.isArray(messageEntry.status)) {
-              messageEntry.status = [];
-            }
-            messageEntry.status.push({
-              value: "read",
-              updatedAt: now,
+              if (senderRole !== expectedSenderRole) {
+                return;
+              }
+
+              if (messageHasStatusValue(messageEntry, "deleted")) {
+                return;
+              }
+
+              const didAppendRead = appendMessageStatusIfMissing(
+                messageEntry,
+                "read",
+                now,
+              );
+
+              if (expectedSenderRole === "ME" && didAppendRead) {
+                senderMutated = true;
+              }
+
+              if (expectedSenderRole === "THEM" && didAppendRead) {
+                readerMutated = true;
+              }
             });
-            mutated = true;
           });
         });
-      });
+      };
 
-      if (mutated) {
+      markThreadMessagesRead(senderUser, readerUserId, "ME");
+      markThreadMessagesRead(readerUser, senderUserId, "THEM");
+
+      const saveTasks = [];
+      if (senderMutated) {
         senderUser.markModified("connections");
-        await senderUser.save();
+        saveTasks.push(senderUser.save());
+      }
+      if (readerMutated) {
+        readerUser.markModified("connections");
+        saveTasks.push(readerUser.save());
+      }
+      if (saveTasks.length > 0) {
+        await Promise.all(saveTasks);
       }
 
       emitUserRefresh(io, [readerUserId, senderUserId], "chat:read", {
