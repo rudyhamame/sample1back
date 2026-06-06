@@ -48,6 +48,9 @@ import {
   updateStudyPlannerIntervalStatusInPlanner,
   updateStudyPlanAidInPlanner,
   updateLectureInPlanner,
+  normalizeProgramComponentsForPlanner,
+  normalizeProgramExamsForPlanner,
+  normalizeProgramFailingRulesForPlanner,
 } from "./user/helpers/studyPlannerService.js";
 import {
   normalizePlannerSettingsFieldDefaults,
@@ -909,10 +912,6 @@ const buildLegacyChatFromConnections = (connections = []) => {
         )
           .map((entry) => String(entry || "").trim())
           .filter(Boolean);
-        if (!messageText && messageImages.length === 0) {
-          return;
-        }
-
         const statusHistory = Array.isArray(messageEntry?.status)
           ? messageEntry.status
           : [];
@@ -920,9 +919,36 @@ const buildLegacyChatFromConnections = (connections = []) => {
           statusHistory.length > 0
             ? statusHistory[statusHistory.length - 1]
             : null;
-        const statusValue = String(latestStatusEntry?.value || "sent")
+        const latestStatusValue = String(latestStatusEntry?.value || "sent")
           .trim()
           .toLowerCase();
+        const statusValue =
+          [...statusHistory]
+            .reverse()
+            .find((entry) =>
+              ["sent", "delivered", "read"].includes(
+                String(entry?.value || "")
+                  .trim()
+                  .toLowerCase(),
+              ),
+            )
+            ?.value || "sent";
+        const normalizedStatusValue = String(statusValue || "sent")
+          .trim()
+          .toLowerCase();
+        const isDeleted = latestStatusValue === "deleted";
+        const isEdited =
+          !isDeleted &&
+          statusHistory.some(
+            (entry) =>
+              String(entry?.value || "")
+                .trim()
+                .toLowerCase() === "edited",
+          );
+
+        if (!messageText && messageImages.length === 0 && !isDeleted) {
+          return;
+        }
         const normalizedDate = messageEntry?.index?.timestamp
           ? new Date(messageEntry.index.timestamp).toISOString()
           : latestStatusEntry?.updatedAt
@@ -933,12 +959,15 @@ const buildLegacyChatFromConnections = (connections = []) => {
           .toUpperCase();
 
         chatRows.push({
+          id: String(messageEntry?.index?.messageId || messageEntry?._id || "").trim(),
           _id: friendId,
           from: senderTag === "THEM" ? "them" : "me",
-          message: messageText,
+          message: isDeleted ? "" : messageText,
           images: messageImages,
           date: normalizedDate,
-          status: statusValue,
+          status: normalizedStatusValue,
+          edited: isEdited,
+          deleted: isDeleted,
         });
       });
     });
@@ -1032,8 +1061,6 @@ const ensureFriendRelationship = (user, otherUserId, userMode) => {
     existing.id = existing.id || normalizedOtherId;
     existing.kind = existing.kind || "friend";
     existing.mode = normalizedMode;
-    existing.userID = normalizedOtherId;
-    existing.userMode = normalizedMode;
     return true;
   }
 
@@ -1043,7 +1070,6 @@ const ensureFriendRelationship = (user, otherUserId, userMode) => {
     kind: "friend",
     id: normalizedOtherId,
     mode: normalizedMode,
-    messages: [],
     localStatus: {
       value: null,
       updatedAt: null,
@@ -1096,6 +1122,15 @@ const getFriendRelationshipMode = (user, otherUserId) =>
   )
     .trim()
     .toLowerCase();
+
+const isPendingReceivedMode = (value) =>
+  String(value || "").trim().toLowerCase() === "requestreceived";
+
+const isPendingSentMode = (value) =>
+  String(value || "").trim().toLowerCase() === "requestsent";
+
+const isPendingFriendRequestPair = ({ receiverMode, requesterMode }) =>
+  isPendingReceivedMode(receiverMode) && isPendingSentMode(requesterMode);
 
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
@@ -3095,7 +3130,21 @@ UserRouter.get(
 
       const studyPlanner =
         memoryDoc?.studyPlanner && typeof memoryDoc.studyPlanner === "object"
-          ? memoryDoc.studyPlanner
+          ? {
+              ...memoryDoc.studyPlanner.toObject?.(),
+              ...(memoryDoc.studyPlanner?.toObject
+                ? {}
+                : memoryDoc.studyPlanner),
+              programExams: normalizeProgramExamsForPlanner(
+                memoryDoc.studyPlanner,
+              ),
+              programComponents: normalizeProgramComponentsForPlanner(
+                memoryDoc.studyPlanner,
+              ),
+              programFailingRules: normalizeProgramFailingRulesForPlanner(
+                memoryDoc.studyPlanner,
+              ),
+            }
           : {};
 
       return res.status(200).json({ studyPlanner });
@@ -3232,10 +3281,12 @@ UserRouter.post(
         ? studyPlannerRoot.programComponents
         : [];
       const componentIntervals = programComponents.map((componentEntry) => ({
-        componentId: String(componentEntry?.componentId || "").trim(),
-        componentIntervals: Array.isArray(componentEntry?.componentIntervals)
-          ? componentEntry.componentIntervals
-          : [],
+        componentId: String(
+          componentEntry && typeof componentEntry === "object"
+            ? componentEntry?.componentId ?? componentEntry?.label ?? ""
+            : componentEntry,
+        ).trim(),
+        componentIntervals: [],
       }));
 
       return res.status(201).json({
@@ -4656,12 +4707,31 @@ UserRouter.post(
       }
 
       if (
-        receiverMode === "requestreceived" &&
-        requesterMode === "requestsent"
+        isPendingFriendRequestPair({
+          receiverMode,
+          requesterMode,
+        })
       ) {
         return res
           .status(200)
           .json({ message: "Friend request already pending." });
+      }
+
+      if (
+        isPendingFriendRequestPair({
+          receiverMode: requesterMode,
+          requesterMode: receiverMode,
+        })
+      ) {
+        ensureFriendRelationship(receiver, requesterId, "friend");
+        ensureFriendRelationship(requester, receiverId, "friend");
+
+        await Promise.all([receiver.save(), requester.save()]);
+
+        emitUserRefresh(io, [receiverId, requesterId], "friends:updated");
+        return res.status(201).json({
+          message: "Existing friend request accepted. You're now friends!",
+        });
       }
 
       ensureFriendRelationship(receiver, requesterId, "requestReceived");
@@ -4711,6 +4781,17 @@ UserRouter.post(
       if (receiverMode === "blocked" || requesterMode === "blocked") {
         return res.status(409).json({
           message: "This relationship is currently blocked.",
+        });
+      }
+
+      if (
+        !isPendingFriendRequestPair({
+          receiverMode,
+          requesterMode,
+        })
+      ) {
+        return res.status(409).json({
+          message: "No pending friend request was found.",
         });
       }
 
@@ -4805,98 +4886,119 @@ UserRouter.put(
   "/friend-requests/:requestId/read",
   checkAuth,
   async function (req, res, next) {
+    const io = req.app.locals.io;
     try {
-      const user = await UserModel.findById(req.authentication.userId);
+      const receiver = await UserModel.findById(req.authentication.userId);
 
-      if (!user) {
+      if (!receiver) {
         return res.status(404).json({
           message: "User not found.",
         });
       }
 
-      const friendRequests = Array.isArray(user.notifications?.friend_requests)
-        ? user.notifications.friend_requests
-        : [];
-
-      let friendRequest = user.notifications?.friend_requests?.id?.(
-        req.params.requestId,
-      );
-
-      if (!friendRequest) {
-        friendRequest = friendRequests.find(
-          (entry) => String(entry?._id) === String(req.params.requestId),
+      const requestId = String(req.params.requestId || "").trim();
+      const pendingRequest = (Array.isArray(receiver.connections)
+        ? receiver.connections
+        : []
+      ).find((entry) => {
+        const entryId = String(entry?._id || "").trim();
+        const requesterId = String(entry?.id || entry?.userID || "").trim();
+        return (
+          isPendingReceivedMode(entry?.mode || entry?.userMode) &&
+          (entryId === requestId || requesterId === requestId)
         );
-      }
+      });
 
-      if (!friendRequest) {
-        friendRequest = friendRequests.find(
-          (entry) => String(entry?.id) === String(req.params.requestId),
-        );
-      }
-
-      if (!friendRequest) {
+      if (!pendingRequest) {
         return res.status(404).json({
           message: "Friend request not found.",
         });
       }
 
-      const requesterId = String(friendRequest.id || "").trim();
-
-      user.notifications.rejected_users = Array.isArray(
-        user.notifications?.rejected_users,
-      )
-        ? user.notifications.rejected_users
-        : [];
-
-      const alreadyRejected = user.notifications.rejected_users.some(
-        (entry) => String(entry?.id || "") === requesterId,
-      );
-
-      if (!alreadyRejected && requesterId) {
-        user.notifications.rejected_users.push({
-          id: requesterId,
-          message: friendRequest.message || "Friend request rejected",
-          status: "rejected",
-        });
-      }
-
-      user.notifications.friend_requests = friendRequests.filter(
-        (entry) =>
-          String(entry?._id || "") !== String(friendRequest._id || "") &&
-          String(entry?.id || "") !== requesterId,
-      );
-
+      const requesterId = String(
+        pendingRequest?.id || pendingRequest?.userID || "",
+      ).trim();
       const requester = requesterId
         ? await UserModel.findById(requesterId)
         : null;
 
+      removeFriendRelationship(receiver, requesterId);
+
       if (requester) {
-        requester.notifications =
-          requester.notifications && typeof requester.notifications === "object"
-            ? requester.notifications
-            : {};
-        requester.notifications.sent_friend_requests = (
-          Array.isArray(requester.notifications.sent_friend_requests)
-            ? requester.notifications.sent_friend_requests
-            : []
-        ).filter((request) => String(request?.id || "") !== String(user._id));
+        removeFriendRelationship(requester, String(receiver._id));
       }
 
       await Promise.all([
-        user.save(),
+        receiver.save(),
         requester ? requester.save() : Promise.resolve(),
       ]);
 
-      const io = req.app.locals.io;
       emitUserRefresh(
         io,
-        requesterId ? [String(user._id), requesterId] : String(user._id),
+        requesterId ? [String(receiver._id), requesterId] : String(receiver._id),
         "friend-request:rejected",
       );
 
       return res.status(200).json({
         message: "Friend request rejected.",
-        requestId: String(friendRequest._id || req.params.requestId),
+        requestId: String(pendingRequest._id || req.params.requestId),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.delete(
+  "/friend-requests/sent/:receiverId",
+  checkAuth,
+  async function (req, res, next) {
+    const io = req.app.locals.io;
+    const requesterId = String(req.authentication?.userId || "").trim();
+    const receiverId = String(req.params.receiverId || "").trim();
+
+    try {
+      if (!requesterId || !receiverId) {
+        return res.status(400).json({
+          message: "Requester and receiver ids are required.",
+        });
+      }
+
+      const [requester, receiver] = await Promise.all([
+        UserModel.findById(requesterId),
+        UserModel.findById(receiverId),
+      ]);
+
+      if (!requester || !receiver) {
+        return res.status(404).json({
+          message: "One of the users was not found.",
+        });
+      }
+
+      const requesterMode = getFriendRelationshipMode(requester, receiverId);
+      const receiverMode = getFriendRelationshipMode(receiver, requesterId);
+
+      if (
+        !isPendingFriendRequestPair({
+          receiverMode,
+          requesterMode,
+        })
+      ) {
+        return res.status(409).json({
+          message: "No pending sent friend request was found.",
+        });
+      }
+
+      removeFriendRelationship(requester, receiverId);
+      removeFriendRelationship(receiver, requesterId);
+
+      await Promise.all([requester.save(), receiver.save()]);
+
+      emitUserRefresh(io, [requesterId, receiverId], "friend-request:cancelled");
+
+      return res.status(200).json({
+        message: "Friend request cancelled.",
+        receiverId,
       });
     } catch (error) {
       return next(error);

@@ -44,19 +44,24 @@ const getStudyPlannerRoot = (memoryDoc) => {
         ? toPlainObject(memoryDoc.studyPlanAid)
         : {};
   const currentProgramComponents = Array.isArray(currentPlanner?.programComponents)
-    ? currentPlanner.programComponents.map((entry) => toPlainObject(entry) || {})
+    ? normalizeProgramComponentsForPlanner(currentPlanner)
     : [];
+  const currentProgramExams = normalizeProgramExamsForPlanner(currentPlanner);
   const currentProgramIntervals = Array.isArray(currentPlanner?.programIntervals)
     ? currentPlanner.programIntervals.map((entry) => toPlainObject(entry) || {})
     : [];
   const currentExams = Array.isArray(currentPlanner?.exams)
     ? currentPlanner.exams.map((entry) => toPlainObject(entry) || {})
     : [];
+  const currentProgramFailingRules =
+    normalizeProgramFailingRulesForPlanner(currentPlanner);
 
   const { _id: plannerId, ...plannerWithoutId } = currentPlanner || {};
   void plannerId;
   memoryDoc.studyPlanner = {
     ...plannerWithoutId,
+    programExams: currentProgramExams,
+    programFailingRules: currentProgramFailingRules,
     programComponents: currentProgramComponents,
     programIntervals: currentProgramIntervals,
     studyOrganizer: (() => {
@@ -119,6 +124,79 @@ const normalizeObjectIdValue = (value, { allowNull = false } = {}) => {
 };
 
 const trimString = (value) => String(value || "").trim();
+const normalizeProgramComponentValue = (entry = null) => {
+  if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+    return trimString(entry);
+  }
+  if (!entry || typeof entry !== "object") {
+    return "";
+  }
+  const rawValue = entry?.componentId ?? entry?.label ?? "";
+  if (
+    typeof rawValue === "string" ||
+    typeof rawValue === "number" ||
+    typeof rawValue === "boolean"
+  ) {
+    return trimString(rawValue);
+  }
+  return "";
+};
+const normalizeProgramFailingRuleEntry = (entry = null) => {
+  const normalizedEntry =
+    entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+  const thresholdUnit = trimString(normalizedEntry?.thresholdUnit);
+  const thresholdMode = trimString(normalizedEntry?.thresholdMode);
+  const thresholdNumber = toFiniteNumber(normalizedEntry?.thresholdNumber, null);
+
+  if (!thresholdUnit && !thresholdMode && !Number.isFinite(thresholdNumber)) {
+    return null;
+  }
+
+  return {
+    thresholdMode: thresholdMode || null,
+    thresholdUnit: thresholdUnit || null,
+    thresholdNumber: Number.isFinite(thresholdNumber) ? thresholdNumber : null,
+  };
+};
+
+export const normalizeProgramFailingRulesForPlanner = (planner = {}) => {
+  const normalizedPlanner =
+    planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
+  const explicitRules = Array.isArray(normalizedPlanner?.programFailingRules)
+    ? normalizedPlanner.programFailingRules
+        .map((entry) => normalizeProgramFailingRuleEntry(entry))
+        .filter(Boolean)
+    : [];
+
+  if (explicitRules.length > 0) {
+    return explicitRules;
+  }
+
+  const legacyRule = normalizeProgramFailingRuleEntry(
+    normalizedPlanner?.programPassingThresholdPerInterval,
+  );
+  return legacyRule ? [legacyRule] : [];
+};
+
+export const normalizeProgramComponentsForPlanner = (planner = {}) => {
+  const normalizedPlanner =
+    planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
+  const components = Array.isArray(normalizedPlanner?.programComponents)
+    ? normalizedPlanner.programComponents
+    : [];
+  return components.map((entry) => normalizeProgramComponentValue(entry)).filter(Boolean);
+};
+
+export const normalizeProgramExamsForPlanner = (planner = {}) => {
+  const normalizedPlanner =
+    planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
+  const exams = Array.isArray(normalizedPlanner?.programExams)
+    ? normalizedPlanner.programExams
+    : [];
+  return exams
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+};
 
 const repairArabicMojibake = (value) => {
   const normalizedValue = trimString(value);
@@ -1491,11 +1569,13 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const nextProgramLanguage = trimString(normalizedPayload?.programLanguage);
   const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
   const nextProgramFaculty = trimString(normalizedPayload?.programFaculty);
+  const hasProgramExams = "programExams" in normalizedPayload;
   const hasProgramStartYear = "programStartYear" in normalizedPayload;
   const hasProgramTotalYears = "programTotalYears" in normalizedPayload;
   const hasProgramTermsPerYear = "programTermsPerYear" in normalizedPayload;
   const hasProgramPassingThresholdPerInterval =
     "programPassingThresholdPerInterval" in normalizedPayload;
+  const hasProgramFailingRules = "programFailingRules" in normalizedPayload;
   const nextProgramStartYear = hasProgramStartYear
     ? toFiniteNumber(normalizedPayload?.programStartYear, null)
     : null;
@@ -1511,6 +1591,20 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     typeof normalizedPayload.programPassingThresholdPerInterval === "object"
       ? toPlainObject(normalizedPayload.programPassingThresholdPerInterval) || {}
       : {};
+  const nextProgramFailingRules = hasProgramFailingRules
+    ? normalizeProgramFailingRulesForPlanner({
+        programFailingRules: Array.isArray(normalizedPayload?.programFailingRules)
+          ? normalizedPayload.programFailingRules
+          : [],
+      })
+    : [];
+  const nextProgramExams = hasProgramExams
+    ? normalizeProgramExamsForPlanner({
+        programExams: Array.isArray(normalizedPayload?.programExams)
+          ? normalizedPayload.programExams
+          : [],
+      })
+    : [];
   const nextThresholdUnit = trimString(
     nextProgramPassingThresholdPerInterval?.thresholdUnit,
   );
@@ -1528,10 +1622,12 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !nextProgramLanguage &&
     !nextProgramUniversity &&
     !nextProgramFaculty &&
+    !hasProgramExams &&
     !hasProgramStartYear &&
     !hasProgramTotalYears &&
     !hasProgramTermsPerYear &&
-    !hasProgramPassingThresholdPerInterval
+    !hasProgramPassingThresholdPerInterval &&
+    !hasProgramFailingRules
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
@@ -1546,6 +1642,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if ("programFaculty" in normalizedPayload) {
     studyPlanner.programFaculty = nextProgramFaculty;
+  }
+  if (hasProgramExams) {
+    studyPlanner.programExams = nextProgramExams;
   }
   if (hasProgramStartYear) {
     studyPlanner.programStartYear = Number.isFinite(nextProgramStartYear)
@@ -1571,6 +1670,28 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
         : null,
     };
   }
+  if (hasProgramFailingRules) {
+    studyPlanner.programFailingRules = nextProgramFailingRules;
+    if (!hasProgramPassingThresholdPerInterval) {
+      const primaryFailingRule =
+        nextProgramFailingRules.find(
+          (entry) => entry && typeof entry === "object",
+        ) || null;
+      studyPlanner.programPassingThresholdPerInterval = primaryFailingRule
+        ? {
+            thresholdMode: primaryFailingRule?.thresholdMode || null,
+            thresholdUnit: primaryFailingRule?.thresholdUnit || null,
+            thresholdNumber: Number.isFinite(primaryFailingRule?.thresholdNumber)
+              ? primaryFailingRule.thresholdNumber
+              : null,
+          }
+        : {
+            thresholdMode: null,
+            thresholdUnit: null,
+            thresholdNumber: null,
+          };
+    }
+  }
   if (!Array.isArray(studyPlanner.programComponents)) {
     studyPlanner.programComponents = [];
   }
@@ -1591,50 +1712,21 @@ export const updateStudyPlannerComponentsInPlanner = (memoryDoc, payload = {}) =
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-  const currentProgramComponents = Array.isArray(studyPlanner?.programComponents)
-    ? studyPlanner.programComponents
+  const rawProgramComponents = Array.isArray(normalizedPayload?.programComponents)
+    ? normalizedPayload.programComponents
     : [];
-  const currentComponentsById = new Map(
-    currentProgramComponents
-      .map((entry) => {
-        const normalizedEntry =
-          entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
-        const componentId = trimString(normalizedEntry?.componentId);
-        if (!componentId) {
-          return null;
-        }
-        return [componentId, normalizedEntry];
-      })
-      .filter(Boolean),
-  );
+  const rawComponentIds = Array.isArray(normalizedPayload?.componentIds)
+    ? normalizedPayload.componentIds
+    : [];
+  const componentSourceEntries =
+    rawProgramComponents.length > 0 ? rawProgramComponents : rawComponentIds;
   const componentEntries = Array.from(
-    new Map(
-      (Array.isArray(normalizedPayload?.componentIds)
-        ? normalizedPayload.componentIds
-        : []
-      )
-        .map((entry) => {
-          const componentId = trimString(
-            entry && typeof entry === "object" ? entry?.componentId : entry,
-          );
-          const existingEntry = currentComponentsById.get(componentId) || {};
-          return {
-            componentId,
-            componentWeight: trimString(
-              entry && typeof entry === "object"
-                ? entry?.componentWeight
-                : existingEntry?.componentWeight,
-            ),
-          };
-        })
-        .filter((entry) => Boolean(entry.componentId))
-        .map((entry) => [entry.componentId, entry]),
-    ).values(),
+    new Set(
+      componentSourceEntries
+        .map((entry) => normalizeProgramComponentValue(entry))
+        .filter(Boolean),
+    ),
   );
-
-  if (componentEntries.length === 0) {
-    throw new Error("At least one componentId is required.");
-  }
 
   studyPlanner.programComponents = componentEntries;
   if (!Array.isArray(studyPlanner.programIntervals)) {

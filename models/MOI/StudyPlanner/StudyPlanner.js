@@ -110,21 +110,38 @@ const studyPlanAidSchema = new Schema(
   { _id: true },
 );
 
+const programComponentIntervalSchema = new Schema(
+  {
+    intervalId: { type: String, default: "" },
+    intervalWeight: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const courseWeightSchema = new Schema(
+  {
+    componentId: { type: String, default: "" },
+    weight: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
 const StudyPlannerSchema = new Schema(
   {
     programId: { type: String, default: "" },
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
-    programExams: [],
+    programExams: { type: [String], default: [] },
+    programComponents: { type: [String], default: [] },
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
     programTermsPerYear: { type: Number, default: null },
-    programPassingRules: {
+    programFailingRules: [{
       thresholdMode: { type: String, default: null }, // "interval" or "course"
       thresholdUnit: { type: String, default: null },
       thresholdNumber: { type: Number, default: null },
-    },
+    }],
     programIntervals: [
       {
         intervalId: { type: String, default: "" },
@@ -136,6 +153,8 @@ const StudyPlannerSchema = new Schema(
               {
                 courseId: { type: String, default: "" },
                 courseCode: { type: String, default: "" },
+                courseTotalWeight: { type: String, default: "" },
+                courseWeight: {type: [courseWeightSchema], default: []},
                 courseComponents: [
                   {
                     componentId: { type: String, default: "" },

@@ -37,6 +37,69 @@ const normalizeMoaOnSubject = (value) => {
   }, {});
 };
 
+const normalizeEmbeddedChatMessageBody = (value) => {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return {
+      text: String(value || "").trim(),
+      images: [],
+      videos: [],
+      documents: [],
+    };
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      text: "",
+      images: [],
+      videos: [],
+      documents: [],
+    };
+  }
+
+  return {
+    text: String(value.text ?? value.message ?? "").trim(),
+    images: (Array.isArray(value.images) ? value.images : [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+    videos: (Array.isArray(value.videos) ? value.videos : [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+    documents: (Array.isArray(value.documents) ? value.documents : [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+  };
+};
+
+const normalizeEmbeddedConnectionChats = (connections) => {
+  if (!Array.isArray(connections)) {
+    return;
+  }
+
+  connections.forEach((connection) => {
+    if (connection?.messages !== undefined) {
+      if (typeof connection.set === "function") {
+        connection.set("messages", undefined);
+      } else {
+        delete connection.messages;
+      }
+    }
+
+    const chatThreads = Array.isArray(connection?.chat) ? connection.chat : [];
+    chatThreads.forEach((chatThread) => {
+      const messages = Array.isArray(chatThread?.messages)
+        ? chatThread.messages
+        : [];
+      messages.forEach((message) => {
+        if (!message || typeof message !== "object") {
+          return;
+        }
+
+        message.body = normalizeEmbeddedChatMessageBody(message.body);
+      });
+    });
+  });
+};
+
 const ClinicalRealitySchema = new Schema(
   {
     html: { type: String, default: "" },
@@ -151,6 +214,8 @@ const SubjectsSchema = new Schema(
 );
 
 SubjectsSchema.pre("validate", function () {
+  normalizeEmbeddedConnectionChats(this.connections);
+
   const profileStudying =
     this?.profile?.studying && typeof this.profile.studying === "object"
       ? this.profile.studying

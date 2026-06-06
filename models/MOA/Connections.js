@@ -41,6 +41,8 @@ const ConnectionsSchema = new Schema({
     default: "stranger",
   },
   chat: { type: [ChatSchema], default: [] },
+  // Legacy compatibility only. Current messages live under chat[].messages.
+  messages: { type: [Schema.Types.Mixed], default: undefined, select: false },
   localStatus: { type: LocalStatusSchema, default: createDefaultLocalStatus },
 }, {
   _id: true,
