@@ -13,6 +13,7 @@ const normalizeChatMessageBody = (value = {}) => {
       ? value
       : {};
   const text = String(source?.text ?? source?.message ?? "").trim();
+  const audio = String(source?.audio || "").trim();
   const images = (Array.isArray(source?.images) ? source.images : [])
     .map((entry) => String(entry || "").trim())
     .filter(Boolean);
@@ -25,6 +26,7 @@ const normalizeChatMessageBody = (value = {}) => {
 
   return {
     text,
+    audio,
     images,
     videos,
     documents,
@@ -210,6 +212,7 @@ ChatRouter.post(
 
     const hasPayload =
       messageBody.text ||
+      messageBody.audio ||
       messageBody.images.length > 0 ||
       messageBody.videos.length > 0 ||
       messageBody.documents.length > 0;
@@ -285,6 +288,7 @@ ChatRouter.post(
           "",
           "Message:",
           messagePreview || "[No text]",
+          ...(messageBody.audio ? ["", "Voice note: 1 audio attachment"] : []),
           ...(attachmentLines.length > 0
             ? ["", "Attachments:", ...attachmentLines]
             : []),
@@ -307,6 +311,7 @@ ChatRouter.post(
           _id: friendId,
           from: "me",
           message: messageBody.text,
+          audio: messageBody.audio,
           images: messageBody.images,
           videos: messageBody.videos,
           documents: messageBody.documents,
@@ -358,6 +363,7 @@ ChatRouter.patch(
 
       const senderBody = normalizeChatMessageBody(senderMessage.body);
       const hasExistingAttachments =
+        Boolean(senderBody.audio) ||
         senderBody.images.length > 0 ||
         senderBody.videos.length > 0 ||
         senderBody.documents.length > 0;
@@ -410,6 +416,7 @@ ChatRouter.patch(
           from: "me",
           message: nextText,
           images: normalizeChatMessageBody(senderMessage.body).images,
+          audio: normalizeChatMessageBody(senderMessage.body).audio,
           videos: normalizeChatMessageBody(senderMessage.body).videos,
           documents: normalizeChatMessageBody(senderMessage.body).documents,
           date: senderMessage?.index?.timestamp
@@ -503,12 +510,14 @@ ChatRouter.delete(
 
       senderMessage.body = {
         text: "",
+        audio: "",
         images: [],
         videos: [],
         documents: [],
       };
       friendMessage.body = {
         text: "",
+        audio: "",
         images: [],
         videos: [],
         documents: [],
@@ -531,6 +540,7 @@ ChatRouter.delete(
           _id: friendId,
           from: "me",
           message: "",
+          audio: "",
           images: [],
           videos: [],
           documents: [],

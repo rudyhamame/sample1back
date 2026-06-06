@@ -47,6 +47,7 @@ const normalizeMessageBody = (value) => {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return {
       text: String(value || "").trim(),
+      audio: "",
       images: [],
       videos: [],
       documents: [],
@@ -56,6 +57,7 @@ const normalizeMessageBody = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
       text: "",
+      audio: "",
       images: [],
       videos: [],
       documents: [],
@@ -64,6 +66,7 @@ const normalizeMessageBody = (value) => {
 
   return {
     text: String(value.text ?? value.message ?? "").trim(),
+    audio: String(value.audio || "").trim(),
     images: (Array.isArray(value.images) ? value.images : [])
       .map((entry) => String(entry || "").trim())
       .filter(Boolean),
@@ -79,6 +82,7 @@ const normalizeMessageBody = (value) => {
 const MessageBody = new Schema(
   {
     text: { type: String, default: "" },
+    audio: { type: String, default: "" },
     images: { type: [String], default: [] },
     videos: { type: [String], default: [] },
     documents: { type: [String], default: [] },

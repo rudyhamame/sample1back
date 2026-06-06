@@ -907,6 +907,7 @@ const buildLegacyChatFromConnections = (connections = []) => {
         const messageText = String(
           messageBodySource?.text ?? messageEntry?.body ?? "",
         ).trim();
+        const messageAudio = String(messageBodySource?.audio || "").trim();
         const messageImages = (
           Array.isArray(messageBodySource?.images) ? messageBodySource.images : []
         )
@@ -946,7 +947,7 @@ const buildLegacyChatFromConnections = (connections = []) => {
                 .toLowerCase() === "edited",
           );
 
-        if (!messageText && messageImages.length === 0 && !isDeleted) {
+        if (!messageText && !messageAudio && messageImages.length === 0 && !isDeleted) {
           return;
         }
         const normalizedDate = messageEntry?.index?.timestamp
@@ -963,6 +964,7 @@ const buildLegacyChatFromConnections = (connections = []) => {
           _id: friendId,
           from: senderTag === "THEM" ? "them" : "me",
           message: isDeleted ? "" : messageText,
+          audio: isDeleted ? "" : messageAudio,
           images: messageImages,
           date: normalizedDate,
           status: normalizedStatusValue,
