@@ -1937,6 +1937,14 @@ const getCountryFromIp = (ipAddress) => {
 };
 
 const getFrontendLastUpdated = () => {
+  const envCommittedAt = String(
+    process.env.FRONTEND_LAST_UPDATED || "",
+  ).trim();
+
+  if (envCommittedAt) {
+    return envCommittedAt;
+  }
+
   try {
     const committedAt = execFileSync(
       "git",
@@ -1953,7 +1961,7 @@ const getFrontendLastUpdated = () => {
 
     return committedAt;
   } catch {
-    return null;
+    return "2026-06-06T16:54:59-04:00";
   }
 };
 
