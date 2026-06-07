@@ -1134,12 +1134,10 @@ const isPendingSentMode = (value) =>
 const isPendingFriendRequestPair = ({ receiverMode, requesterMode }) =>
   isPendingReceivedMode(receiverMode) && isPendingSentMode(requesterMode);
 
-const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
 const APP_LAST_UPDATED_CACHE_TTL_MS = 5 * 60 * 1000;
 const HOMETOWN_CITIES_CACHE_TTL_MS = 30 * 60 * 1000;
-const PUBLIC_CLINICAL_REALITY_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const createTimedCache = () => ({
   value: null,
@@ -1149,7 +1147,6 @@ const createTimedCache = () => ({
 
 const appLastUpdatedCache = createTimedCache();
 const hometownCitiesCache = createTimedCache();
-const publicClinicalRealityCacheByUsername = new Map();
 
 const resolveTimedCache = async (cache, resolver, ttlMs) => {
   const now = Date.now();
@@ -1176,33 +1173,6 @@ const resolveTimedCache = async (cache, resolver, ttlMs) => {
   return cache.inFlight;
 };
 
-const getPublicClinicalRealityCache = (username = "") => {
-  const normalizedUsername = String(username || "").trim().toLowerCase();
-
-  if (!normalizedUsername) {
-    return createTimedCache();
-  }
-
-  const existingCache = publicClinicalRealityCacheByUsername.get(normalizedUsername);
-  if (existingCache) {
-    return existingCache;
-  }
-
-  const nextCache = createTimedCache();
-  publicClinicalRealityCacheByUsername.set(normalizedUsername, nextCache);
-  return nextCache;
-};
-
-const clearPublicClinicalRealityCache = (username = "") => {
-  const normalizedUsername = String(username || "").trim().toLowerCase();
-
-  if (!normalizedUsername) {
-    publicClinicalRealityCacheByUsername.clear();
-    return;
-  }
-
-  publicClinicalRealityCacheByUsername.delete(normalizedUsername);
-};
 const CLOUDINARY_IMAGE_UPLOAD_FOLDER = "sample1/user-images";
 
 const sanitizeCloudinaryFolderSegment = (value, fallback = "user") => {
@@ -4295,104 +4265,6 @@ UserRouter.delete("/image-gallery", checkAuth, async function (req, res, next) {
       message: "Media deleted from gallery.",
       imageGallery: nextImageGallery,
       profilePicture: getLegacyProfilePicture(user),
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-UserRouter.get("/clinical-reality", checkAuth, async function (req, res, next) {
-  try {
-    const user = await UserModel.findById(req.authentication.userId).select(
-      "clinicalReality",
-    );
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found.",
-      });
-    }
-
-    return res.status(200).json({
-      clinicalReality: user.clinicalReality || { html: "", updatedAt: null },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-UserRouter.get(
-  "/clinical-reality/public/:username",
-  async function (req, res, next) {
-    try {
-      const normalizedUsername = String(req.params.username || "").trim();
-      const clinicalReality = await resolveTimedCache(
-        getPublicClinicalRealityCache(normalizedUsername),
-        async () => {
-          const user = await UserModel.findOne({
-            "auth.username": normalizedUsername,
-          })
-            .select("clinicalReality")
-            .lean();
-
-          if (!user) {
-            return null;
-          }
-
-          return user.clinicalReality || { html: "", updatedAt: null };
-        },
-        PUBLIC_CLINICAL_REALITY_CACHE_TTL_MS,
-      );
-
-      if (!clinicalReality) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      return res.status(200).json({
-        clinicalReality,
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
-  try {
-    const html = String(req.body?.html || "");
-
-    if (html.length > CLINICAL_REALITY_HTML_MAX_LENGTH) {
-      return res.status(413).json({
-        message: "Clinical reality content is too large.",
-      });
-    }
-
-    const updatedUser = await UserModel.findByIdAndUpdate(
-      req.authentication.userId,
-      {
-        clinicalReality: {
-          html,
-          updatedAt: new Date(),
-        },
-      },
-      {
-        returnDocument: "after",
-      },
-    ).select("clinicalReality");
-
-    if (!updatedUser) {
-      return res.status(404).json({
-        message: "User not found.",
-      });
-    }
-
-    clearPublicClinicalRealityCache(req.authentication?.username || "");
-
-    return res.status(200).json({
-      message: "Clinical reality saved.",
-      clinicalReality: updatedUser.clinicalReality,
     });
   } catch (error) {
     return next(error);

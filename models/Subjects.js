@@ -103,14 +103,6 @@ const normalizeEmbeddedConnectionChats = (connections) => {
   });
 };
 
-const ClinicalRealitySchema = new Schema(
-  {
-    html: { type: String, default: "" },
-    updatedAt: { type: Date, default: null },
-  },
-  { _id: false },
-);
-
 const pointOfTime = new Schema(
   {
     yearDate: { type: Number },
@@ -200,7 +192,6 @@ const SubjectsSchema = new Schema(
     profile: { type: ProfileSchema, default: () => ({}) },
     connections: { type: [ConnectionsSchema], default: [] },
     memory: MemorySchema,
-    clinicalReality: { type: ClinicalRealitySchema, default: () => ({}) },
     settings: { type: SettingsSchema, default: () => ({}) },
     status: {
       value: {
