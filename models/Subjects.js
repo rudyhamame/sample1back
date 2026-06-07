@@ -217,6 +217,11 @@ const SubjectsSchema = new Schema(
   { strict: "throw" },
 );
 
+SubjectsSchema.index(
+  { "auth.username": 1 },
+  { name: "subjects_auth_username_idx" },
+);
+
 SubjectsSchema.pre("validate", function () {
   normalizeEmbeddedConnectionChats(this.connections);
 

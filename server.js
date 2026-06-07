@@ -103,8 +103,17 @@ mongoose.connect(process.env.DB_CONNECTION, {
 });
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
-db.once("open", function () {
+db.once("open", async function () {
   console.log("database is connected!");
+  try {
+    await UserModel.collection.createIndex(
+      { "auth.username": 1 },
+      { name: "subjects_auth_username_idx" },
+    );
+    console.log("username index is ready.");
+  } catch (error) {
+    console.error("failed to ensure username index:", error);
+  }
 });
 ////////////////////////////////////////////////////////////////////
 

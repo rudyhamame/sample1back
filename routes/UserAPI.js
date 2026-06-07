@@ -2073,6 +2073,25 @@ const buildCloudinarySignature = ({ paramsToSign = {}, apiSecret = "" }) => {
     .digest("hex");
 };
 
+const LOGIN_USER_SELECT = [
+  "auth.username",
+  "auth.password",
+  "profile.firstname",
+  "profile.lastname",
+  "profile.email",
+  "profile.phone",
+  "profile.dob",
+  "profile.hometown",
+  "profile.studying",
+  "profile.working",
+  "profile.bio",
+  "profile.picture.profilePic.index",
+  "profile.picture.profilePic.viewport",
+  "connections",
+  "friends",
+  "status",
+].join(" ");
+
 //Login API
 UserRouter.post("/login", function (req, res, next) {
   const io = req.app.locals.io;
@@ -2086,28 +2105,9 @@ UserRouter.post("/login", function (req, res, next) {
   }
 
   UserModel.findOne({
-    "auth.username": req.body.username,
+    "auth.username": username,
   })
-    .select(
-      [
-        "auth.username",
-        "auth.password",
-        "profile.firstname",
-        "profile.lastname",
-        "profile.email",
-        "profile.phone",
-        "profile.dob",
-        "profile.hometown",
-        "profile.studying",
-        "profile.working",
-        "profile.bio",
-        "profile.picture.profilePic.index",
-        "profile.picture.profilePic.viewport",
-        "connections",
-        "friends",
-        "status",
-      ].join(" "),
-    )
+    .select(LOGIN_USER_SELECT)
     .lean()
     .exec()
     .then((user) => {
@@ -2119,8 +2119,8 @@ UserRouter.post("/login", function (req, res, next) {
             if (result) {
               try {
                 const now = new Date();
-                const updatedUser = await UserModel.findByIdAndUpdate(
-                  user._id,
+                await UserModel.updateOne(
+                  { _id: user._id },
                   {
                     $set: {
                       "status.value": "online",
@@ -2130,36 +2130,26 @@ UserRouter.post("/login", function (req, res, next) {
                       "status.loggedOutAt": null,
                     },
                   },
-                  {
-                    returnDocument: "after",
+                ).exec();
+                const updatedUser = {
+                  ...user,
+                  auth: {
+                    ...(user?.auth && typeof user.auth === "object"
+                      ? user.auth
+                      : {}),
+                    password: undefined,
                   },
-                )
-                  .select(
-                    [
-                      "auth.username",
-                      "profile.firstname",
-                      "profile.lastname",
-                      "profile.email",
-                      "profile.phone",
-                      "profile.dob",
-                      "profile.hometown",
-                      "profile.studying",
-                      "profile.working",
-                      "profile.bio",
-                      "profile.picture.profilePic.index",
-                      "profile.picture.profilePic.viewport",
-                      "connections",
-                      "friends",
-                      "status",
-                    ].join(" "),
-                  )
-                  .lean();
-
-                if (!updatedUser) {
-                  return res.status(404).json({
-                    message: "User not found.",
-                  });
-                }
+                  status: {
+                    ...(user?.status && typeof user.status === "object"
+                      ? user.status
+                      : {}),
+                    value: "online",
+                    updatedAt: now,
+                    lastSeenAt: now,
+                    loggedInAt: now,
+                    loggedOutAt: null,
+                  },
+                };
 
                 emitUserRefresh(
                   io,
