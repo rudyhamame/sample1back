@@ -222,6 +222,11 @@ SubjectsSchema.index(
   { name: "subjects_auth_username_idx" },
 );
 
+SubjectsSchema.index(
+  { "profile.hometown.City": 1 },
+  { name: "subjects_hometown_city_idx", sparse: true },
+);
+
 SubjectsSchema.pre("validate", function () {
   normalizeEmbeddedConnectionChats(this.connections);
 

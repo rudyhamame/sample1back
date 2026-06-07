@@ -1,7 +1,10 @@
 import express from "express";
 import mongoose from "mongoose";
 import UserModel from "../compat/UserModel.js";
-import { emitUserRefresh } from "../helpers/realtime.js";
+import {
+  emitChatMessage,
+  emitChatMessageUpdated,
+} from "../helpers/realtime.js";
 import { isUserOnline } from "../services/presence.js";
 import { sendTelegramSavedMessageForUser } from "./TelegramAPI.js";
 
@@ -190,6 +193,39 @@ const getLatestDeliveryStatus = (statusEntries = []) => {
     .toLowerCase();
 };
 
+const buildChatMessagePayload = ({
+  counterpartId = "",
+  from = "me",
+  messageId = "",
+  body = {},
+  date = new Date(),
+  status = "sent",
+  edited = false,
+  deleted = false,
+  deleteScope = null,
+} = {}) => {
+  const normalizedBody = normalizeChatMessageBody(body);
+
+  return {
+    id: String(messageId || "").trim(),
+    _id: String(counterpartId || "").trim(),
+    from: from === "them" ? "them" : "me",
+    message: normalizedBody.text,
+    audio: normalizedBody.audio,
+    images: normalizedBody.images,
+    videos: normalizedBody.videos,
+    documents: normalizedBody.documents,
+    date:
+      date instanceof Date
+        ? date.toISOString()
+        : new Date(date || Date.now()).toISOString(),
+    status: String(status || "sent").trim().toLowerCase() || "sent",
+    edited: Boolean(edited),
+    deleted: Boolean(deleted),
+    ...(deleteScope ? { deleteScope } : {}),
+  };
+};
+
 const notifyOfflineRecipientInBackground = ({
   user = null,
   text = "",
@@ -327,24 +363,39 @@ ChatRouter.post(
         });
       }
 
-      emitUserRefresh(io, [senderId, friendId], "chat:message", {
+      emitChatMessage(io, senderId, {
         friendId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
+          from: "me",
+          messageId,
+          body: messageBody,
+          date: sentAt,
+          status: senderInitialStatus,
+        }),
+      });
+      emitChatMessage(io, friendId, {
+        friendId: senderId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: senderId,
+          from: "them",
+          messageId,
+          body: messageBody,
+          date: sentAt,
+          status: "delivered",
+        }),
       });
 
       return res.status(201).json({
         message: "Message sent.",
-        chatMessage: {
-          id: messageId,
-          _id: friendId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
           from: "me",
-          message: messageBody.text,
-          audio: messageBody.audio,
-          images: messageBody.images,
-          videos: messageBody.videos,
-          documents: messageBody.documents,
-          date: sentAt.toISOString(),
+          messageId,
+          body: messageBody,
+          date: sentAt,
           status: senderInitialStatus,
-        },
+        }),
       });
     } catch (error) {
       return next(error);
@@ -430,29 +481,47 @@ ChatRouter.patch(
 
       await Promise.all([senderUser.save(), friendUser.save()]);
 
-      emitUserRefresh(req.app.locals.io, [senderId, friendId], "chat:message-updated", {
+      emitChatMessageUpdated(req.app.locals.io, senderId, {
         friendId,
         messageId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
+          from: "me",
+          messageId,
+          body: senderMessage.body,
+          date: senderMessage?.index?.timestamp || updatedAt,
+          status: getLatestDeliveryStatus(senderMessage.status),
+          edited: true,
+          deleted: false,
+        }),
+      });
+      emitChatMessageUpdated(req.app.locals.io, friendId, {
+        friendId: senderId,
+        messageId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: senderId,
+          from: "them",
+          messageId,
+          body: friendMessage.body,
+          date: friendMessage?.index?.timestamp || updatedAt,
+          status: getLatestDeliveryStatus(friendMessage.status),
+          edited: true,
+          deleted: false,
+        }),
       });
 
       return res.status(200).json({
         message: "Message updated.",
-        chatMessage: {
-          id: messageId,
-          _id: friendId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
           from: "me",
-          message: nextText,
-          images: normalizeChatMessageBody(senderMessage.body).images,
-          audio: normalizeChatMessageBody(senderMessage.body).audio,
-          videos: normalizeChatMessageBody(senderMessage.body).videos,
-          documents: normalizeChatMessageBody(senderMessage.body).documents,
-          date: senderMessage?.index?.timestamp
-            ? new Date(senderMessage.index.timestamp).toISOString()
-            : updatedAt.toISOString(),
+          messageId,
+          body: senderMessage.body,
+          date: senderMessage?.index?.timestamp || updatedAt,
           status: getLatestDeliveryStatus(senderMessage.status),
           edited: true,
           deleted: false,
-        },
+        }),
       });
     } catch (error) {
       return next(error);
@@ -502,10 +571,15 @@ ChatRouter.delete(
         senderThread.messages = nextMessages;
         await senderUser.save();
 
-        emitUserRefresh(req.app.locals.io, [senderId], "chat:message-updated", {
+        emitChatMessageUpdated(req.app.locals.io, senderId, {
           friendId,
           messageId,
           scope: "me",
+          chatMessage: {
+            id: messageId,
+            _id: friendId,
+            deleteScope: "me",
+          },
         });
 
         return res.status(200).json({
@@ -555,29 +629,47 @@ ChatRouter.delete(
 
       await Promise.all([senderUser.save(), friendUser.save()]);
 
-      emitUserRefresh(req.app.locals.io, [senderId, friendId], "chat:message-updated", {
+      emitChatMessageUpdated(req.app.locals.io, senderId, {
         friendId,
         messageId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
+          from: "me",
+          messageId,
+          body: senderMessage.body,
+          date: senderMessage?.index?.timestamp || updatedAt,
+          status: getLatestDeliveryStatus(senderMessage.status),
+          edited: false,
+          deleted: true,
+        }),
+      });
+      emitChatMessageUpdated(req.app.locals.io, friendId, {
+        friendId: senderId,
+        messageId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: senderId,
+          from: "them",
+          messageId,
+          body: friendMessage.body,
+          date: friendMessage?.index?.timestamp || updatedAt,
+          status: getLatestDeliveryStatus(friendMessage.status),
+          edited: false,
+          deleted: true,
+        }),
       });
 
       return res.status(200).json({
         message: "Message deleted.",
-        chatMessage: {
-          id: messageId,
-          _id: friendId,
+        chatMessage: buildChatMessagePayload({
+          counterpartId: friendId,
           from: "me",
-          message: "",
-          audio: "",
-          images: [],
-          videos: [],
-          documents: [],
-          date: senderMessage?.index?.timestamp
-            ? new Date(senderMessage.index.timestamp).toISOString()
-            : updatedAt.toISOString(),
+          messageId,
+          body: senderMessage.body,
+          date: senderMessage?.index?.timestamp || updatedAt,
           status: getLatestDeliveryStatus(senderMessage.status),
           edited: false,
           deleted: true,
-        },
+        }),
       });
     } catch (error) {
       return next(error);

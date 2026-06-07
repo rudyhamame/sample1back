@@ -20,7 +20,7 @@ import JamendoAPI from "./routes/JamendoAPI.js";
 // import VideoAPI from "./routes/VideoAPI.js";
 import UserModel from "./compat/UserModel.js";
 import { setUserConnectionState } from "./helpers/connectionStatus.js";
-import { emitUserRefresh } from "./helpers/realtime.js";
+import { emitChatRead, emitUserRefresh } from "./helpers/realtime.js";
 import { getUserAndFriendIds } from "./routes/user/helpers/friends.js";
 
 import "dotenv/config";
@@ -113,6 +113,15 @@ db.once("open", async function () {
     console.log("username index is ready.");
   } catch (error) {
     console.error("failed to ensure username index:", error);
+  }
+  try {
+    await UserModel.collection.createIndex(
+      { "profile.hometown.City": 1 },
+      { name: "subjects_hometown_city_idx", sparse: true },
+    );
+    console.log("hometown city index is ready.");
+  } catch (error) {
+    console.error("failed to ensure hometown city index:", error);
   }
 });
 ////////////////////////////////////////////////////////////////////
@@ -737,7 +746,7 @@ io.on("connection", (socket) => {
         await Promise.all(saveTasks);
       }
 
-      emitUserRefresh(io, [readerUserId, senderUserId], "chat:read", {
+      emitChatRead(io, [readerUserId, senderUserId], {
         friendId: readerUserId,
         readerUserId,
         senderUserId,

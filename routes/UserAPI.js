@@ -1137,6 +1137,72 @@ const isPendingFriendRequestPair = ({ receiverMode, requesterMode }) =>
 const CLINICAL_REALITY_HTML_MAX_LENGTH = 250000;
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
+const APP_LAST_UPDATED_CACHE_TTL_MS = 5 * 60 * 1000;
+const HOMETOWN_CITIES_CACHE_TTL_MS = 30 * 60 * 1000;
+const PUBLIC_CLINICAL_REALITY_CACHE_TTL_MS = 2 * 60 * 1000;
+
+const createTimedCache = () => ({
+  value: null,
+  expiresAt: 0,
+  inFlight: null,
+});
+
+const appLastUpdatedCache = createTimedCache();
+const hometownCitiesCache = createTimedCache();
+const publicClinicalRealityCacheByUsername = new Map();
+
+const resolveTimedCache = async (cache, resolver, ttlMs) => {
+  const now = Date.now();
+
+  if (cache.expiresAt > now) {
+    return cache.value;
+  }
+
+  if (cache.inFlight) {
+    return cache.inFlight;
+  }
+
+  cache.inFlight = Promise.resolve()
+    .then(() => resolver())
+    .then((value) => {
+      cache.value = value;
+      cache.expiresAt = Date.now() + Math.max(0, Number(ttlMs) || 0);
+      return value;
+    })
+    .finally(() => {
+      cache.inFlight = null;
+    });
+
+  return cache.inFlight;
+};
+
+const getPublicClinicalRealityCache = (username = "") => {
+  const normalizedUsername = String(username || "").trim().toLowerCase();
+
+  if (!normalizedUsername) {
+    return createTimedCache();
+  }
+
+  const existingCache = publicClinicalRealityCacheByUsername.get(normalizedUsername);
+  if (existingCache) {
+    return existingCache;
+  }
+
+  const nextCache = createTimedCache();
+  publicClinicalRealityCacheByUsername.set(normalizedUsername, nextCache);
+  return nextCache;
+};
+
+const clearPublicClinicalRealityCache = (username = "") => {
+  const normalizedUsername = String(username || "").trim().toLowerCase();
+
+  if (!normalizedUsername) {
+    publicClinicalRealityCacheByUsername.clear();
+    return;
+  }
+
+  publicClinicalRealityCacheByUsername.delete(normalizedUsername);
+};
 const CLOUDINARY_IMAGE_UPLOAD_FOLDER = "sample1/user-images";
 
 const sanitizeCloudinaryFolderSegment = (value, fallback = "user") => {
@@ -4259,18 +4325,33 @@ UserRouter.get(
   "/clinical-reality/public/:username",
   async function (req, res, next) {
     try {
-      const user = await UserModel.findOne({
-        "auth.username": req.params.username,
-      }).select("clinicalReality");
+      const normalizedUsername = String(req.params.username || "").trim();
+      const clinicalReality = await resolveTimedCache(
+        getPublicClinicalRealityCache(normalizedUsername),
+        async () => {
+          const user = await UserModel.findOne({
+            "auth.username": normalizedUsername,
+          })
+            .select("clinicalReality")
+            .lean();
 
-      if (!user) {
+          if (!user) {
+            return null;
+          }
+
+          return user.clinicalReality || { html: "", updatedAt: null };
+        },
+        PUBLIC_CLINICAL_REALITY_CACHE_TTL_MS,
+      );
+
+      if (!clinicalReality) {
         return res.status(404).json({
           message: "User not found.",
         });
       }
 
       return res.status(200).json({
-        clinicalReality: user.clinicalReality || { html: "", updatedAt: null },
+        clinicalReality,
       });
     } catch (error) {
       return next(error);
@@ -4306,6 +4387,8 @@ UserRouter.put("/clinical-reality", checkAuth, async function (req, res, next) {
         message: "User not found.",
       });
     }
+
+    clearPublicClinicalRealityCache(req.authentication?.username || "");
 
     return res.status(200).json({
       message: "Clinical reality saved.",
@@ -4417,20 +4500,26 @@ UserRouter.post("/verify-password", checkAuth, async function (req, res, next) {
 });
 
 UserRouter.get("/app-last-updated", function (req, res) {
-  const committedAt = getFrontendLastUpdated();
-  const cloudinary = getPublicCloudinaryStatus();
-
-  if (!committedAt) {
-    return res.status(200).json({
-      committedAt: null,
-      cloudinary,
+  resolveTimedCache(
+    appLastUpdatedCache,
+    () => ({
+      committedAt: getFrontendLastUpdated(),
+      cloudinary: getPublicCloudinaryStatus(),
+    }),
+    APP_LAST_UPDATED_CACHE_TTL_MS,
+  )
+    .then((payload) => {
+      return res.status(200).json({
+        committedAt: payload?.committedAt || null,
+        cloudinary: payload?.cloudinary || getPublicCloudinaryStatus(),
+      });
+    })
+    .catch(() => {
+      return res.status(200).json({
+        committedAt: null,
+        cloudinary: getPublicCloudinaryStatus(),
+      });
     });
-  }
-
-  return res.status(200).json({
-    committedAt,
-    cloudinary,
-  });
 });
 
 UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
@@ -4454,12 +4543,20 @@ UserRouter.delete("/login-log", checkAuth, async function (req, res, next) {
 });
 
 UserRouter.get("/hometown-cities", function (req, res, next) {
-  UserModel.distinct("profile.hometown.City", {
-    "profile.hometown.City": { $exists: true, $ne: "" },
-  })
+  resolveTimedCache(
+    hometownCitiesCache,
+    async () => {
+      const cities = await UserModel.distinct("profile.hometown.City", {
+        "profile.hometown.City": { $exists: true, $ne: "" },
+      });
+
+      return cities.filter((city) => city && city.trim()).sort();
+    },
+    HOMETOWN_CITIES_CACHE_TTL_MS,
+  )
     .then((cities) => {
       return res.status(200).json({
-        cities: cities.filter((city) => city && city.trim()).sort(),
+        cities,
       });
     })
     .catch((error) => {
