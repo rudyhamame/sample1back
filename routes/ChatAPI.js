@@ -190,6 +190,31 @@ const getLatestDeliveryStatus = (statusEntries = []) => {
     .toLowerCase();
 };
 
+const notifyOfflineRecipientInBackground = ({
+  user = null,
+  text = "",
+  senderId = "",
+  friendId = "",
+} = {}) => {
+  Promise.resolve()
+    .then(async () => {
+      if (!user || !text) {
+        return;
+      }
+      await sendTelegramSavedMessageForUser({
+        user,
+        text,
+      });
+    })
+    .catch((error) => {
+      console.error("[chat] offline telegram notification failed", {
+        senderId: String(senderId || "").trim(),
+        friendId: String(friendId || "").trim(),
+        message: error?.message || "Unknown error.",
+      });
+    });
+};
+
 ChatRouter.post(
   "/sendMessage/:friendID/:my_id",
   async function (req, res, next) {
@@ -272,7 +297,7 @@ ChatRouter.post(
 
       await Promise.all([senderUser.save(), friendUser.save()]);
 
-      if (!isUserOnline(friendUser)) {
+      if (!recipientIsOnline) {
         const senderUsername = senderIdentity.username;
         const messagePreview = messageBody.text;
         const attachmentLines = [];
@@ -294,10 +319,11 @@ ChatRouter.post(
             ? ["", "Attachments:", ...attachmentLines]
             : []),
         ].join("\n");
-
-        await sendTelegramSavedMessageForUser({
+        notifyOfflineRecipientInBackground({
           user: friendUser,
           text: telegramAlert,
+          senderId,
+          friendId,
         });
       }
 
@@ -570,7 +596,9 @@ ChatRouter.post("/prepareChat/:my_id", async function (req, res, next) {
     }
 
     ensureConnections(user);
-    await user.save();
+    if (user.isModified("connections")) {
+      await user.save();
+    }
     return res.status(201).json();
   } catch (error) {
     return next(error);
