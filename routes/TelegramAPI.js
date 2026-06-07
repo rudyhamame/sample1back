@@ -20,6 +20,49 @@ import {
 } from "./user/helpers/studyPlannerService.js";
 
 const TelegramRouter = express.Router();
+const TELEGRAM_ADMIN_USERNAME = "rudyhamame";
+
+const getNormalizedTelegramAdminUsername = (user = {}) =>
+  String(
+    user?.username ||
+      user?.auth?.username ||
+      user?.identity?.atSignup?.username ||
+      user?.identity?.personal?.username ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+
+const ensureTelegramAdmin = async (req, res, next) => {
+  try {
+    const authenticatedUserId = String(
+      req?.authentication?.userId || req?.authentication?.id || "",
+    ).trim();
+    if (!authenticatedUserId) {
+      return res.status(401).json({
+        message: "Missing authenticated user.",
+        reason: "missing_authenticated_user",
+      });
+    }
+
+    const authenticatedUser = await UserModel.findById(authenticatedUserId)
+      .select("username auth.username identity.atSignup.username identity.personal.username")
+      .lean();
+    const normalizedUsername =
+      getNormalizedTelegramAdminUsername(authenticatedUser);
+
+    if (normalizedUsername !== TELEGRAM_ADMIN_USERNAME) {
+      return res.status(403).json({
+        message: "Telegram control is restricted.",
+        reason: "telegram_admin_only",
+      });
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
 
 const TELEGRAM_ALGORITHM = "aes-256-gcm";
 const TELEGRAM_SYNC_INTERVAL_MS = Math.max(
@@ -82,6 +125,24 @@ const TELEGRAM_STORAGE_SNAPSHOT_TTL_MS = 12000;
 let telegramSyncWorkerStarted = false;
 let telegramSyncWorkerIntervalId = null;
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+TelegramRouter.use(checkAuth);
+TelegramRouter.use(
+  [
+    "/config",
+    "/status",
+    "/auth",
+    "/groups",
+    "/storage/context",
+    "/stored-groups/:groupReference/sync",
+    "/stored-groups/:groupReference/control",
+    "/stored-groups/:groupReference/backfill-photos",
+    "/important-messages",
+    "/important-message-concept",
+    "/send-note",
+  ],
+  ensureTelegramAdmin,
+);
 
 const getTelegramSyncStatus = (userId) =>
   telegramSyncStatusByUser.get(String(userId || "").trim()) || {
