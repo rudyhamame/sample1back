@@ -237,6 +237,7 @@ const TelegramGroupInfoSchema = new Schema(
     memberCount: { type: Number, default: 0 },
     description: { type: String, default: "" },
     messageCount: { type: Number, default: 0 },
+    latestMessageDateMs: { type: Number, default: 0 },
     pageUrl: { type: String, default: "" },
   },
   { _id: false, strict: "throw" },
@@ -351,7 +352,11 @@ MOASchema.pre("validate", function () {
     if (!nextGroup.info || typeof nextGroup.info !== "object") {
       nextGroup.info = {};
     }
-    nextGroup.info.messageCount = nextGroup.messages.length;
+    const currentMessageCount = Number(nextGroup?.info?.messageCount);
+    nextGroup.info.messageCount =
+      Number.isFinite(currentMessageCount) && currentMessageCount >= 0
+        ? currentMessageCount
+        : nextGroup.messages.length;
     return nextGroup;
   });
 });

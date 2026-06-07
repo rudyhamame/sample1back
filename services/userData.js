@@ -228,6 +228,11 @@ const normalizeTelegramMemory = (telegram) => {
             typeof info?.messageCount === "number" && Number.isFinite(info.messageCount)
               ? info.messageCount
               : 0,
+          latestMessageDateMs:
+            typeof info?.latestMessageDateMs === "number" &&
+            Number.isFinite(info.latestMessageDateMs)
+              ? info.latestMessageDateMs
+              : 0,
           pageUrl: typeof info?.pageUrl === "string" ? info.pageUrl : "",
         },
         messages: normalizedMessages,
