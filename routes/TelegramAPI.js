@@ -3430,7 +3430,9 @@ const handleStoredMessagesRequest = async (req, res, next) => {
       });
     }
 
-    const memoryDoc = await findUserMemoryLean(user._id);
+    const memoryDoc = await findUserMemoryLean(user._id, {
+      includeTelegramMessages: true,
+    });
     const { canSync } = getTelegramSyncEligibility(user, telegramSettings);
 
     if (canSync) {
@@ -4782,7 +4784,9 @@ TelegramRouter.get(
         return res.status(404).json({ message: "User not found." });
       }
 
-      const memoryDoc = await findUserMemoryLean(user._id);
+      const memoryDoc = await findUserMemoryLean(user._id, {
+        includeTelegramMessages: true,
+      });
       const scope = {
         allGroups: String(req.query?.allGroups || "").trim() === "true",
         acrossAllGroups:
@@ -4813,7 +4817,9 @@ TelegramRouter.get(
         return res.status(404).json({ message: "User not found." });
       }
 
-      const memoryDoc = await findUserMemoryLean(user._id);
+      const memoryDoc = await findUserMemoryLean(user._id, {
+        includeTelegramMessages: true,
+      });
       const scope = {
         allGroups: String(req.query?.allGroups || "").trim() === "true",
         acrossAllGroups:
@@ -4844,7 +4850,9 @@ TelegramRouter.get(
         return res.status(404).json({ message: "User not found." });
       }
 
-      const memoryDoc = await findUserMemoryLean(user._id);
+      const memoryDoc = await findUserMemoryLean(user._id, {
+        includeTelegramMessages: true,
+      });
       const scope = {
         allGroups: String(req.query?.allGroups || "").trim() === "true",
         acrossAllGroups:

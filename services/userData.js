@@ -442,13 +442,41 @@ export const buildUserMemoryLean = (
 
 export const findUserMemoryLean = async (
   userId,
-  { includeCourses = true, includeLectures = true } = {},
+  {
+    includeCourses = true,
+    includeLectures = true,
+    includeTelegramMessages = false,
+  } = {},
 ) => {
   if (!userId) {
     return null;
   }
 
-  const user = await UserModel.findById(userId).select("memory").lean();
+  const normalizedUserId = normalizeObjectIdLikeValue(userId);
+
+  if (!normalizedUserId) {
+    return null;
+  }
+  const user = includeTelegramMessages
+    ? await UserModel.findById(normalizedUserId).select("memory").lean()
+    : (
+        await UserModel.aggregate([
+          {
+            $match: {
+              _id: normalizedUserId,
+            },
+          },
+          {
+            $unset: "memory.MOA.telegram.groups.messages",
+          },
+          {
+            $project: {
+              _id: 0,
+              memory: 1,
+            },
+          },
+        ])
+      )[0] || null;
   if (!user) {
     return null;
   }
