@@ -678,10 +678,20 @@ const buildGrade = (
   };
 };
 
-const sanitizeStudyLocation = (value = {}) => ({
-  building: trimString(value?.building),
-  room: trimString(value?.room),
-});
+const sanitizeStudyLocation = (value = {}) => {
+  const rooms = Array.isArray(value?.rooms)
+    ? value.rooms
+    : value?.room
+      ? [value.room]
+      : [];
+
+  return {
+    building: trimString(value?.building),
+    rooms: Array.from(
+      new Set(rooms.map((entry) => trimString(entry)).filter(Boolean)),
+    ),
+  };
+};
 
 const sanitizeWeeklyScheduleEntry = (value = {}) => ({
   day: trimString(value?.day),
@@ -756,6 +766,15 @@ const sanitizeStudyVolume = (value = {}) => {
     remaining: Math.max(remaining, 0),
   };
 };
+
+const normalizeLecturePagesFinished = (value = []) =>
+  Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .map((pageNumber) => toPositiveInteger(pageNumber, 0))
+        .filter((pageNumber) => pageNumber > 0),
+    ),
+  ).sort((left, right) => left - right);
 
 const sanitizeStudyGrade = (value = {}) => ({
   value:
@@ -1458,6 +1477,9 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                   lectureVolume: sanitizeStudyVolume(
                     normalizedLectureEntry?.lectureVolume || {},
                   ),
+                  lecture_pagesFinished: normalizeLecturePagesFinished(
+                    normalizedLectureEntry?.lecture_pagesFinished,
+                  ),
                   lectureContent: Array.isArray(
                     normalizedLectureEntry?.lectureContent,
                   )
@@ -1507,6 +1529,14 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
                 ) || null,
               subIntervalId,
               intervalStatus,
+              subIntervalDates: {
+                start: parseOptionalDate(
+                  normalizedSubIntervalEntry?.subIntervalDates?.start,
+                ),
+                end: parseOptionalDate(
+                  normalizedSubIntervalEntry?.subIntervalDates?.end,
+                ),
+              },
               intervalCourses: normalizePlannerIntervalCourseEntries(
                 normalizedSubIntervalEntry?.subIntervalCourses,
               ),
@@ -1530,6 +1560,10 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
             Number.parseInt(trimString(baseEntry?.intervalNum), 10) || null,
           subIntervalId,
           intervalStatus,
+          subIntervalDates: {
+            start: parseOptionalDate(baseEntry?.subIntervalDates?.start),
+            end: parseOptionalDate(baseEntry?.subIntervalDates?.end),
+          },
           intervalCourses: normalizePlannerIntervalCourseEntries(
             baseEntry?.intervalCourses,
           ),
@@ -1562,6 +1596,10 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
             : []),
           {
             subIntervalId,
+            subIntervalDates: {
+              start: parseOptionalDate(entry?.subIntervalDates?.start),
+              end: parseOptionalDate(entry?.subIntervalDates?.end),
+            },
             subIntervalCourses: normalizePlannerIntervalCourseEntries(
               entry?.intervalCourses,
             ),
@@ -1570,6 +1608,10 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
           trimString(subEntry?.subIntervalId),
           {
             subIntervalId: trimString(subEntry?.subIntervalId),
+            subIntervalDates: {
+              start: parseOptionalDate(subEntry?.subIntervalDates?.start),
+              end: parseOptionalDate(subEntry?.subIntervalDates?.end),
+            },
             subIntervalCourses: normalizePlannerIntervalCourseEntries(
               subEntry?.subIntervalCourses,
             ),
@@ -1631,6 +1673,10 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
     ).map((subIntervalEntry) => ({
       subIntervalId: String(subIntervalEntry?.subIntervalId || "").trim(),
       courseComponentId: String(subIntervalEntry?.courseComponentId || "").trim(),
+      subIntervalDates: {
+        start: parseOptionalDate(subIntervalEntry?.subIntervalDates?.start),
+        end: parseOptionalDate(subIntervalEntry?.subIntervalDates?.end),
+      },
       subIntervalCourses: normalizePlannerIntervalCourseEntries(
         subIntervalEntry?.subIntervalCourses,
       ),

@@ -6,7 +6,7 @@ const { Schema } = mongoose;
 const locationSchema = new Schema(
   {
     building: { type: String, default: "" },
-    room: { type: String, default: "" },
+    rooms: { type: [String], default: [] },
   },
   { _id: false },
 );
@@ -164,6 +164,7 @@ const componentLecturesSchema = new Schema(
     lectureEditedDate: { type: Date, default: null },
     lectureLocation: { type: locationSchema, default: null },
     lectureVolume: { type: lectureVolumeSchema, default: () => ({}) },
+    lecture_pagesFinished: { type: [Number], default: [] },
     lectureContent: [
       {
         contentId: { type: String, default: "" },
@@ -183,6 +184,10 @@ const programIntervalSchema = new Schema(
         intervalsubIntervals: [
           {
             subIntervalId: { type: String, default: "" },
+            subIntervalDates:{
+              start:{type: Date},
+              end: {type: Date},
+            },
             subIntervalCourses: [
               {//materials to examine
                 courseName: { type: String, default: "" },
@@ -213,6 +218,9 @@ const StudyPlannerSchema = new Schema(
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
     programTermsPerYear: { type: Number, default: null },
+    programInstructors: { type: [String], default: [] },
+    programEditors: { type: [String], default: [] },
+    programLocations: { type: [locationSchema], default: [] },
     programFailingRules: [{
       thresholdMode: { type: String, default: null }, // "interval" or "course"
       thresholdUnit: { type: String, default: null },
