@@ -46,9 +46,13 @@ const getStudyPlannerRoot = (memoryDoc) => {
   const currentProgramComponents = Array.isArray(currentPlanner?.programComponents)
     ? normalizeProgramComponentsForPlanner(currentPlanner)
     : [];
-  const currentProgramExams = normalizeProgramExamsForPlanner(currentPlanner);
+  const currentProgramExamClasses =
+    normalizeProgramExamClassesForPlanner(currentPlanner);
   const currentProgramIntervals = Array.isArray(currentPlanner?.programIntervals)
     ? currentPlanner.programIntervals.map((entry) => toPlainObject(entry) || {})
+    : [];
+  const currentProgramExams = Array.isArray(currentPlanner?.programExams)
+    ? currentPlanner.programExams.map((entry) => toPlainObject(entry) || {})
     : [];
   const currentExams = Array.isArray(currentPlanner?.exams)
     ? currentPlanner.exams.map((entry) => toPlainObject(entry) || {})
@@ -60,6 +64,7 @@ const getStudyPlannerRoot = (memoryDoc) => {
   void plannerId;
   memoryDoc.studyPlanner = {
     ...plannerWithoutId,
+    programExamClasses: currentProgramExamClasses,
     programExams: currentProgramExams,
     programFailingRules: currentProgramFailingRules,
     programComponents: currentProgramComponents,
@@ -187,6 +192,17 @@ export const normalizeProgramComponentsForPlanner = (planner = {}) => {
   return components.map((entry) => normalizeProgramComponentValue(entry)).filter(Boolean);
 };
 
+export const normalizeProgramExamClassesForPlanner = (planner = {}) => {
+  const normalizedPlanner =
+    planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
+  const examClasses = Array.isArray(normalizedPlanner?.programExamClasses)
+    ? normalizedPlanner.programExamClasses
+    : [];
+  return examClasses
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+};
+
 export const normalizeProgramExamsForPlanner = (planner = {}) => {
   const normalizedPlanner =
     planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
@@ -194,7 +210,9 @@ export const normalizeProgramExamsForPlanner = (planner = {}) => {
     ? normalizedPlanner.programExams
     : [];
   return exams
-    .map((entry) => String(entry || "").trim())
+    .map((entry) =>
+      entry && typeof entry === "object" ? toPlainObject(entry) || {} : null,
+    )
     .filter(Boolean);
 };
 
@@ -1254,12 +1272,58 @@ const buildPlannerSubIntervalId = (entry = {}) => {
   return `${year}${term}`;
 };
 
-const normalizePlannerIntervalStatusValue = (value = "TBD") => {
+const parsePlannerSubIntervalYearTerm = (subIntervalId = "") => {
+  const normalizedDigits = trimString(subIntervalId).replace(/\D/g, "");
+  if (normalizedDigits.length < 5) {
+    return {
+      year: "",
+      term: "",
+    };
+  }
+  return {
+    year: normalizedDigits.slice(0, 4),
+    term: normalizedDigits.slice(4, 5),
+  };
+};
+
+const buildPlannerNextIntervalSubIntervals = (
+  baseInterval = {},
+  programTermsPerYear = 1,
+  nextIntervalNum = null,
+) => {
+  const totalTerms = Math.max(
+    1,
+    toPositiveInteger(programTermsPerYear, 1),
+  );
+  const sourceSubIntervals = Array.isArray(baseInterval?.intervalsubIntervals)
+    ? baseInterval.intervalsubIntervals
+    : [];
+  const lastSubInterval =
+    sourceSubIntervals[sourceSubIntervals.length - 1] || {};
+  const lastParsed = parsePlannerSubIntervalYearTerm(
+    lastSubInterval?.subIntervalId ||
+      lastSubInterval?.subintervalId ||
+      "",
+  );
+  const baseYear =
+    Number.parseInt(trimString(lastParsed?.year), 10) ||
+    Number.parseInt(trimString(baseInterval?.intervalNum), 10) ||
+    Number.parseInt(trimString(nextIntervalNum), 10) ||
+    0;
+  const generatedYear = baseYear > 0 ? baseYear + 1 : 1;
+
+  return Array.from({ length: totalTerms }, (_, index) => ({
+    subIntervalId: `${generatedYear}${index + 1}`,
+    subIntervalCourses: [],
+  }));
+};
+
+const normalizePlannerIntervalStatusValue = (value = "Normal") => {
   if (Array.isArray(value)) {
     const firstValue = trimString(value[0]);
-    return firstValue || "TBD";
+    return firstValue || "Normal";
   }
-  return trimString(value) || "TBD";
+  return trimString(value) || "Normal";
 };
 
 const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []) => {
@@ -1273,7 +1337,8 @@ const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []
   );
   studyPlanner.programIntervals = intervalIds.map((subIntervalId, index) => ({
     intervalId: String(index + 1),
-    intervalStatus: ["TBD"],
+    intervalNum: index + 1,
+    intervalStatus: ["Normal"],
     intervalsubIntervals: [
       {
         subIntervalId,
@@ -1290,9 +1355,44 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
         courseEntry && typeof courseEntry === "object"
           ? toPlainObject(courseEntry) || {}
           : {};
+      const normalizedCourseWeight = Array.isArray(source?.courseWeight)
+        ? source.courseWeight
+            .map((weightEntry) => {
+              const normalizedWeightEntry =
+                weightEntry && typeof weightEntry === "object"
+                  ? toPlainObject(weightEntry) || {}
+                  : {};
+              const componentId = trimString(normalizedWeightEntry?.componentId);
+              if (!componentId) {
+                return null;
+              }
+              return {
+                componentId,
+                weight: Number.isFinite(
+                  Number.parseFloat(normalizedWeightEntry?.weight),
+                )
+                  ? Number.parseFloat(normalizedWeightEntry.weight)
+                  : Number.isFinite(
+                        Number.parseFloat(
+                          normalizedWeightEntry?.componentWeightPercentage,
+                        ),
+                      )
+                    ? Number.parseFloat(
+                        normalizedWeightEntry.componentWeightPercentage,
+                      )
+                    : null,
+              };
+            })
+            .filter(Boolean)
+        : Number.isFinite(Number.parseFloat(source?.courseWeight))
+          ? Number.parseFloat(source.courseWeight)
+          : null;
       return {
-        courseId: trimString(source?.courseId),
+        courseName:
+          trimString(source?.courseName) || trimString(source?.courseId),
         courseCode: trimString(source?.courseCode),
+        courseComponentId: trimString(source?.courseComponentId),
+        courseWeight: normalizedCourseWeight,
         courseComponents: (Array.isArray(source?.courseComponents)
           ? source.courseComponents
           : []
@@ -1303,16 +1403,74 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
               : {};
           return {
             componentId: trimString(normalizedComponentEntry?.componentId),
-            componentLectures: Array.isArray(
+            componentWeightPercentage:
+              Number.isFinite(
+                Number.parseFloat(
+                  normalizedComponentEntry?.componentWeightPercentage,
+                ),
+              )
+                ? Number.parseFloat(
+                    normalizedComponentEntry.componentWeightPercentage,
+                  )
+                : Number.isFinite(
+                      Number.parseFloat(
+                        normalizedComponentEntry?.componentPartialWeight,
+                      ),
+                    )
+                  ? Number.parseFloat(
+                      normalizedComponentEntry.componentPartialWeight,
+                    )
+                  : null,
+            componentLectures: (Array.isArray(
               normalizedComponentEntry?.componentLectures,
             )
               ? normalizedComponentEntry.componentLectures
-              : [],
+              : []
+            )
+              .map((lectureEntry) => {
+                const normalizedLectureEntry =
+                  lectureEntry && typeof lectureEntry === "object"
+                    ? toPlainObject(lectureEntry) || {}
+                    : {};
+                const lectureName =
+                  trimString(normalizedLectureEntry?.lectureName) ||
+                  trimString(normalizedLectureEntry?.lectureId);
+                if (!lectureName) {
+                  return null;
+                }
+                return {
+                  lectureName,
+                  lectureInstructors: normalizeStringArray(
+                    normalizedLectureEntry?.lectureInstructors,
+                  ),
+                  lectureEditors: normalizeStringArray(
+                    normalizedLectureEntry?.lectureEditors,
+                  ),
+                  lectureGivenDate: parseOptionalDate(
+                    normalizedLectureEntry?.lectureGivenDate,
+                  ),
+                  lectureEditedDate: parseOptionalDate(
+                    normalizedLectureEntry?.lectureEditedDate,
+                  ),
+                  lectureLocation: sanitizeStudyLocation(
+                    normalizedLectureEntry?.lectureLocation || {},
+                  ),
+                  lectureVolume: sanitizeStudyVolume(
+                    normalizedLectureEntry?.lectureVolume || {},
+                  ),
+                  lectureContent: Array.isArray(
+                    normalizedLectureEntry?.lectureContent,
+                  )
+                    ? normalizedLectureEntry.lectureContent
+                    : [],
+                };
+              })
+              .filter(Boolean),
           };
         }),
       };
     })
-    .filter((courseEntry) => Boolean(courseEntry.courseId));
+    .filter((courseEntry) => Boolean(courseEntry.courseName));
 
 const normalizePlannerIntervalEntries = (intervals = []) => {
   const flattenedEntries = (Array.isArray(intervals) ? intervals : []).flatMap(
@@ -1342,6 +1500,11 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
             }
             return {
               intervalId: intervalId || subIntervalId,
+              intervalNum:
+                Number.parseInt(
+                  trimString(normalizedSubIntervalEntry?.intervalNum),
+                  10,
+                ) || null,
               subIntervalId,
               intervalStatus,
               intervalCourses: normalizePlannerIntervalCourseEntries(
@@ -1363,6 +1526,8 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
             (typeof baseEntry?.regular === "boolean" && baseEntry.regular === false
               ? subIntervalId
               : subIntervalId),
+          intervalNum:
+            Number.parseInt(trimString(baseEntry?.intervalNum), 10) || null,
           subIntervalId,
           intervalStatus,
           intervalCourses: normalizePlannerIntervalCourseEntries(
@@ -1386,7 +1551,7 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
     const storageIntervalId = intervalId || subIntervalId;
     const previousInterval = map.get(storageIntervalId) || {
       intervalId: storageIntervalId,
-      intervalStatus: "TBD",
+      intervalStatus: "Normal",
       intervalsubIntervals: [],
     };
     const nextSubIntervals = Array.from(
@@ -1415,10 +1580,14 @@ const normalizePlannerIntervalEntries = (intervals = []) => {
 
     map.set(storageIntervalId, {
       intervalId: storageIntervalId,
+      intervalNum:
+        Number.parseInt(trimString(entry?.intervalNum), 10) ||
+        Number.parseInt(storageIntervalId, 10) ||
+        null,
       intervalStatus:
         normalizePlannerIntervalStatusValue(entry?.intervalStatus) ||
         previousInterval.intervalStatus ||
-        "TBD",
+        "Normal",
       intervalsubIntervals: nextSubIntervals,
     });
     return map;
@@ -1449,6 +1618,10 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
   );
   studyPlanner.programIntervals = normalizedIntervals.map((intervalEntry) => ({
     intervalId: String(intervalEntry?.intervalId || "").trim(),
+    intervalNum:
+      Number.parseInt(trimString(intervalEntry?.intervalNum), 10) ||
+      Number.parseInt(String(intervalEntry?.intervalId || "").trim(), 10) ||
+      null,
     intervalStatus: [
       normalizePlannerIntervalStatusValue(intervalEntry?.intervalStatus),
     ],
@@ -1457,6 +1630,7 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
       : []
     ).map((subIntervalEntry) => ({
       subIntervalId: String(subIntervalEntry?.subIntervalId || "").trim(),
+      courseComponentId: String(subIntervalEntry?.courseComponentId || "").trim(),
       subIntervalCourses: normalizePlannerIntervalCourseEntries(
         subIntervalEntry?.subIntervalCourses,
       ),
@@ -1477,10 +1651,10 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
     normalizedPayload?.subIntervalId || normalizedPayload?.subintervalId,
   );
   const targetIntervalId = trimString(normalizedPayload?.intervalId);
-  const requestedStatus =
-    trimString(normalizedPayload?.intervalStatus).toLowerCase() === "current"
-      ? "current"
-      : "TBD";
+  const requestedStatus = normalizePlannerIntervalStatusValue(
+    normalizedPayload?.intervalStatus,
+  );
+  const requestedStatusLower = requestedStatus.toLowerCase();
 
   if (!targetSubIntervalId && !targetIntervalId) {
     throw new Error("SubInterval ID is required.");
@@ -1488,7 +1662,7 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
   const currentProgramIntervals = Array.isArray(studyPlanner?.programIntervals)
     ? studyPlanner.programIntervals
     : [];
-  studyPlanner.programIntervals = currentProgramIntervals.map((intervalEntry) => {
+  const nextProgramIntervals = currentProgramIntervals.map((intervalEntry) => {
     const baseInterval =
       intervalEntry && typeof intervalEntry === "object"
         ? toPlainObject(intervalEntry) || {}
@@ -1508,20 +1682,21 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
     const isTargetInterval = targetSubIntervalId
       ? hasTargetSubInterval
       : intervalId === targetIntervalId;
-    const currentStatus =
-      normalizePlannerIntervalStatusValue(baseInterval?.intervalStatus).toLowerCase() ===
-      "current"
-        ? "current"
-        : "TBD";
-
+    const currentStatus = normalizePlannerIntervalStatusValue(
+      baseInterval?.intervalStatus,
+    );
     return {
       ...baseInterval,
+      intervalNum:
+        Number.parseInt(trimString(baseInterval?.intervalNum), 10) ||
+        Number.parseInt(intervalId, 10) ||
+        null,
       intervalStatus: [
         isTargetInterval
           ? requestedStatus
-          : currentStatus === "current"
-            ? "TBD"
-            : currentStatus,
+          : currentStatus.toLowerCase() === "current"
+            ? "Normal"
+            : currentStatus || "Normal",
       ],
       intervalsubIntervals: subIntervals.map((subIntervalEntry) => ({
         ...subIntervalEntry,
@@ -1531,6 +1706,66 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
       })),
     };
   });
+
+  if (requestedStatusLower === "failed") {
+    const targetIndex = currentProgramIntervals.findIndex((intervalEntry) => {
+      const baseInterval =
+        intervalEntry && typeof intervalEntry === "object"
+          ? toPlainObject(intervalEntry) || {}
+          : {};
+      const intervalId = trimString(baseInterval?.intervalId);
+      const subIntervals = Array.isArray(baseInterval?.intervalsubIntervals)
+        ? baseInterval.intervalsubIntervals
+        : [];
+      const matchesSubInterval = subIntervals.some(
+        (subIntervalEntry) =>
+          trimString(subIntervalEntry?.subIntervalId) === targetSubIntervalId,
+      );
+      return targetSubIntervalId
+        ? matchesSubInterval
+        : intervalId === targetIntervalId;
+    });
+
+    if (targetIndex >= 0 && targetIndex + 1 < nextProgramIntervals.length) {
+      const nextIntervalIndex = targetIndex + 1;
+      nextProgramIntervals[nextIntervalIndex] = {
+        ...nextProgramIntervals[nextIntervalIndex],
+        intervalStatus: ["Makeup"],
+      };
+
+      const intervalNumbers = nextProgramIntervals
+        .map((entry) => Number.parseInt(trimString(entry?.intervalNum), 10))
+        .filter((value) => Number.isInteger(value));
+      const maxIntervalNumber = intervalNumbers.length
+        ? Math.max(...intervalNumbers)
+        : nextProgramIntervals.length;
+      const nextIntervalNumber = maxIntervalNumber + 1;
+      const hasTrailingInterval = nextProgramIntervals.some(
+        (entry) =>
+          Number.parseInt(trimString(entry?.intervalNum), 10) ===
+          nextIntervalNumber,
+      );
+      if (!hasTrailingInterval) {
+        const baseInterval =
+          nextProgramIntervals[nextProgramIntervals.length - 1] ||
+          nextProgramIntervals[nextIntervalIndex] ||
+          {};
+        nextProgramIntervals.push({
+          ...toPlainObject(baseInterval),
+          intervalId: String(nextIntervalNumber),
+          intervalNum: nextIntervalNumber,
+          intervalStatus: ["Normal"],
+          intervalsubIntervals: buildPlannerNextIntervalSubIntervals(
+            baseInterval,
+            studyPlanner?.programTermsPerYear,
+            nextIntervalNumber,
+          ),
+        });
+      }
+    }
+  }
+
+  studyPlanner.programIntervals = nextProgramIntervals;
 
   return studyPlanner;
 };
@@ -1569,7 +1804,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const nextProgramLanguage = trimString(normalizedPayload?.programLanguage);
   const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
   const nextProgramFaculty = trimString(normalizedPayload?.programFaculty);
-  const hasProgramExams = "programExams" in normalizedPayload;
+  const hasProgramExamClasses = "programExamClasses" in normalizedPayload;
   const hasProgramStartYear = "programStartYear" in normalizedPayload;
   const hasProgramTotalYears = "programTotalYears" in normalizedPayload;
   const hasProgramTermsPerYear = "programTermsPerYear" in normalizedPayload;
@@ -1598,12 +1833,34 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
           : [],
       })
     : [];
-  const nextProgramExams = hasProgramExams
-    ? normalizeProgramExamsForPlanner({
-        programExams: Array.isArray(normalizedPayload?.programExams)
-          ? normalizedPayload.programExams
+  const nextProgramExamClasses = hasProgramExamClasses
+    ? normalizeProgramExamClassesForPlanner({
+        programExamClasses: Array.isArray(normalizedPayload?.programExamClasses)
+          ? normalizedPayload.programExamClasses
           : [],
       })
+    : [];
+  const hasProgramInstructors = "programInstructors" in normalizedPayload;
+  const hasProgramEditors = "programEditors" in normalizedPayload;
+  const hasProgramLocations = "programLocations" in normalizedPayload;
+  const nextProgramInstructors = hasProgramInstructors
+    ? normalizeStringArray(normalizedPayload?.programInstructors)
+    : [];
+  const nextProgramEditors = hasProgramEditors
+    ? normalizeStringArray(normalizedPayload?.programEditors)
+    : [];
+  const nextProgramLocations = hasProgramLocations
+    ? (Array.isArray(normalizedPayload?.programLocations)
+        ? normalizedPayload.programLocations
+        : [normalizedPayload?.programLocations]
+      )
+        .map((entry) => {
+          const normalizedEntry =
+            entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+          const location = sanitizeStudyLocation(normalizedEntry);
+          return location.building || location.room ? location : null;
+        })
+        .filter(Boolean)
     : [];
   const nextThresholdUnit = trimString(
     nextProgramPassingThresholdPerInterval?.thresholdUnit,
@@ -1622,12 +1879,15 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !nextProgramLanguage &&
     !nextProgramUniversity &&
     !nextProgramFaculty &&
-    !hasProgramExams &&
+    !hasProgramExamClasses &&
     !hasProgramStartYear &&
     !hasProgramTotalYears &&
     !hasProgramTermsPerYear &&
     !hasProgramPassingThresholdPerInterval &&
-    !hasProgramFailingRules
+    !hasProgramFailingRules &&
+    !hasProgramInstructors &&
+    !hasProgramEditors &&
+    !hasProgramLocations
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
@@ -1643,8 +1903,17 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   if ("programFaculty" in normalizedPayload) {
     studyPlanner.programFaculty = nextProgramFaculty;
   }
-  if (hasProgramExams) {
-    studyPlanner.programExams = nextProgramExams;
+  if (hasProgramExamClasses) {
+    studyPlanner.programExamClasses = nextProgramExamClasses;
+  }
+  if (hasProgramInstructors) {
+    studyPlanner.programInstructors = nextProgramInstructors;
+  }
+  if (hasProgramEditors) {
+    studyPlanner.programEditors = nextProgramEditors;
+  }
+  if (hasProgramLocations) {
+    studyPlanner.programLocations = nextProgramLocations;
   }
   if (hasProgramStartYear) {
     studyPlanner.programStartYear = Number.isFinite(nextProgramStartYear)
@@ -2148,9 +2417,9 @@ const buildCoursePayloadForUpdate = (payload = {}, previousCourse = {}) => {
 export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
   const normalizedPreviousCourse = toPlainObject(previousCourse) || {};
   const hasExplicitCourseWeight =
-    payload?.course_totalWeight !== null &&
-    payload?.course_totalWeight !== undefined &&
-    String(payload?.course_totalWeight).trim() !== "";
+    payload?.courseWeight !== null &&
+    payload?.courseWeight !== undefined &&
+    String(payload?.courseWeight).trim() !== "";
 
   return {
     _id:
@@ -2160,7 +2429,7 @@ export const buildCourseInfoPayload = (payload = {}, previousCourse = {}) => {
     status: normalizeCourseStatus(normalizedPreviousCourse?.status),
     weight:
       hasExplicitCourseWeight
-        ? toFiniteNumber(payload?.course_totalWeight, null)
+        ? toFiniteNumber(payload?.courseWeight, null)
         : toFiniteNumber(
             normalizedPreviousCourse?.weight ?? normalizedPreviousCourse?.totalWeight,
             null,
@@ -2377,11 +2646,20 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
   const instructors = normalizeDelimitedStringArray(
     payload?.instructors ?? payload?.lecture_instructors ?? payload?.lecture_instructor,
   );
+  const editors = normalizeDelimitedStringArray(
+    payload?.editors ?? payload?.lecture_editors ?? payload?.lecture_editor,
+  );
   const writers = normalizeDelimitedStringArray(
     payload?.writer ?? payload?.writers ?? payload?.lecture_writers ?? payload?.lecture_writer,
   );
   const publishDate = parseOptionalDate(
     payload?.publishDate || payload?.lecture_publishDate || payload?.lecture_date,
+  );
+  const nextLocation = sanitizeStudyLocation(
+    payload?.location ||
+      payload?.lecture_location ||
+      normalizedPreviousLecture?.location ||
+      {},
   );
   const nextVolume = sanitizeStudyVolume(
     payload?.volume ||
@@ -2408,11 +2686,16 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
       instructors.length > 0
         ? instructors
         : normalizeStringArray(normalizedPreviousLecture?.instructors),
+    editors:
+      editors.length > 0
+        ? editors
+        : normalizeStringArray(normalizedPreviousLecture?.editors),
     writer:
       writers.length > 0
         ? writers
         : normalizeStringArray(normalizedPreviousLecture?.writer),
     publishDate: publishDate || normalizedPreviousLecture?.publishDate || null,
+    location: nextLocation,
     volume: nextVolume,
     weight:
       normalizedPreviousLecture?.weight &&

@@ -3,7 +3,7 @@ import StudyOrganizerSchema from "./StudyOrganizer/StudyOrganizer.js";
 
 const { Schema } = mongoose;
 
-const attendanceLocationSchema = new Schema(
+const locationSchema = new Schema(
   {
     building: { type: String, default: "" },
     room: { type: String, default: "" },
@@ -126,13 +126,89 @@ const courseWeightSchema = new Schema(
   { _id: false },
 );
 
+const lectureVolumeSchema = new Schema(
+  {
+    unit: { type: String, default: "page" },
+    total: { type: String, default: "" },
+    done: { type: String, default: "" },
+    remaining: { type: String, default: "" },
+  },
+  { _id: false },
+);
+const programExamsSchema = new Schema(
+  {
+    //Exam metadata 
+    // ID
+    examClass: { type: String, default: "" },
+    courseName: { type: String, default: "" },
+    courseCode: { type: String, default: "" },
+    componentId: { type: String, default: "" },
+    //logistics (time and location)
+    examLocation: { type: locationSchema, default: null },
+    //materials
+    lectureIds: { type: [String], default: [] },
+    //grading
+    maxScore: { type: Number, default: "" },
+    minScore: { type: Number, default: "" },
+    weight: { type: Number, default: "" },
+    actualScore: { type: Number, default: "" },
+  },
+  { _id: false },
+);
+const componentLecturesSchema = new Schema( 
+  {
+    lectureName: { type: String, default: "" },
+    lectureInstructors: { type: [String], default: [] },
+    lectureEditors:{ type: [String], default: [] },
+    lectureGivenDate: { type: Date, default: null },
+    lectureEditedDate: { type: Date, default: null },
+    lectureLocation: { type: locationSchema, default: null },
+    lectureVolume: { type: lectureVolumeSchema, default: () => ({}) },
+    lectureContent: [
+      {
+        contentId: { type: String, default: "" },
+        documents: {
+          type: [lectureContentDocumentSchema],
+          default: [],
+        },
+      },
+    ],
+  },{ _id: true }
+)
+const programIntervalSchema = new Schema( 
+  {
+        intervalId: { type: String, default: "" },
+        intervalNum:{ type: Number, default: null },
+        intervalStatus: [{ type: String, default: "Normal" }],
+        intervalsubIntervals: [
+          {
+            subIntervalId: { type: String, default: "" },
+            subIntervalCourses: [
+              {//materials to examine
+                courseName: { type: String, default: "" },
+                courseCode: { type: String, default: "" },
+                courseWeight: { type: Number, default: "" },
+                courseComponents: [
+                  {
+                    componentId: { type: String, default: "" },
+                    componentWeightPercentage: { type: Number, min: 0, max: 1, default: "" },
+                    componentLectures: {type: [componentLecturesSchema], default: []},
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      { _id: false },
+    );
+
 const StudyPlannerSchema = new Schema(
   {
     programId: { type: String, default: "" },
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
-    programExams: { type: [String], default: [] },
     programComponents: { type: [String], default: [] },
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
@@ -142,44 +218,9 @@ const StudyPlannerSchema = new Schema(
       thresholdUnit: { type: String, default: null },
       thresholdNumber: { type: Number, default: null },
     }],
-    programIntervals: [
-      {
-        intervalId: { type: String, default: "" },
-        intervalStatus: [{ type: String, default: "TBD" }],
-        intervalsubIntervals: [
-          {
-            subIntervalId: { type: String, default: "" },
-            subIntervalCourses: [
-              {
-                courseId: { type: String, default: "" },
-                courseCode: { type: String, default: "" },
-                courseTotalWeight: { type: String, default: "" },
-                courseWeight: {type: [courseWeightSchema], default: []},
-                courseComponents: [
-                  {
-                    componentId: { type: String, default: "" },
-                    componentLectures: [
-                      {
-                        lectureId: { type: String, default: "" },
-                        lectureContent: [
-                          {
-                            contentId: { type: String, default: "" },
-                            documents: {
-                              type: [lectureContentDocumentSchema],
-                              default: [],
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-    ],
+    programIntervals: { type: [programIntervalSchema], default: [] }, //materials to examine
+    programExamClasses:{ type: [String], default: [] },
+    programExams: { type: [programExamsSchema], default: [] }, //exams
     studyPlanAid: { type: studyPlanAidSchema, default: () => ({}) },
     studyOrganizer: { type: StudyOrganizerSchema, default: () => ({}) },
   },

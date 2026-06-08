@@ -13,6 +13,7 @@ import cloudinary from "../helpers/cloudinary.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import UserModel from "../compat/UserModel.js";
+import VisitLogEntryModel from "../models/VisitLogEntry.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
@@ -1136,6 +1137,40 @@ const isPendingFriendRequestPair = ({ receiverMode, requesterMode }) =>
 
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
+
+const normalizeVisitLogEntry = (entry = {}) => ({
+  ip: String(entry?.ip || "").trim(),
+  country: String(entry?.country || "Unknown").trim() || "Unknown",
+  visitedAt: entry?.visitedAt ? new Date(entry.visitedAt) : new Date(),
+});
+
+const seedVisitLogCollectionFromLegacyOwner = async (legacyOwner = null) => {
+  const storedCount = await VisitLogEntryModel.countDocuments({});
+  if (storedCount > 0) {
+    return false;
+  }
+
+  const legacyVisitLog = Array.isArray(legacyOwner?.visitLog)
+    ? legacyOwner.visitLog
+    : [];
+  if (legacyVisitLog.length === 0) {
+    return false;
+  }
+
+  const normalizedLegacyEntries = legacyVisitLog
+    .slice(0, VISIT_LOG_LIMIT)
+    .map((entry) => normalizeVisitLogEntry(entry))
+    .filter((entry) => Boolean(entry.ip));
+
+  if (normalizedLegacyEntries.length === 0) {
+    return false;
+  }
+
+  await VisitLogEntryModel.insertMany(normalizedLegacyEntries, {
+    ordered: true,
+  });
+  return true;
+};
 const APP_LAST_UPDATED_CACHE_TTL_MS = 5 * 60 * 1000;
 const HOMETOWN_CITIES_CACHE_TTL_MS = 30 * 60 * 1000;
 
@@ -4518,11 +4553,24 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
+    const storedLog = await VisitLogEntryModel.find({})
+      .sort({ visitedAt: -1, createdAt: -1 })
+      .limit(VISIT_LOG_LIMIT)
+      .lean();
+
+    if (storedLog.length > 0) {
+      return res.status(200).json({
+        visitLog: storedLog,
+      });
+    }
+
     const owner = await UserModel.findOne({
       "auth.username": VISIT_LOG_OWNER_USERNAME,
     })
       .select("visitLog")
       .lean();
+
+    await seedVisitLogCollectionFromLegacyOwner(owner);
 
     const visitLog = Array.isArray(owner?.visitLog) ? owner.visitLog : [];
     const sortedLog = visitLog
@@ -4557,6 +4605,14 @@ UserRouter.post("/visit-log", async function (req, res, next) {
       });
     }
 
+    await seedVisitLogCollectionFromLegacyOwner(visitLogOwner);
+
+    const storedEntry = await VisitLogEntryModel.create({
+      ip,
+      country,
+      visitedAt: new Date(),
+    });
+
     visitLogOwner.visitLog = Array.isArray(visitLogOwner.visitLog)
       ? visitLogOwner.visitLog
       : [];
@@ -4564,18 +4620,11 @@ UserRouter.post("/visit-log", async function (req, res, next) {
     visitLogOwner.visitLog.unshift({
       ip,
       country,
-      visitedAt: new Date(),
+      visitedAt: storedEntry?.visitedAt || new Date(),
     });
 
-    // Keep it bounded since this is now embedded in the `subjects` collection.
     visitLogOwner.visitLog = visitLogOwner.visitLog.slice(0, VISIT_LOG_LIMIT);
-
     await visitLogOwner.save();
-
-    const storedEntry =
-      Array.isArray(visitLogOwner.visitLog) && visitLogOwner.visitLog.length
-        ? visitLogOwner.visitLog[0]
-        : null;
 
     const io = req.app.locals.io;
 
@@ -4626,6 +4675,7 @@ UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
       : 0;
     owner.visitLog = [];
     await owner.save();
+    await VisitLogEntryModel.deleteMany({});
 
     return res.status(200).json({
       message: "Visit log cleared.",
@@ -5728,7 +5778,7 @@ UserRouter.post(
       const createdPlannerCourse = addCourseInfoToPlanner(memoryDoc, {
         course_code: req.body?.course_code,
         course_name: req.body?.course_name,
-        course_totalWeight: req.body?.course_totalWeight,
+        courseWeight: req.body?.courseWeight ?? req.body?.course_totalWeight,
       });
 
       const normalizedCourseComponentPayloads = Array.isArray(
