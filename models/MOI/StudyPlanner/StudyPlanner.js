@@ -11,57 +11,24 @@ const locationSchema = new Schema(
   { _id: false },
 );
 
-const lectureContentDocumentSchema = new Schema(
+const byteArraySemanticsSchema = new Schema({
+  byteArraySemanticsVolumeUnit: { type: String, default: "" }, //page, image, words, letters
+  byteArraySemanticsVolume: { type: Number, default: null }, // number of pages, number of images ...
+  byteArraySemanticsEditors: { type: [String], default: [] }, // a subset of programEditors
+  byteArraySemanticsConcepts: { type: [String], default: [] },
+});
+
+const lectureByteArraysSchema = new Schema(
   {
-    documentId: { type: String, default: "" },
-    name: { type: String, default: "" },
-    type: { type: String, default: "" },
-    url: { type: String, default: "" },
-    storageKey: { type: String, default: "" },
-    mimeType: { type: String, default: "" },
-    size: { type: Number, default: 0, min: 0 },
-    uploadedAt: { type: Date, default: null },
-    source: {
-      type: String,
-      enum: ["telegram", "upload", "manual", "camera-scan"],
-      default: "upload",
-    },
-    telegram: {
-      groupReference: { type: String, default: "" },
-      messageId: { type: String, default: "" },
-      messageDate: { type: Date, default: null },
-      senderName: { type: String, default: "" },
-      attachmentKind: { type: String, default: "" },
-      caption: { type: String, default: "" },
-    },
-    upload: {
-      uploadedByUserId: { type: String, default: "" },
-      originalFileName: { type: String, default: "" },
-      uploadDate: { type: Date, default: null },
-    },
-    manual: {
-      title: { type: String, default: "" },
-      volume: { type: String, default: "" },
-      note: { type: String, default: "" },
-      referenceCode: { type: String, default: "" },
-      createdByUserId: { type: String, default: "" },
-      createdAt: { type: Date, default: null },
-    },
-    cameraScan: {
-      capturedByUserId: { type: String, default: "" },
-      imageUrls: { type: [String], default: [] },
-      imageCount: { type: Number, default: 0, min: 0 },
-      scannedAt: { type: Date, default: null },
-      // Generated PDF from captured camera images
-      pdfUrl: { type: String, default: "" },
-      pdfStorageKey: { type: String, default: "" },
-      pdfFileName: { type: String, default: "" },
-      pdfMimeType: { type: String, default: "application/pdf" },
-      pdfSize: { type: Number, default: 0, min: 0 },
-      pdfGeneratedAt: { type: Date, default: null },
-    },
+    //morphe
+    byteArrayName: { type: String, default: "" }, //Bacteria
+    byteArraySemantics: { type: [byteArraySemanticsSchema], default: [] }, // morphe
+    byteArraySyntax: { type: String, default: "" }, //PDF, IMAGE ...
+    byteArrayLength: { type: Number, default: 0, min: 0 },
+    // Hyle
+    byteArray: { type: String, default: "" },
   },
-  { _id: false },
+  { _id: true },
 );
 
 const programModesTermSchema = new Schema(
@@ -139,64 +106,58 @@ const programExamsSchema = new Schema(
   {
     //Exam metadata 
     // ID
+    examID: { type: String, default: "" },
     examClass: { type: String, default: "" },
-    courseName: { type: String, default: "" },
-    courseCode: { type: String, default: "" },
-    componentId: { type: String, default: "" },
+    componentID: { type: String, default: "" },
     //logistics (time and location)
     examLocation: { type: locationSchema, default: null },
-    //materials
-    lectureIds: { type: [String], default: [] },
+    examDate: {type: Date},
+    examTime: {type: String},
+    //byteArrays
+    examlectureIDs: { type: [String], default: [] },
     //grading
-    maxScore: { type: Number, default: "" },
-    minScore: { type: Number, default: "" },
-    weight: { type: Number, default: "" },
-    actualScore: { type: Number, default: "" },
+    examMaxScore: { type: Number, default: null }, //weight
+    examMinScore: { type: Number, default: null }, //threshold
+    examActualScore: { type: Number, default: null },
   },
   { _id: false },
 );
 const componentLecturesSchema = new Schema( 
   {
+    lectureID: { type: String, default: "" },
+    lectureNum: { type: Number, default: ""},
     lectureName: { type: String, default: "" },
     lectureInstructors: { type: [String], default: [] },
-    lectureEditors:{ type: [String], default: [] },
-    lectureGivenDate: { type: Date, default: null },
-    lectureEditedDate: { type: Date, default: null },
-    lectureLocation: { type: locationSchema, default: null },
-    lectureVolume: { type: lectureVolumeSchema, default: () => ({}) },
-    lecture_pagesFinished: { type: [Number], default: [] },
-    lectureContent: [
-      {
-        contentId: { type: String, default: "" },
-        documents: {
-          type: [lectureContentDocumentSchema],
-          default: [],
-        },
-      },
-    ],
-  },{ _id: true }
-)
+    lectureInstructionDate: { type: Date, default: null },
+    lectureBytes: { type: [lectureByteArraysSchema], default: [] },
+  },
+  { _id: true },
+);
 const programIntervalSchema = new Schema( 
   {
-        intervalId: { type: String, default: "" },
         intervalNum:{ type: Number, default: null },
         intervalStatus: [{ type: String, default: "Normal" }],
         intervalsubIntervals: [
           {
-            subIntervalId: { type: String, default: "" },
+            subIntervalID: { type: String, default: "" },
+            subIntervalNum:{ type: Number},
             subIntervalDates:{
               start:{type: Date},
               end: {type: Date},
             },
+            subIntervalCurrent: {type: Boolean, default: false},
             subIntervalCourses: [
               {//materials to examine
+                courseID: { type: String, default: "" },
+                courseNum: { type: Number},
                 courseName: { type: String, default: "" },
                 courseCode: { type: String, default: "" },
-                courseWeight: { type: Number, default: "" },
+                courseWeight: { type: Number, default: 100},
                 courseComponents: [
                   {
-                    componentId: { type: String, default: "" },
-                    componentWeightPercentage: { type: Number, min: 0, max: 1, default: "" },
+                    componentClass: { type: String, default: "" },
+                    componentWeight: { type: Number, default: null },
+                    componentLocation: { type: locationSchema, default: null },
                     componentLectures: {type: [componentLecturesSchema], default: []},
                   },
                 ],
@@ -228,9 +189,7 @@ const StudyPlannerSchema = new Schema(
     }],
     programIntervals: { type: [programIntervalSchema], default: [] }, //materials to examine
     programExamClasses:{ type: [String], default: [] },
-    programExams: { type: [programExamsSchema], default: [] }, //exams
-    studyPlanAid: { type: studyPlanAidSchema, default: () => ({}) },
-    studyOrganizer: { type: StudyOrganizerSchema, default: () => ({}) },
+    programExams: { type: [programExamsSchema], default: [] }, //exams 
   },
   { _id: true, strict: true },
 );
