@@ -1533,7 +1533,6 @@ const buildStoredTelegramMessageDocument = (userId, entry = {}) => {
     getTelegramMessageBucketName(entry),
   );
   return {
-    user: userId,
     groupReference: normalizeGroupReference(normalizedMessage.groupReference),
     messageId: Number(normalizedMessage.id || 0),
     groupTitle: normalizeString(normalizedMessage.groupTitle),
@@ -1577,6 +1576,65 @@ const buildStoredTelegramMessageDocument = (userId, entry = {}) => {
       ? entry.keywords_raw.map((value) => String(value || "").trim()).filter(Boolean)
       : [],
     concepts: normalizeTelegramConceptEntries(entry?.concepts),
+  };
+};
+
+// Builds a message subdocument (no group-level fields) for the embedded array.
+const buildStoredTelegramMessageSubdoc = (entry = {}) => {
+  const normalizedMessage = normalizeStoredMessage(
+    entry,
+    getTelegramMessageBucketName(entry),
+  );
+  return {
+    messageId: Number(normalizedMessage.id || 0),
+    text: normalizeString(normalizedMessage.text),
+    date: Number(normalizedMessage.date || 0) || 0,
+    sender: normalizeString(normalizedMessage.sender || "Unknown") || "Unknown",
+    views:
+      typeof normalizedMessage?.views === "number" &&
+      Number.isFinite(normalizedMessage.views)
+        ? normalizedMessage.views
+        : null,
+    replyToMessageId:
+      typeof normalizedMessage?.replyToMessageId === "number" &&
+      Number.isFinite(normalizedMessage.replyToMessageId)
+        ? normalizedMessage.replyToMessageId
+        : null,
+    attachmentKind:
+      normalizeString(normalizedMessage.attachmentKind || "text").toLowerCase() || "text",
+    attachmentMimeType: normalizeString(normalizedMessage.attachmentMimeType),
+    attachmentFileName: normalizeString(normalizedMessage.attachmentFileName),
+    attachmentFileExtension: normalizeString(normalizedMessage.attachmentFileExtension),
+    attachmentSizeBytes:
+      typeof normalizedMessage?.attachmentSizeBytes === "number" &&
+      Number.isFinite(normalizedMessage.attachmentSizeBytes)
+        ? normalizedMessage.attachmentSizeBytes
+        : null,
+    attachmentIsPdf: Boolean(normalizedMessage.attachmentIsPdf),
+    telegramFileId:
+      typeof normalizedMessage?.telegramFileId === "number" &&
+      Number.isFinite(normalizedMessage.telegramFileId)
+        ? normalizedMessage.telegramFileId
+        : null,
+    telegramAccessHash: normalizeString(normalizedMessage.telegramAccessHash),
+    telegramFileName: normalizeString(normalizedMessage.telegramFileName),
+    photoDataUrl: normalizeString(normalizedMessage.photoDataUrl),
+    videoDataUrl: normalizeString(normalizedMessage.videoDataUrl),
+    documentDataUrl: normalizeString(normalizedMessage.documentDataUrl),
+    keywords_raw: Array.isArray(entry?.keywords_raw)
+      ? entry.keywords_raw.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+    concepts: normalizeTelegramConceptEntries(entry?.concepts),
+    entities: Array.isArray(entry?.entities)
+      ? entry.entities
+          .filter((e) => e && typeof e === "object")
+          .map((e) => ({
+            offset: Number(e.offset || 0),
+            length: Number(e.length || 0),
+            type: String(e.type || "").trim(),
+          }))
+          .filter((e) => e.type)
+      : [],
   };
 };
 
@@ -1635,6 +1693,130 @@ const getEmbeddedStoredMessageCount = (memoryDoc, groupReference = "") =>
 const hasEmbeddedStoredTelegramMessages = (memoryDoc, groupReference = "") =>
   getEmbeddedStoredMessageCount(memoryDoc, groupReference) > 0;
 
+// One-time migration: reads flat documents from the legacy telegram_stored_messages
+// collection and writes them into telegram_stored_groups as embedded arrays.
+const migrateFlatCollectionToGroupCollection = async (userId) => {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return 0;
+  }
+
+  const ObjectId = TelegramStoredMessageModel.db.base.Types.ObjectId;
+  const userObjectId = ObjectId.isValid(normalizedUserId)
+    ? new ObjectId(normalizedUserId)
+    : normalizedUserId;
+
+  let oldDocs;
+  try {
+    const oldCollection = TelegramStoredMessageModel.db.collection("telegram_stored_messages");
+    oldDocs = await oldCollection.find({ user: userObjectId }).toArray();
+  } catch {
+    return 0;
+  }
+
+  if (!oldDocs || oldDocs.length === 0) {
+    return 0;
+  }
+
+  // Group flat documents by groupReference.
+  const byGroup = new Map();
+  for (const doc of oldDocs) {
+    const groupRef = normalizeGroupReference(doc.groupReference);
+    if (!groupRef || !Number(doc.messageId || 0)) {
+      continue;
+    }
+    if (!byGroup.has(groupRef)) {
+      byGroup.set(groupRef, {
+        groupTitle: normalizeString(doc.groupTitle),
+        groupUsername: normalizeString(doc.groupUsername),
+        groupType: normalizeString(doc.groupType || "group") || "group",
+        subdocs: [],
+      });
+    }
+    const entry = byGroup.get(groupRef);
+    entry.subdocs.push({
+      messageId: Number(doc.messageId),
+      text: normalizeString(doc.text),
+      date: Number(doc.date || 0) || 0,
+      sender: normalizeString(doc.sender || "Unknown") || "Unknown",
+      views: typeof doc.views === "number" ? doc.views : null,
+      replyToMessageId: typeof doc.replyToMessageId === "number" ? doc.replyToMessageId : null,
+      attachmentKind: normalizeString(doc.attachmentKind || "text").toLowerCase() || "text",
+      attachmentMimeType: normalizeString(doc.attachmentMimeType),
+      attachmentFileName: normalizeString(doc.attachmentFileName),
+      attachmentFileExtension: normalizeString(doc.attachmentFileExtension),
+      attachmentSizeBytes: typeof doc.attachmentSizeBytes === "number" ? doc.attachmentSizeBytes : null,
+      attachmentIsPdf: Boolean(doc.attachmentIsPdf),
+      telegramFileId: typeof doc.telegramFileId === "number" ? doc.telegramFileId : null,
+      telegramAccessHash: normalizeString(doc.telegramAccessHash),
+      telegramFileName: normalizeString(doc.telegramFileName),
+      photoDataUrl: normalizeString(doc.photoDataUrl),
+      videoDataUrl: normalizeString(doc.videoDataUrl),
+      documentDataUrl: normalizeString(doc.documentDataUrl),
+      keywords_raw: Array.isArray(doc.keywords_raw) ? doc.keywords_raw : [],
+      concepts: normalizeTelegramConceptEntries(doc.concepts),
+      entities: Array.isArray(doc.entities) ? doc.entities : [],
+    });
+  }
+
+  if (byGroup.size === 0) {
+    return 0;
+  }
+
+  const bulkOps = [];
+  for (const [groupRef, { groupTitle, groupUsername, groupType, subdocs }] of byGroup) {
+    bulkOps.push({
+      updateOne: {
+        filter: { groupReference: groupRef },
+        update: [
+          {
+            $set: {
+              groupReference: groupRef,
+              groupTitle,
+              groupUsername,
+              groupType,
+              messages: {
+                $reduce: {
+                  input: subdocs,
+                  initialValue: { $ifNull: ["$messages", []] },
+                  in: {
+                    $cond: {
+                      if: {
+                        $in: [
+                          "$$this.messageId",
+                          { $map: { input: "$$value", as: "m", in: "$$m.messageId" } },
+                        ],
+                      },
+                      then: {
+                        $map: {
+                          input: "$$value",
+                          as: "m",
+                          in: {
+                            $cond: [
+                              { $eq: ["$$m.messageId", "$$this.messageId"] },
+                              "$$this",
+                              "$$m",
+                            ],
+                          },
+                        },
+                      },
+                      else: { $concatArrays: ["$$value", ["$$this"]] },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+        upsert: true,
+      },
+    });
+  }
+
+  await TelegramStoredMessageModel.bulkWrite(bulkOps, { ordered: false });
+  return oldDocs.length;
+};
+
 const migrateStoredTelegramMessagesToCollection = async ({
   userId,
   memoryDoc = null,
@@ -1672,81 +1854,79 @@ const migrateStoredTelegramMessagesToCollection = async ({
     };
   }
 
-  const bulkOperations = embeddedMessages
-    .map((entry) => buildStoredTelegramMessageDocument(normalizedUserId, entry))
-    .filter(
-      (entry) =>
-        entry &&
-        entry.user &&
-        entry.groupReference &&
-        Number(entry.messageId || 0) > 0,
-    )
-    .map((entry) => ({
+  // Group embedded messages by groupReference for per-group upserts.
+  const subdocsByGroup = new Map();
+  for (const entry of embeddedMessages) {
+    const doc = buildStoredTelegramMessageDocument(normalizedUserId, entry);
+    if (!doc || !doc.groupReference || Number(doc.messageId || 0) <= 0) {
+      continue;
+    }
+    const key = normalizeGroupReference(doc.groupReference);
+    if (!subdocsByGroup.has(key)) {
+      subdocsByGroup.set(key, { groupTitle: doc.groupTitle, groupUsername: doc.groupUsername, groupType: doc.groupType, subdocs: [] });
+    }
+    const { subdocs } = subdocsByGroup.get(key);
+    subdocs.push(buildStoredTelegramMessageSubdoc(entry));
+  }
+
+  const bulkOperations = [];
+  for (const [groupRef, { groupTitle, groupUsername, groupType, subdocs }] of subdocsByGroup) {
+    bulkOperations.push({
       updateOne: {
-        filter: {
-          user: entry.user,
-          groupReference: entry.groupReference,
-          messageId: entry.messageId,
-        },
-        update: { $set: entry },
+        filter: { groupReference: groupRef },
+        update: [
+          {
+            $set: {
+              groupReference: groupRef,
+              groupTitle,
+              groupUsername,
+              groupType,
+              messages: {
+                $reduce: {
+                  input: subdocs,
+                  initialValue: { $ifNull: ["$messages", []] },
+                  in: {
+                    $cond: {
+                      if: {
+                        $in: [
+                          "$$this.messageId",
+                          { $map: { input: "$$value", as: "m", in: "$$m.messageId" } },
+                        ],
+                      },
+                      then: {
+                        $map: {
+                          input: "$$value",
+                          as: "m",
+                          in: {
+                            $cond: [
+                              { $eq: ["$$m.messageId", "$$this.messageId"] },
+                              "$$this",
+                              "$$m",
+                            ],
+                          },
+                        },
+                      },
+                      else: { $concatArrays: ["$$value", ["$$this"]] },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
         upsert: true,
       },
-    }));
+    });
+  }
 
   if (bulkOperations.length > 0) {
     await TelegramStoredMessageModel.bulkWrite(bulkOperations, { ordered: false });
   }
 
-  const groupStatsByReference = buildGroupStatsFromMessages(embeddedMessages);
-  const groupEntries = listTelegramGroupMemoryEntries(fullMemoryDoc).map((groupEntry, index) => {
-    const groupEmbeddedMessages = getTelegramGroupContentBuckets(groupEntry);
-    const groupReferenceFromMessages = [
-      ...groupEmbeddedMessages.texts,
-      ...groupEmbeddedMessages.photos,
-      ...groupEmbeddedMessages.images,
-      ...groupEmbeddedMessages.videos,
-      ...groupEmbeddedMessages.audios,
-      ...groupEmbeddedMessages.documents,
-    ]
-      .map((entry) => normalizeGroupReference(entry?.groupReference))
-      .find(Boolean);
-    const normalizedReference =
-      buildGroupReferenceFromSchemaEntry(groupEntry, index) || groupReferenceFromMessages;
-    const stats = groupStatsByReference.get(normalizedReference) || null;
-    const info =
-      groupEntry?.info && typeof groupEntry.info === "object" ? groupEntry.info : {};
-    return {
-      ...groupEntry,
-      info: {
-        ...info,
-        name: normalizeString(info?.name) || normalizeString(stats?.groupTitle),
-        groupReference: normalizedReference,
-        messageCount: Number(stats?.count || info?.messageCount || 0) || 0,
-        latestMessageDateMs:
-          Number(stats?.latestDateMs || info?.latestMessageDateMs || 0) || 0,
-      },
-      messages: [],
-    };
-  });
-
-  await UserModel.updateOne(
-    { _id: normalizedUserId },
-    {
-      $set: {
-        "memory.MOA.telegram.groups": coerceTelegramGroupsArray(groupEntries),
-      },
-    },
-  );
-
-  const nextMemoryDoc = await findUserMemoryLean(normalizedUserId, {
-    includeCourses: Array.isArray(fullMemoryDoc?.courses),
-    includeLectures: Array.isArray(fullMemoryDoc?.lectures),
-  });
-
   return {
     migrated: true,
     migratedCount: bulkOperations.length,
-    memoryDoc: nextMemoryDoc || fullMemoryDoc,
+    memoryDoc: fullMemoryDoc,
   };
 };
 
@@ -1756,62 +1936,84 @@ const listStoredTelegramMessagesFromCollection = async (userId, groupReference =
     return [];
   }
 
-  const match = {
-    user: normalizedUserId,
-  };
+  const match = {};
   const normalizedReference = normalizeGroupReference(groupReference);
   if (normalizedReference) {
     match.groupReference = normalizedReference;
   }
 
-  const documents = await TelegramStoredMessageModel.find(match)
-    .sort({ date: -1, messageId: -1 })
-    .lean();
+  // Each document is a group; its messages are in the embedded array.
+  let groupDocs = await TelegramStoredMessageModel.find(match).lean();
 
-  return documents.map((document) =>
-    normalizeStoredMessage(
-      {
-        id: Number(document?.messageId || 0),
-        groupReference: normalizeGroupReference(document?.groupReference),
-        groupTitle: normalizeString(document?.groupTitle),
-        groupUsername: normalizeString(document?.groupUsername),
-        groupType: normalizeString(document?.groupType || "group") || "group",
-        text: normalizeString(document?.text),
-        date: Number(document?.date || 0) || 0,
-        sender: normalizeString(document?.sender || "Unknown") || "Unknown",
-        views:
-          typeof document?.views === "number" && Number.isFinite(document.views)
-            ? document.views
-            : null,
-        replyToMessageId:
-          typeof document?.replyToMessageId === "number" &&
-          Number.isFinite(document.replyToMessageId)
-            ? document.replyToMessageId
-            : null,
-        attachmentKind: normalizeString(document?.attachmentKind || "text"),
-        attachmentMimeType: normalizeString(document?.attachmentMimeType),
-        attachmentFileName: normalizeString(document?.attachmentFileName),
-        attachmentFileExtension: normalizeString(document?.attachmentFileExtension),
-        attachmentSizeBytes:
-          typeof document?.attachmentSizeBytes === "number" &&
-          Number.isFinite(document.attachmentSizeBytes)
-            ? document.attachmentSizeBytes
-            : null,
-        attachmentIsPdf: Boolean(document?.attachmentIsPdf),
-        telegramFileId:
-          typeof document?.telegramFileId === "number" &&
-          Number.isFinite(document.telegramFileId)
-            ? document.telegramFileId
-            : null,
-        telegramAccessHash: normalizeString(document?.telegramAccessHash),
-        telegramFileName: normalizeString(document?.telegramFileName),
-        photoDataUrl: normalizeString(document?.photoDataUrl),
-        videoDataUrl: normalizeString(document?.videoDataUrl),
-        documentDataUrl: normalizeString(document?.documentDataUrl),
-      },
-      getTelegramMessageBucketName(document),
-    ),
-  );
+  if (groupDocs.length === 0) {
+    const flatMigrated = await migrateFlatCollectionToGroupCollection(normalizedUserId);
+    if (flatMigrated > 0) {
+      groupDocs = await TelegramStoredMessageModel.find(match).lean();
+    }
+  }
+
+  const allMessages = [];
+  for (const doc of groupDocs) {
+    const groupRef = normalizeGroupReference(doc.groupReference);
+    const groupTitle = normalizeString(doc.groupTitle);
+    const groupUsername = normalizeString(doc.groupUsername);
+    const groupType = normalizeString(doc.groupType || "group") || "group";
+
+    for (const message of (Array.isArray(doc.messages) ? doc.messages : [])) {
+      allMessages.push(
+        normalizeStoredMessage(
+          {
+            id: Number(message.messageId || 0),
+            groupReference: groupRef,
+            groupTitle,
+            groupUsername,
+            groupType,
+            text: normalizeString(message.text),
+            date: Number(message.date || 0) || 0,
+            sender: normalizeString(message.sender || "Unknown") || "Unknown",
+            views:
+              typeof message.views === "number" && Number.isFinite(message.views)
+                ? message.views
+                : null,
+            replyToMessageId:
+              typeof message.replyToMessageId === "number" &&
+              Number.isFinite(message.replyToMessageId)
+                ? message.replyToMessageId
+                : null,
+            attachmentKind: normalizeString(message.attachmentKind || "text"),
+            attachmentMimeType: normalizeString(message.attachmentMimeType),
+            attachmentFileName: normalizeString(message.attachmentFileName),
+            attachmentFileExtension: normalizeString(message.attachmentFileExtension),
+            attachmentSizeBytes:
+              typeof message.attachmentSizeBytes === "number" &&
+              Number.isFinite(message.attachmentSizeBytes)
+                ? message.attachmentSizeBytes
+                : null,
+            attachmentIsPdf: Boolean(message.attachmentIsPdf),
+            telegramFileId:
+              typeof message.telegramFileId === "number" &&
+              Number.isFinite(message.telegramFileId)
+                ? message.telegramFileId
+                : null,
+            telegramAccessHash: normalizeString(message.telegramAccessHash),
+            telegramFileName: normalizeString(message.telegramFileName),
+            photoDataUrl: normalizeString(message.photoDataUrl),
+            videoDataUrl: normalizeString(message.videoDataUrl),
+            documentDataUrl: normalizeString(message.documentDataUrl),
+          },
+          getTelegramMessageBucketName({ ...message, groupReference: groupRef }),
+        ),
+      );
+    }
+  }
+
+  // Sort descending by date, then by messageId.
+  allMessages.sort((a, b) => {
+    const dateDiff = Number(b.date || 0) - Number(a.date || 0);
+    return dateDiff !== 0 ? dateDiff : Number(b.id || 0) - Number(a.id || 0);
+  });
+
+  return allMessages;
 };
 
 const findStoredTelegramMessage = async (
@@ -1826,48 +2028,56 @@ const findStoredTelegramMessage = async (
   }
 
   const normalizedReference = normalizeGroupReference(groupReference);
-  let storedDocument = await TelegramStoredMessageModel.findOne({
-    user: userId,
-    groupReference: normalizedReference,
-    messageId: normalizedMessageId,
-  }).lean();
+  const findMessageInGroup = async () => {
+    const groupDoc = await TelegramStoredMessageModel.findOne(
+      { groupReference: normalizedReference },
+      { groupReference: 1, groupTitle: 1, groupUsername: 1, groupType: 1, messages: { $elemMatch: { messageId: normalizedMessageId } } },
+    ).lean();
+    return groupDoc?.messages?.[0]
+      ? { message: groupDoc.messages[0], doc: groupDoc }
+      : null;
+  };
 
-  if (!storedDocument && getExpectedStoredMessageCount(memoryDoc, normalizedReference) > 0) {
-    await migrateStoredTelegramMessagesToCollection({ userId, memoryDoc });
-    storedDocument = await TelegramStoredMessageModel.findOne({
-      user: userId,
-      groupReference: normalizedReference,
-      messageId: normalizedMessageId,
-    }).lean();
+  let found = await findMessageInGroup();
+
+  if (!found) {
+    await migrateFlatCollectionToGroupCollection(String(userId || "").trim());
+    found = await findMessageInGroup();
   }
 
-  if (storedDocument) {
+  if (!found && getExpectedStoredMessageCount(memoryDoc, normalizedReference) > 0) {
+    await migrateStoredTelegramMessagesToCollection({ userId, memoryDoc });
+    found = await findMessageInGroup();
+  }
+
+  if (found) {
+    const { message, doc } = found;
     return normalizeStoredMessage(
       {
-        id: Number(storedDocument?.messageId || 0),
-        groupReference: normalizeGroupReference(storedDocument?.groupReference),
-        groupTitle: normalizeString(storedDocument?.groupTitle),
-        groupUsername: normalizeString(storedDocument?.groupUsername),
-        groupType: normalizeString(storedDocument?.groupType || "group") || "group",
-        text: normalizeString(storedDocument?.text),
-        date: Number(storedDocument?.date || 0) || 0,
-        sender: normalizeString(storedDocument?.sender || "Unknown") || "Unknown",
-        views: storedDocument?.views,
-        replyToMessageId: storedDocument?.replyToMessageId,
-        attachmentKind: normalizeString(storedDocument?.attachmentKind),
-        attachmentMimeType: normalizeString(storedDocument?.attachmentMimeType),
-        attachmentFileName: normalizeString(storedDocument?.attachmentFileName),
-        attachmentFileExtension: normalizeString(storedDocument?.attachmentFileExtension),
-        attachmentSizeBytes: storedDocument?.attachmentSizeBytes,
-        attachmentIsPdf: Boolean(storedDocument?.attachmentIsPdf),
-        telegramFileId: storedDocument?.telegramFileId,
-        telegramAccessHash: normalizeString(storedDocument?.telegramAccessHash),
-        telegramFileName: normalizeString(storedDocument?.telegramFileName),
-        photoDataUrl: normalizeString(storedDocument?.photoDataUrl),
-        videoDataUrl: normalizeString(storedDocument?.videoDataUrl),
-        documentDataUrl: normalizeString(storedDocument?.documentDataUrl),
+        id: Number(message.messageId || 0),
+        groupReference: normalizeGroupReference(doc.groupReference),
+        groupTitle: normalizeString(doc.groupTitle),
+        groupUsername: normalizeString(doc.groupUsername),
+        groupType: normalizeString(doc.groupType || "group") || "group",
+        text: normalizeString(message.text),
+        date: Number(message.date || 0) || 0,
+        sender: normalizeString(message.sender || "Unknown") || "Unknown",
+        views: message.views,
+        replyToMessageId: message.replyToMessageId,
+        attachmentKind: normalizeString(message.attachmentKind),
+        attachmentMimeType: normalizeString(message.attachmentMimeType),
+        attachmentFileName: normalizeString(message.attachmentFileName),
+        attachmentFileExtension: normalizeString(message.attachmentFileExtension),
+        attachmentSizeBytes: message.attachmentSizeBytes,
+        attachmentIsPdf: Boolean(message.attachmentIsPdf),
+        telegramFileId: message.telegramFileId,
+        telegramAccessHash: normalizeString(message.telegramAccessHash),
+        telegramFileName: normalizeString(message.telegramFileName),
+        photoDataUrl: normalizeString(message.photoDataUrl),
+        videoDataUrl: normalizeString(message.videoDataUrl),
+        documentDataUrl: normalizeString(message.documentDataUrl),
       },
-      getTelegramMessageBucketName(storedDocument),
+      getTelegramMessageBucketName({ ...message, groupReference: normalizeGroupReference(doc.groupReference) }),
     );
   }
 
@@ -1883,11 +2093,16 @@ const getStoredMessageCountForUser = async (userId, memoryDoc, configSource) => 
 
   const normalizedUserId = String(userId || "").trim();
   if (normalizedUserId) {
-    const match = { user: normalizedUserId };
+    const match = {};
     if (groupReference) {
       match.groupReference = groupReference;
     }
-    const collectionCount = await TelegramStoredMessageModel.countDocuments(match);
+    const countAgg = await TelegramStoredMessageModel.aggregate([
+      { $match: match },
+      { $project: { count: { $size: { $ifNull: ["$messages", []] } } } },
+      { $group: { _id: null, total: { $sum: "$count" } } },
+    ]);
+    const collectionCount = Number(countAgg[0]?.total || 0);
     if (collectionCount > 0) {
       return collectionCount;
     }
@@ -1896,7 +2111,12 @@ const getStoredMessageCountForUser = async (userId, memoryDoc, configSource) => 
         userId: normalizedUserId,
         memoryDoc,
       });
-      const migratedCount = await TelegramStoredMessageModel.countDocuments(match);
+      const migratedAgg = await TelegramStoredMessageModel.aggregate([
+        { $match: match },
+        { $project: { count: { $size: { $ifNull: ["$messages", []] } } } },
+        { $group: { _id: null, total: { $sum: "$count" } } },
+      ]);
+      const migratedCount = Number(migratedAgg[0]?.total || 0);
       if (migratedCount > 0) {
         return migratedCount;
       }
@@ -1969,39 +2189,55 @@ const listStoredTelegramGroups = async (user, memoryDoc, telegramSettings = null
   const normalizedUserId = String(user?._id || "").trim();
   let statsByReference = new Map();
 
-  if (normalizedUserId) {
-    const collectionStats = await TelegramStoredMessageModel.aggregate([
+  const buildStatsFromCollectionAgg = async () => {
+    // Each document is a group; compute storedCount and latestDateMs from the messages array.
+    // Match by both ObjectId and string form to handle any previously mis-migrated documents.
+    const rows = await TelegramStoredMessageModel.aggregate([
+      { $match: {} },
       {
-        $match: {
-          user: user._id,
-        },
-      },
-      {
-        $group: {
-          _id: "$groupReference",
-          storedCount: { $sum: 1 },
-          latestDateMs: { $max: "$date" },
-          groupTitle: { $first: "$groupTitle" },
-          groupUsername: { $first: "$groupUsername" },
-          groupType: { $first: "$groupType" },
+        $project: {
+          groupReference: 1,
+          groupTitle: 1,
+          groupUsername: 1,
+          groupType: 1,
+          memberCount: 1,
+          description: 1,
+          pageUrl: 1,
+          storedCount: { $size: { $ifNull: ["$messages", []] } },
+          latestDateMs: { $max: "$messages.date" },
         },
       },
     ]);
-
-    statsByReference = new Map(
-      collectionStats.map((entry) => [
-        normalizeGroupReference(entry?._id),
+    return new Map(
+      rows.map((entry) => [
+        normalizeGroupReference(entry.groupReference),
         {
-          storedCount: Number(entry?.storedCount || 0) || 0,
-          latestDateMs: Number(entry?.latestDateMs || 0) || 0,
-          groupTitle: normalizeString(entry?.groupTitle),
-          groupUsername: normalizeString(entry?.groupUsername),
-          groupType: normalizeString(entry?.groupType || "group") || "group",
+          storedCount: Number(entry.storedCount || 0),
+          latestDateMs: Number(entry.latestDateMs || 0),
+          groupTitle: normalizeString(entry.groupTitle),
+          groupUsername: normalizeString(entry.groupUsername),
+          groupType: normalizeString(entry.groupType || "group") || "group",
+          memberCount: Number(entry.memberCount || 0),
+          description: normalizeString(entry.description),
+          pageUrl: normalizeString(entry.pageUrl),
         },
       ]),
     );
+  };
+
+  if (normalizedUserId) {
+    statsByReference = await buildStatsFromCollectionAgg();
+
+    if (statsByReference.size === 0) {
+      // Try migrating from old flat telegram_stored_messages collection first.
+      const flatMigrated = await migrateFlatCollectionToGroupCollection(normalizedUserId);
+      if (flatMigrated > 0) {
+        statsByReference = await buildStatsFromCollectionAgg();
+      }
+    }
 
     if (statsByReference.size === 0 && getExpectedStoredMessageCount(memoryDoc) > 0) {
+      // Fall back to migrating from embedded memory doc.
       const migrationResult = await migrateStoredTelegramMessagesToCollection({
         userId: normalizedUserId,
         memoryDoc,
@@ -2011,35 +2247,7 @@ const listStoredTelegramGroups = async (user, memoryDoc, telegramSettings = null
       if (migratedMessages.length > 0) {
         statsByReference = buildGroupStatsFromMessages(migratedMessages);
       } else {
-        const refreshedStats = await TelegramStoredMessageModel.aggregate([
-          {
-            $match: {
-              user: user._id,
-            },
-          },
-          {
-            $group: {
-              _id: "$groupReference",
-              storedCount: { $sum: 1 },
-              latestDateMs: { $max: "$date" },
-              groupTitle: { $first: "$groupTitle" },
-              groupUsername: { $first: "$groupUsername" },
-              groupType: { $first: "$groupType" },
-            },
-          },
-        ]);
-        statsByReference = new Map(
-          refreshedStats.map((entry) => [
-            normalizeGroupReference(entry?._id),
-            {
-              storedCount: Number(entry?.storedCount || 0) || 0,
-              latestDateMs: Number(entry?.latestDateMs || 0) || 0,
-              groupTitle: normalizeString(entry?.groupTitle),
-              groupUsername: normalizeString(entry?.groupUsername),
-              groupType: normalizeString(entry?.groupType || "group") || "group",
-            },
-          ]),
-        );
+        statsByReference = await buildStatsFromCollectionAgg();
       }
     }
   }
@@ -2073,9 +2281,9 @@ const listStoredTelegramGroups = async (user, memoryDoc, telegramSettings = null
       title: normalizeString(stats?.groupTitle) || groupReference || "Telegram Group",
       username: normalizeString(stats?.groupUsername),
       groupReference,
-      pageUrl: "",
-      memberCount: 0,
-      description: "",
+      pageUrl: normalizeString(stats?.pageUrl),
+      memberCount: Number(stats?.memberCount || 0),
+      description: normalizeString(stats?.description),
       storedCount: Number(stats?.storedCount || 0) || 0,
       latestDateMs: Number(stats?.latestDateMs || 0) || 0,
       type: normalizeString(stats?.groupType || "group") || "group",
@@ -2415,11 +2623,38 @@ const queryStoredTelegramMessages = async ({
   const hasMore =
     limit === "all" ? false : nextOffset < totalFilteredCount;
 
+  const classifyDocumentType = (message = {}) => {
+    const attachmentKind = normalizeString(message?.attachmentKind).toLowerCase();
+    const mimeType = normalizeString(message?.attachmentMimeType).toLowerCase();
+    const rawExtension = normalizeString(message?.attachmentFileExtension).toLowerCase().replace(/^\./, "");
+    const fileNameExtension = normalizeString(message?.attachmentFileName).toLowerCase().includes(".")
+      ? normalizeString(message?.attachmentFileName).toLowerCase().split(".").pop()
+      : "";
+    const extension = rawExtension || fileNameExtension;
+    if (attachmentKind === "photo" || mimeType.startsWith("image/")) return "image";
+    if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
+    if (["doc","docx","odt","rtf"].includes(extension) || mimeType.includes("word") || mimeType.includes("officedocument.wordprocessingml") || mimeType.includes("opendocument.text") || mimeType.includes("rtf")) return "word";
+    if (["xls","xlsx","csv","ods"].includes(extension) || mimeType.includes("excel") || mimeType.includes("spreadsheet") || mimeType.includes("csv")) return "excel";
+    if (["ppt","pptx","odp"].includes(extension) || mimeType.includes("powerpoint") || mimeType.includes("presentation")) return "powerpoint";
+    if (["zip","rar","7z","tar","gz"].includes(extension) || mimeType.includes("zip") || mimeType.includes("rar") || mimeType.includes("compressed")) return "archive";
+    if (["js","ts","jsx","tsx","py","java","c","cpp","cs","php","html","css","json","xml","yml","yaml","md","sql","sh"].includes(extension) || mimeType.startsWith("text/") || mimeType.includes("json") || mimeType.includes("xml")) return "code";
+    if (attachmentKind === "document" || attachmentKind === "pdf") return "pdf";
+    return "other";
+  };
+  const typeCounts = { all: messages.length, image: 0, pdf: 0, word: 0, excel: 0, powerpoint: 0, archive: 0, code: 0, other: 0 };
+  messages.forEach((message) => {
+    const kind = String(message?.attachmentKind || "").trim().toLowerCase();
+    if (!kind || kind === "text" || kind === "video" || kind === "audio") return;
+    const typeKey = classifyDocumentType(message);
+    typeCounts[typeKey] = (typeCounts[typeKey] || 0) + 1;
+  });
+
   return {
     filteredMessages: pagedMessages.map((message) => toLightweightStoredMessage(message)),
     rawCount: messages.length,
     storedCount: messages.length,
     totalFilteredCount,
+    typeCounts,
     offset: safeOffset,
     nextOffset,
     hasMore,
@@ -2542,6 +2777,15 @@ const normalizeStoredMessage = (entry, bucketName = "texts") => ({
     normalizeString(entry?.documentDataUrl)
       ? normalizeString(entry?.documentDataUrl)
       : "",
+  entities: Array.isArray(entry?.entities)
+    ? entry.entities
+        .filter((e) => e && typeof e === "object" && String(e.type || "").trim())
+        .map((e) => ({
+          offset: Number(e.offset || 0),
+          length: Number(e.length || 0),
+          type: String(e.type || "").trim(),
+        }))
+    : [],
 });
 
 const persistTelegramCredentials = async ({
@@ -2791,6 +3035,20 @@ const buildMessagePayload = (message, options = {}) => {
       normalizeString(attachmentKind).toLowerCase() === "photo"
         ? normalizeString(options?.photoDataUrl)
         : "",
+    entities: Array.isArray(message?.entities)
+      ? message.entities
+          .filter((e) => e && typeof e === "object")
+          .map((e) => ({
+            offset: Number(e.offset || 0),
+            length: Number(e.length || 0),
+            type: normalizeString(
+              e.className
+                ? e.className.replace(/^MessageEntity/, "").toLowerCase()
+                : e.type || "",
+            ),
+          }))
+          .filter((e) => e.type && e.length > 0)
+      : [],
     pinned: Boolean(message?.pinned),
   };
 };
@@ -3245,20 +3503,11 @@ const upsertTelegramMessagesIntoMemory = async ({
   groupMetadata,
   messages = [],
 }) => {
-  const groups = ensureTelegramGroupMemory(memoryDoc);
-  const normalizedReference = normalizeGroupReference(
-    groupMetadata.groupReference,
-  );
-
-  groups.info.name = normalizeString(groupMetadata.name);
-  groups.info.groupReference = normalizedReference;
-  groups.info.memberCount = Number(groupMetadata.memberCount || 0);
-  groups.info.description = normalizeString(groupMetadata.description);
+  const normalizedReference = normalizeGroupReference(groupMetadata.groupReference);
   const plannerOntology = buildPlannerOntologyFromMemory(memoryDoc);
 
   let insertedCount = 0;
-  let latestMessageDateMs = Number(groups?.info?.latestMessageDateMs || 0) || 0;
-  const bulkOperations = [];
+  const messageSubdocs = [];
 
   (Array.isArray(messages) ? messages : []).forEach((message) => {
     const taggedConcepts = tagMessageConcepts(message?.text || "", plannerOntology);
@@ -3266,7 +3515,7 @@ const upsertTelegramMessagesIntoMemory = async ({
       ...message,
       ...taggedConcepts,
       groupReference: normalizedReference,
-      groupTitle: groups.info.name,
+      groupTitle: normalizeString(groupMetadata.name),
       groupUsername: normalizeString(groupMetadata.username),
       groupType: normalizeString(groupMetadata.type || "group") || "group",
     };
@@ -3276,46 +3525,68 @@ const upsertTelegramMessagesIntoMemory = async ({
       return;
     }
 
-    latestMessageDateMs = Math.max(
-      latestMessageDateMs,
-      Number(nextEntry?.date || 0) || 0,
+    messageSubdocs.push(
+      buildStoredTelegramMessageSubdoc({
+        ...nextEntry,
+        keywords_raw: Array.isArray(taggedConcepts?.keywords_raw)
+          ? taggedConcepts.keywords_raw
+          : [],
+        concepts: normalizeTelegramConceptEntries(taggedConcepts?.concepts),
+      }),
     );
-
-    const messageRecord = buildStoredTelegramMessageDocument(userId, {
-      ...nextEntry,
-      keywords_raw: Array.isArray(taggedConcepts?.keywords_raw)
-        ? taggedConcepts.keywords_raw
-        : [],
-      concepts: normalizeTelegramConceptEntries(taggedConcepts?.concepts),
-    });
-    bulkOperations.push({
-      updateOne: {
-        filter: {
-          user: messageRecord.user,
-          groupReference: messageRecord.groupReference,
-          messageId: messageRecord.messageId,
-        },
-        update: { $set: messageRecord },
-        upsert: true,
-      },
-    });
   });
 
-  if (bulkOperations.length > 0) {
-    const bulkResult = await TelegramStoredMessageModel.bulkWrite(bulkOperations, {
-      ordered: false,
-    });
-    insertedCount =
-      Number(bulkResult?.upsertedCount || 0) +
-      Number(bulkResult?.insertedCount || 0);
+  if (messageSubdocs.length > 0) {
+    // Upsert all messages for this group atomically.
+    // The aggregation pipeline merges incoming subdocs into the existing array,
+    // updating in-place by messageId or appending new ones.
+    await TelegramStoredMessageModel.updateOne(
+      { groupReference: normalizedReference },
+      [
+        {
+          $set: {
+            groupReference: normalizedReference,
+            groupTitle: normalizeString(groupMetadata.name),
+            groupUsername: normalizeString(groupMetadata.username),
+            groupType: normalizeString(groupMetadata.type || "group") || "group",
+            messages: {
+              $reduce: {
+                input: messageSubdocs,
+                initialValue: { $ifNull: ["$messages", []] },
+                in: {
+                  $cond: {
+                    if: {
+                      $in: [
+                        "$$this.messageId",
+                        { $map: { input: "$$value", as: "m", in: "$$m.messageId" } },
+                      ],
+                    },
+                    then: {
+                      $map: {
+                        input: "$$value",
+                        as: "m",
+                        in: {
+                          $cond: [
+                            { $eq: ["$$m.messageId", "$$this.messageId"] },
+                            "$$this",
+                            "$$m",
+                          ],
+                        },
+                      },
+                    },
+                    else: { $concatArrays: ["$$value", ["$$this"]] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+      { upsert: true },
+    );
+    insertedCount = messageSubdocs.length;
   }
 
-  groups.messages = [];
-  groups.info.latestMessageDateMs = latestMessageDateMs;
-  groups.info.messageCount = await TelegramStoredMessageModel.countDocuments({
-    user: userId,
-    groupReference: normalizedReference,
-  });
   return insertedCount;
 };
 
@@ -3347,21 +3618,15 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
     });
 
     try {
-      const [user, telegramSettings] = await Promise.all([
-        UserModel.findById(userId).select("settings.telegram.status memory"),
+      const [user, memoryDoc, telegramSettings] = await Promise.all([
+        UserModel.findById(userId).select("settings.telegram.status").lean(),
+        findUserMemoryLean(userId),
         findTelegramSettings(userId),
       ]);
 
       if (!user) {
         const error = new Error("User not found.");
         error.status = 404;
-        throw error;
-      }
-
-      const memoryDoc = await ensureUserMemoryDoc(user);
-      if (!memoryDoc) {
-        const error = new Error("Failed to access user memory.");
-        error.status = 500;
         throw error;
       }
 
@@ -3379,16 +3644,12 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         if (safeBatch.length === 0) {
           return 0;
         }
-        const inserted = await upsertTelegramMessagesIntoMemory({
+        return upsertTelegramMessagesIntoMemory({
           userId,
           memoryDoc,
           groupMetadata,
           messages: safeBatch,
         });
-        if (inserted > 0) {
-          await memoryDoc.save();
-        }
-        return inserted;
       };
 
       if (!canSync) {
@@ -3611,26 +3872,6 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
         telegramSettings.status.syncEnabled = false;
         telegramSettings.status.updatedAt = new Date();
         await telegramSettings.save();
-      }
-
-      if (memoryDoc?.isModified?.()) {
-        await memoryDoc.save();
-      }
-
-      if (importedCount > 0) {
-        const sourceGroups = Array.isArray(memoryDoc?.MOA?.telegram?.groups)
-          ? JSON.parse(JSON.stringify(memoryDoc.MOA.telegram.groups))
-          : [];
-        if (sourceGroups.length > 0) {
-          await UserModel.updateOne(
-            { _id: user._id },
-            {
-              $set: {
-                "memory.MOA.telegram.groups": sourceGroups,
-              },
-            },
-          );
-        }
       }
 
       const result = {
@@ -3957,6 +4198,7 @@ const handleStoredMessagesRequest = async (req, res, next) => {
       rawCount,
       storedCount,
       totalFilteredCount,
+      typeCounts,
       offset,
       nextOffset,
       hasMore,
@@ -3989,6 +4231,7 @@ const handleStoredMessagesRequest = async (req, res, next) => {
       rawCount,
       storedCount,
       filteredTotalCount: totalFilteredCount,
+      typeCounts,
       offset,
       nextOffset,
       hasMore,
@@ -5187,41 +5430,40 @@ TelegramRouter.get("/storage/context", checkAuth, async (req, res, next) => {
       });
     }
 
-    let snapshot = null;
+    let memorySource = {};
+    let flattenedCourses = [];
+    let storedGroups = [];
     try {
-      snapshot = await getTelegramStorageSnapshot({
-        user,
-        telegramSettings,
-        includeCourses: true,
-        timeoutMs: 5000,
-      });
+      const [snapshot, groupsFromCollection] = await Promise.all([
+        getTelegramStorageSnapshot({
+          user,
+          telegramSettings,
+          includeCourses: true,
+          timeoutMs: 5000,
+        }),
+        listStoredTelegramGroups(user, {}, telegramSettings),
+      ]);
+      memorySource = snapshot?.memoryDoc && typeof snapshot.memoryDoc === "object"
+        ? snapshot.memoryDoc
+        : {};
+      flattenedCourses = Array.isArray(snapshot?.courses) ? snapshot.courses : [];
+      storedGroups = groupsFromCollection;
     } catch (snapshotError) {
       const timeoutLike =
         String(snapshotError?.code || "").trim() === "TELEGRAM_TIMEOUT" ||
-        String(snapshotError?.message || "")
-          .toLowerCase()
-          .includes("timed out");
+        String(snapshotError?.message || "").toLowerCase().includes("timed out");
       if (!timeoutLike) {
         throw snapshotError;
       }
-      const fallbackPayload = {
+      return res.status(200).json({
         groups: [],
         courses: [],
         importantMessages: [],
         sync: buildConfigStatusPayload(telegramSettings),
         processLoaders: getTelegramProcessLoaders(req.authentication.userId),
-        warning:
-          normalizeString(snapshotError?.message) ||
-          "Telegram storage context timed out.",
-      };
-      return res.status(200).json(fallbackPayload);
+        warning: normalizeString(snapshotError?.message) || "Telegram storage context timed out.",
+      });
     }
-    const memorySource =
-      snapshot?.memoryDoc && typeof snapshot.memoryDoc === "object"
-        ? snapshot.memoryDoc
-        : {};
-    const flattenedCourses = Array.isArray(snapshot?.courses) ? snapshot.courses : [];
-    const storedGroups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
     const includeDebug = String(req.query?.debug || "").trim().toLowerCase() === "true";
     const rawTelegram =
       memorySource?.MOA?.telegram && typeof memorySource.MOA.telegram === "object"
@@ -5823,7 +6065,6 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
     );
     telegramStatus.updatedAt = new Date();
 
-    let groupsToPersist = null;
     if (nextGroupReference) {
       let groupMetadata = null;
       if (hasCredentials) {
@@ -5856,108 +6097,44 @@ TelegramRouter.post("/config", checkAuth, async (req, res, next) => {
         }
       }
 
-      const existingGroups = listTelegramGroupMemoryEntries(memoryDoc).map((entry) =>
-        entry && typeof entry === "object"
-          ? JSON.parse(JSON.stringify(entry))
-          : buildEmptyTelegramGroupMemory(),
-      );
-      const nextGroups =
-        existingGroups.length > 0 ? existingGroups : [buildEmptyTelegramGroupMemory()];
-      const targetIndex = nextGroups.findIndex(
-        (groupEntry) =>
-          normalizeGroupReference(groupEntry?.info?.groupReference) ===
-          nextGroupReference,
-      );
-      const infoPayload = {
-        ...(targetIndex >= 0 && nextGroups[targetIndex]?.info
-          ? nextGroups[targetIndex].info
-          : {}),
-        name:
-          normalizeString(
-            groupMetadata?.name ||
-              (targetIndex >= 0 ? nextGroups[targetIndex]?.info?.name : "") ||
-              nextGroupReference,
-          ) || nextGroupReference,
-        groupReference:
-          normalizeGroupReference(groupMetadata?.groupReference) || nextGroupReference,
-        memberCount:
-          Number.isFinite(Number(groupMetadata?.memberCount)) &&
-          Number(groupMetadata?.memberCount) >= 0
-            ? Number(groupMetadata.memberCount)
-            : Number(
-                targetIndex >= 0 ? nextGroups[targetIndex]?.info?.memberCount || 0 : 0,
-              ) || 0,
-        description: normalizeString(
-          groupMetadata?.description ||
-            (targetIndex >= 0 ? nextGroups[targetIndex]?.info?.description : "") ||
-            "",
-        ),
-        pageUrl: normalizePageUrl(
-          nextPageUrl ||
-            groupMetadata?.pageUrl ||
-            (targetIndex >= 0 ? nextGroups[targetIndex]?.info?.pageUrl : "") ||
-            "",
-        ),
-      };
-      if (targetIndex >= 0) {
-        nextGroups[targetIndex] = {
-          ...nextGroups[targetIndex],
-          info: infoPayload,
-        };
-      } else {
-        nextGroups.unshift({
-          ...buildEmptyTelegramGroupMemory(),
-          info: infoPayload,
-        });
-      }
-      groupsToPersist = coerceTelegramGroupsArray(nextGroups);
-      memoryDoc.MOA = memoryDoc.MOA || {};
-      memoryDoc.MOA.telegram = memoryDoc.MOA.telegram || {};
-      memoryDoc.MOA.telegram.groups = groupsToPersist;
-    }
-
-    // Keep previously stored messages when interval changes; sync will upsert
-    // and add newly matched messages without wiping existing data.
-
-    if (Array.isArray(groupsToPersist)) {
-      await UserModel.updateOne(
-        { _id: user._id },
+      // Upsert group metadata into telegram_stored_groups (no messages yet).
+      await TelegramStoredMessageModel.updateOne(
+        { groupReference: nextGroupReference },
         {
           $set: {
-            "memory.MOA.telegram.groups": coerceTelegramGroupsArray(groupsToPersist),
+            groupTitle: normalizeString(groupMetadata?.name) || nextGroupReference,
+            groupUsername: normalizeString(groupMetadata?.username),
+            groupType: normalizeString(groupMetadata?.type || "group") || "group",
+            memberCount: Number.isFinite(Number(groupMetadata?.memberCount))
+              ? Number(groupMetadata.memberCount)
+              : 0,
+            description: normalizeString(groupMetadata?.description),
+            pageUrl: normalizePageUrl(nextPageUrl || groupMetadata?.pageUrl || ""),
+          },
+          $setOnInsert: {
+            groupReference: nextGroupReference,
+            messages: [],
           },
         },
+        { upsert: true },
       );
     }
 
-    await Promise.all([telegramSettings.save(), memoryDoc?.save?.()]);
+    await telegramSettings.save();
     clearTelegramFastCachedResponsesForUser(req.authentication.userId);
 
-    const shouldRunOneTimeImport = false;
-    const importResult = null;
-    const responseMessage = "Telegram settings saved for this user.";
-    const responseMemoryDoc = memoryDoc;
-
     return res.status(200).json({
-      message: responseMessage,
-      importStarted: Boolean(shouldRunOneTimeImport),
-      importSucceeded: Boolean(importResult?.synced),
-      importReason: shouldRunOneTimeImport
-        ? "running"
-        : normalizeString(importResult?.reason),
-      syncStarted: Boolean(shouldRunOneTimeImport),
-      syncSucceeded: Boolean(importResult?.synced),
-      syncReason: shouldRunOneTimeImport
-        ? "running"
-        : normalizeString(importResult?.reason),
-      importedCount: Number(importResult?.importedCount || 0),
-      scannedCount: Number(importResult?.scannedCount || 0),
+      message: "Telegram settings saved for this user.",
+      importStarted: false,
+      importSucceeded: false,
+      importReason: "",
+      syncStarted: false,
+      syncSucceeded: false,
+      syncReason: "",
+      importedCount: 0,
+      scannedCount: 0,
       ...buildConfigStatusPayload(telegramSettings),
-      storedCount: await getStoredMessageCountForUser(
-        user._id,
-        responseMemoryDoc,
-        telegramSettings,
-      ),
+      storedCount: await getStoredMessageCountForUser(user._id, memoryDoc, telegramSettings),
       syncStatus: getTelegramSyncStatus(user._id),
       processLoaders: getTelegramProcessLoaders(req.authentication.userId),
     });
@@ -6258,10 +6435,12 @@ TelegramRouter.get("/stored-groups", checkAuth, async (req, res, next) => {
         ? snapshot.memoryDoc
         : {};
 
+    // Use the full async listing so groups stored in telegram_stored_groups
+    // are always included, not just those tracked in the memory doc.
+    const groups = await listStoredTelegramGroups(user, memoryDoc, telegramSettings);
+
     return res.status(200).json({
-      groups: Array.isArray(snapshot?.groups)
-        ? snapshot.groups
-        : listStoredTelegramGroupsFast(user, memoryDoc, telegramSettings),
+      groups,
       courses: Array.isArray(snapshot?.courses)
         ? snapshot.courses
         : getStoredPlannerCoursesPayload(memoryDoc),
@@ -6303,57 +6482,28 @@ TelegramRouter.delete(
       let deletedGroup = false;
       let deletedMessages = 0;
 
-      const deletedMessageResult = await TelegramStoredMessageModel.deleteMany({
-        user: user._id,
+      const groupDocToDelete = await TelegramStoredMessageModel.findOne(
+        { groupReference: normalizedReference },
+        { messages: 1 },
+      ).lean();
+      const deletedMessageResult = await TelegramStoredMessageModel.deleteOne({
         groupReference: normalizedReference,
       });
-      deletedMessages = Number(deletedMessageResult?.deletedCount || 0);
-
-      const fastDeleteResult = await UserModel.updateOne(
-        { _id: user._id },
-        {
-          $pull: {
-            "memory.MOA.telegram.groups": {
-              "info.groupReference": normalizedReference,
-            },
-          },
-        },
-      );
-      deletedGroup = Number(fastDeleteResult?.modifiedCount || 0) > 0;
-
-      let responseMemoryDoc = await findUserMemoryLean(user._id);
-
-      if (!deletedGroup) {
-        const memoryDoc = await ensureUserMemoryDoc(user);
-        const fallbackResult = removeStoredTelegramGroupEntry(
-          memoryDoc,
-          normalizedReference,
-        );
-        deletedGroup = Boolean(fallbackResult?.deletedGroup);
-        deletedMessages = Math.max(
-          deletedMessages,
-          Number(fallbackResult?.deletedMessages || 0),
-        );
-        if (deletedGroup) {
-          await memoryDoc.save();
-          responseMemoryDoc = await findUserMemoryLean(user._id);
-        } else {
-          responseMemoryDoc = memoryDoc;
-        }
+      deletedMessages = groupDocToDelete?.messages?.length || 0;
+      if (!deletedMessages && Number(deletedMessageResult?.deletedCount || 0) > 0) {
+        deletedMessages = 1;
       }
+      deletedGroup = Number(deletedMessageResult?.deletedCount || 0) > 0 || deletedMessages > 0;
+
+      const responseMemoryDoc = await findUserMemoryLean(user._id);
+      const telegramSettings = await findTelegramSettings(user._id);
 
       clearTelegramFastCachedResponsesForUser(req.authentication.userId);
       return res.status(200).json({
-        message: deletedGroup
-          ? "Stored group deleted."
-          : "Stored group not found.",
+        message: deletedGroup ? "Stored group deleted." : "Stored group not found.",
         groupReference: normalizedReference,
         deletedCount: deletedMessages,
-        groups: listStoredTelegramGroupsFast(
-          user,
-          responseMemoryDoc,
-          null,
-        ),
+        groups: await listStoredTelegramGroups(user, responseMemoryDoc, telegramSettings),
         courses: getStoredPlannerCoursesPayload(responseMemoryDoc),
         processLoaders: getTelegramProcessLoaders(req.authentication.userId),
       });
@@ -6622,17 +6772,6 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       });
     }
 
-    const config = getUserTelegramConfig(telegramSettings);
-    const hasCredentials = Boolean(
-      config.apiId && config.apiHash && config.stringSession,
-    );
-
-    if (!hasCredentials) {
-      return res.status(400).json({
-        message: "Telegram credentials are required to render media.",
-      });
-    }
-
     const memoryDoc = await findUserMemoryLean(user._id);
     const storedMessage = await findStoredTelegramMessage(
       user._id,
@@ -6673,6 +6812,17 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
           }
         }
       }
+    }
+
+    const config = getUserTelegramConfig(telegramSettings);
+    const hasCredentials = Boolean(
+      config.apiId && config.apiHash && config.stringSession,
+    );
+
+    if (!hasCredentials) {
+      return res.status(400).json({
+        message: "Telegram credentials are required to render media.",
+      });
     }
 
     client = await withFastTimeout(

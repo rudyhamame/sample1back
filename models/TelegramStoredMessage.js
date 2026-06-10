@@ -2,6 +2,15 @@ import mongoose from "mongoose";
 
 const { Schema, model, models } = mongoose;
 
+const TelegramEntitySchema = new Schema(
+  {
+    offset: { type: Number, required: true },
+    length: { type: Number, required: true },
+    type: { type: String, trim: true, required: true },
+  },
+  { _id: false, strict: "throw" },
+);
+
 const TelegramStoredConceptSchema = new Schema(
   {
     key: { type: String, trim: true, default: "" },
@@ -12,19 +21,10 @@ const TelegramStoredConceptSchema = new Schema(
   { _id: false, strict: "throw" },
 );
 
-const TelegramStoredMessageSchema = new Schema(
+// Subdocument schema for each message stored inside a group document.
+const TelegramStoredMessageSubdocSchema = new Schema(
   {
-    user: {
-      type: Schema.Types.ObjectId,
-      ref: "subjects",
-      required: true,
-      index: true,
-    },
-    groupReference: { type: String, trim: true, required: true },
     messageId: { type: Number, required: true },
-    groupTitle: { type: String, trim: true, default: "" },
-    groupUsername: { type: String, trim: true, default: "" },
-    groupType: { type: String, trim: true, default: "group" },
     text: { type: String, default: "" },
     date: { type: Number, default: 0 },
     sender: { type: String, trim: true, default: "Unknown" },
@@ -44,25 +44,38 @@ const TelegramStoredMessageSchema = new Schema(
     documentDataUrl: { type: String, default: "" },
     keywords_raw: { type: [String], default: [] },
     concepts: { type: [TelegramStoredConceptSchema], default: [] },
+    entities: { type: [TelegramEntitySchema], default: [] },
+  },
+  { _id: false, strict: "throw" },
+);
+
+// Top-level document: one per (user, groupReference) pair.
+// All messages for the group are stored in the embedded `messages` array.
+const TelegramStoredGroupSchema = new Schema(
+  {
+    groupReference: { type: String, trim: true, required: true },
+    groupTitle: { type: String, trim: true, default: "" },
+    groupUsername: { type: String, trim: true, default: "" },
+    groupType: { type: String, trim: true, default: "group" },
+    memberCount: { type: Number, default: 0 },
+    description: { type: String, trim: true, default: "" },
+    pageUrl: { type: String, trim: true, default: "" },
+    messages: { type: [TelegramStoredMessageSubdocSchema], default: [] },
   },
   {
-    collection: "telegram_stored_messages",
+    collection: "telegram_stored_groups",
     timestamps: true,
     strict: "throw",
   },
 );
 
-TelegramStoredMessageSchema.index(
-  { user: 1, groupReference: 1, messageId: 1 },
-  { unique: true, name: "telegram_stored_messages_unique_message_idx" },
-);
-TelegramStoredMessageSchema.index(
-  { user: 1, groupReference: 1, date: -1 },
-  { name: "telegram_stored_messages_group_date_idx" },
+TelegramStoredGroupSchema.index(
+  { groupReference: 1 },
+  { unique: true, name: "telegram_stored_groups_unique_group_idx" },
 );
 
 const TelegramStoredMessageModel =
-  models.TelegramStoredMessage ||
-  model("TelegramStoredMessage", TelegramStoredMessageSchema);
+  models.TelegramStoredGroup ||
+  model("TelegramStoredGroup", TelegramStoredGroupSchema);
 
 export default TelegramStoredMessageModel;
