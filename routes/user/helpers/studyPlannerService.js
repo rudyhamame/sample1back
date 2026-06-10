@@ -208,6 +208,28 @@ export const normalizeProgramExamClassesForPlanner = (planner = {}) => {
     .filter(Boolean);
 };
 
+const normalizeExamPart = (partEntry = {}) => {
+  const entry =
+    partEntry && typeof partEntry === "object" ? toPlainObject(partEntry) || {} : {};
+  const componentID = trimString(
+    entry?.componentID || entry?.componentId || entry?.courseID || entry?.courseId || "",
+  );
+  const examClass = trimString(entry?.examClass || "");
+  if (!componentID || !examClass) return null;
+  const examPartID = trimString(entry?.examPartID) || `${componentID}_exam_${examClass}`;
+  return {
+    examPartID,
+    componentID,
+    examClass,
+    examLocation: sanitizeStudyLocation(entry?.examLocation || entry?.location || {}),
+    examDate: parseOptionalDate(entry?.examDate || entry?.date || null),
+    examTime: trimString(entry?.examTime || ""),
+    examlectureIDs: normalizeReferenceIds(entry?.examlectureIDs || entry?.lectureIDs),
+    examWeight: Number.isFinite(Number(entry?.examWeight)) ? Number(entry.examWeight) : null,
+    examGrade: Number.isFinite(Number(entry?.examGrade)) ? Number(entry.examGrade) : null,
+  };
+};
+
 export const normalizeProgramExamsForPlanner = (planner = {}) => {
   const normalizedPlanner =
     planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
@@ -218,41 +240,12 @@ export const normalizeProgramExamsForPlanner = (planner = {}) => {
     .map((entry) => {
       const normalizedEntry =
         entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
-      return {
-        examID: trimString(
-          normalizedEntry?.examID ||
-            normalizedEntry?.examId ||
-            normalizedEntry?.componentID ||
-            "",
-        ),
-        examClass: trimString(normalizedEntry?.examClass || ""),
-        componentID: trimString(
-          normalizedEntry?.componentID ||
-            normalizedEntry?.componentId ||
-            normalizedEntry?.courseID ||
-            normalizedEntry?.courseId ||
-            "",
-        ),
-        examLocation: sanitizeStudyLocation(
-          normalizedEntry?.examLocation || normalizedEntry?.location || {},
-        ),
-        examDate: parseOptionalDate(
-          normalizedEntry?.examDate || normalizedEntry?.date || null,
-        ),
-        examTime: trimString(normalizedEntry?.examTime || ""),
-        examlectureIDs: normalizeReferenceIds(
-          normalizedEntry?.examlectureIDs || normalizedEntry?.lectureIDs,
-        ),
-        examMaxScore: Number.isFinite(Number(normalizedEntry?.examMaxScore))
-          ? Number(normalizedEntry.examMaxScore)
-          : null,
-        examMinScore: Number.isFinite(Number(normalizedEntry?.examMinScore))
-          ? Number(normalizedEntry.examMinScore)
-          : null,
-        examActualScore: Number.isFinite(Number(normalizedEntry?.examActualScore))
-          ? Number(normalizedEntry.examActualScore)
-          : null,
-      };
+      const componentID = trimString(normalizedEntry?.componentID || "");
+      if (!componentID) return null;
+      const parts = Array.isArray(normalizedEntry?.examParts)
+        ? normalizedEntry.examParts.map(normalizeExamPart).filter(Boolean)
+        : [];
+      return { componentID, examParts: parts };
     })
     .filter(Boolean);
 };
@@ -1527,12 +1520,19 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                   Number.isFinite(percentageSource)
                 ? parsedCourseWeight * (percentageSource / 100)
                 : null;
+          const componentClass = trimString(
+            normalizedComponentEntry?.componentClass ||
+              normalizedComponentEntry?.componentName ||
+              normalizedComponentEntry?.componentId,
+          );
+          const componentID =
+            trimString(normalizedComponentEntry?.componentID) ||
+            (normalizedCourseID && componentClass
+              ? `${normalizedCourseID}_${componentClass}`
+              : "");
           return {
-            componentClass: trimString(
-              normalizedComponentEntry?.componentClass ||
-                normalizedComponentEntry?.componentName ||
-                normalizedComponentEntry?.componentId,
-            ),
+            componentID,
+            componentClass,
             componentWeight: computedComponentWeight,
             componentLocation: sanitizeStudyLocation(
               normalizedComponentEntry?.componentLocation ||

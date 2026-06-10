@@ -102,23 +102,25 @@ const lectureVolumeSchema = new Schema(
   },
   { _id: false },
 );
+const examPartSchema = new Schema(
+  {
+    examPartID: { type: String, default: "" },
+    componentID: { type: String, default: "" },
+    examClass: { type: String, default: "" },
+    examLocation: { type: locationSchema, default: null },
+    examDate: { type: Date },
+    examTime: { type: String, default: "" },
+    examlectureIDs: { type: [String], default: [] },
+    examWeight: { type: Number, default: null },
+    examGrade: { type: Number, default: null },
+  },
+  { _id: false },
+);
+
 const programExamsSchema = new Schema(
   {
-    //Exam metadata 
-    // ID
-    examID: { type: String, default: "" },
-    examClass: { type: String, default: "" },
     componentID: { type: String, default: "" },
-    //logistics (time and location)
-    examLocation: { type: locationSchema, default: null },
-    examDate: {type: Date},
-    examTime: {type: String},
-    //byteArrays
-    examlectureIDs: { type: [String], default: [] },
-    //grading
-    examMaxScore: { type: Number, default: null }, //weight
-    examMinScore: { type: Number, default: null }, //threshold
-    examActualScore: { type: Number, default: null },
+    examParts: { type: [examPartSchema], default: [] },
   },
   { _id: false },
 );
@@ -155,6 +157,7 @@ const programIntervalSchema = new Schema(
                 courseWeight: { type: Number, default: 100},
                 courseComponents: [
                   {
+                    componentID: { type: String, default: "" },
                     componentClass: { type: String, default: "" },
                     componentWeight: { type: Number, default: null },
                     componentLocation: { type: locationSchema, default: null },
