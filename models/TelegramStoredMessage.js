@@ -40,6 +40,7 @@ const TelegramStoredMessageSubdocSchema = new Schema(
     telegramAccessHash: { type: String, trim: true, default: "" },
     telegramFileName: { type: String, trim: true, default: "" },
     groupedId: { type: String, trim: true, default: null },
+    pinned: { type: Boolean, default: false },
     photoDataUrl: { type: String, default: "" },
     videoDataUrl: { type: String, default: "" },
     documentDataUrl: { type: String, default: "" },

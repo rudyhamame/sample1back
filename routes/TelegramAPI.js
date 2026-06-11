@@ -1636,6 +1636,7 @@ const buildStoredTelegramMessageSubdoc = (entry = {}) => {
           .filter((e) => e.type)
       : [],
     groupedId: entry?.groupedId != null ? String(entry.groupedId) : null,
+    pinned: Boolean(normalizedMessage.pinned),
   };
 };
 
@@ -1757,6 +1758,7 @@ const migrateFlatCollectionToGroupCollection = async (userId) => {
       keywords_raw: Array.isArray(doc.keywords_raw) ? doc.keywords_raw : [],
       concepts: normalizeTelegramConceptEntries(doc.concepts),
       entities: Array.isArray(doc.entities) ? doc.entities : [],
+      pinned: Boolean(doc.pinned),
     });
   }
 
@@ -2598,6 +2600,24 @@ const queryStoredTelegramMessages = async ({
       documentDataUrl: "",
     };
   };
+  const classifyDocumentType = (message = {}) => {
+    const attachmentKind = normalizeString(message?.attachmentKind).toLowerCase();
+    const mimeType = normalizeString(message?.attachmentMimeType).toLowerCase();
+    const rawExtension = normalizeString(message?.attachmentFileExtension).toLowerCase().replace(/^\./, "");
+    const fileNameExtension = normalizeString(message?.attachmentFileName).toLowerCase().includes(".")
+      ? normalizeString(message?.attachmentFileName).toLowerCase().split(".").pop()
+      : "";
+    const extension = rawExtension || fileNameExtension;
+    if (attachmentKind === "photo" || mimeType.startsWith("image/")) return "image";
+    if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
+    if (["doc","docx","odt","rtf"].includes(extension) || mimeType.includes("word") || mimeType.includes("officedocument.wordprocessingml") || mimeType.includes("opendocument.text") || mimeType.includes("rtf")) return "word";
+    if (["xls","xlsx","csv","ods"].includes(extension) || mimeType.includes("excel") || mimeType.includes("spreadsheet") || mimeType.includes("csv")) return "excel";
+    if (["ppt","pptx","odp"].includes(extension) || mimeType.includes("powerpoint") || mimeType.includes("presentation")) return "powerpoint";
+    if (["zip","rar","7z","tar","gz"].includes(extension) || mimeType.includes("zip") || mimeType.includes("rar") || mimeType.includes("compressed")) return "archive";
+    if (["js","ts","jsx","tsx","py","java","c","cpp","cs","php","html","css","json","xml","yml","yaml","md","sql","sh"].includes(extension) || mimeType.startsWith("text/") || mimeType.includes("json") || mimeType.includes("xml")) return "code";
+    if (attachmentKind === "pdf") return "pdf";
+    return "other";
+  };
   const normalizedAttachmentType = normalizeString(attachmentType).toLowerCase();
   const filteredMessages = messages.filter((message) => {
     const messageDateMs = Number(message?.date || 0) || 0;
@@ -2611,12 +2631,16 @@ const queryStoredTelegramMessages = async ({
     }
 
     if (normalizedAttachmentType && normalizedAttachmentType !== "all") {
-      const kind = normalizeString(message?.attachmentKind).toLowerCase();
-      if (normalizedAttachmentType === "text") {
-        if (kind && kind !== "text") return false;
+      if (normalizedAttachmentType === "pinned") {
+        if (!Boolean(message?.pinned)) return false;
       } else {
-        const typeKey = classifyDocumentType(message);
-        if (typeKey !== normalizedAttachmentType) return false;
+        const kind = normalizeString(message?.attachmentKind).toLowerCase();
+        if (normalizedAttachmentType === "text") {
+          if (kind && kind !== "text") return false;
+        } else {
+          const typeKey = classifyDocumentType(message);
+          if (typeKey !== normalizedAttachmentType) return false;
+        }
       }
     }
 
@@ -2638,26 +2662,11 @@ const queryStoredTelegramMessages = async ({
   const hasMore =
     limit === "all" ? false : nextOffset < totalFilteredCount;
 
-  const classifyDocumentType = (message = {}) => {
-    const attachmentKind = normalizeString(message?.attachmentKind).toLowerCase();
-    const mimeType = normalizeString(message?.attachmentMimeType).toLowerCase();
-    const rawExtension = normalizeString(message?.attachmentFileExtension).toLowerCase().replace(/^\./, "");
-    const fileNameExtension = normalizeString(message?.attachmentFileName).toLowerCase().includes(".")
-      ? normalizeString(message?.attachmentFileName).toLowerCase().split(".").pop()
-      : "";
-    const extension = rawExtension || fileNameExtension;
-    if (attachmentKind === "photo" || mimeType.startsWith("image/")) return "image";
-    if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
-    if (["doc","docx","odt","rtf"].includes(extension) || mimeType.includes("word") || mimeType.includes("officedocument.wordprocessingml") || mimeType.includes("opendocument.text") || mimeType.includes("rtf")) return "word";
-    if (["xls","xlsx","csv","ods"].includes(extension) || mimeType.includes("excel") || mimeType.includes("spreadsheet") || mimeType.includes("csv")) return "excel";
-    if (["ppt","pptx","odp"].includes(extension) || mimeType.includes("powerpoint") || mimeType.includes("presentation")) return "powerpoint";
-    if (["zip","rar","7z","tar","gz"].includes(extension) || mimeType.includes("zip") || mimeType.includes("rar") || mimeType.includes("compressed")) return "archive";
-    if (["js","ts","jsx","tsx","py","java","c","cpp","cs","php","html","css","json","xml","yml","yaml","md","sql","sh"].includes(extension) || mimeType.startsWith("text/") || mimeType.includes("json") || mimeType.includes("xml")) return "code";
-    if (attachmentKind === "document" || attachmentKind === "pdf") return "pdf";
-    return "other";
-  };
-  const typeCounts = { all: messages.length, text: 0, image: 0, pdf: 0, word: 0, excel: 0, powerpoint: 0, archive: 0, code: 0, other: 0 };
+  const typeCounts = { all: messages.length, pinned: 0, text: 0, image: 0, pdf: 0, word: 0, excel: 0, powerpoint: 0, archive: 0, code: 0, other: 0 };
   messages.forEach((message) => {
+    if (Boolean(message?.pinned)) {
+      typeCounts.pinned = (typeCounts.pinned || 0) + 1;
+    }
     const kind = String(message?.attachmentKind || "").trim().toLowerCase();
     if (!kind || kind === "text" || kind === "video" || kind === "audio") {
       typeCounts.text = (typeCounts.text || 0) + 1;
@@ -2805,6 +2814,7 @@ const normalizeStoredMessage = (entry, bucketName = "texts") => ({
         }))
     : [],
   groupedId: entry?.groupedId != null ? String(entry.groupedId) : null,
+  pinned: Boolean(entry?.pinned),
 });
 
 const persistTelegramCredentials = async ({
@@ -6901,5 +6911,131 @@ TelegramRouter.use("/ai", checkAuth, respondStorageOnly);
 TelegramRouter.use("/important-messages", checkAuth, respondStorageOnly);
 TelegramRouter.use("/important-message-concept", checkAuth, respondStorageOnly);
 TelegramRouter.use("/send-note", checkAuth, respondStorageOnly);
+
+// Arabic NER via Hugging Face Inference API
+// Model: CAMeL-Lab/bert-base-arabic-camelbert-msa-ner
+// POST /stored-groups/:groupReference/sync-pinned
+// Fetches currently-pinned messages from Telegram and sets pinned:true on
+// matching stored messages in MongoDB. Existing stored messages were saved
+// before the pinned field was tracked so this is a one-time backfill.
+TelegramRouter.post(
+  "/stored-groups/:groupReference/sync-pinned",
+  checkAuth,
+  async (req, res, next) => {
+    let client = null;
+    try {
+      const telegramSettings = await findTelegramSettings(req.authentication.userId);
+      if (!telegramSettings) {
+        return res.status(404).json({ message: "Telegram settings not found." });
+      }
+
+      const config = getUserTelegramConfig(telegramSettings);
+      const normalizedReference = normalizeGroupReference(req.params.groupReference);
+
+      if (!normalizedReference) {
+        return res.status(400).json({ message: "groupReference is required." });
+      }
+
+      if (!config.apiId || !config.apiHash || !config.stringSession) {
+        return res.status(400).json({ message: "Telegram credentials are not configured." });
+      }
+
+      client = await ensureTelegramClient(config);
+      const entity = await resolveTelegramGroupEntity(client, normalizedReference);
+
+      // Fetch all currently pinned messages for this group.
+      const pinnedResult = await client.getMessages(entity, {
+        filter: new Api.InputMessagesFilterPinned(),
+        limit: 100,
+      });
+      const pinnedMessages = Array.isArray(pinnedResult) ? pinnedResult.filter(Boolean) : [];
+      const pinnedIds = pinnedMessages.map((m) => Number(m.id)).filter(Boolean);
+
+      if (pinnedIds.length === 0) {
+        clearTelegramFastCachedResponsesForUser(req.authentication.userId);
+        return res.json({ message: "No pinned messages found in this group.", updatedCount: 0, pinnedCount: 0 });
+      }
+
+      // First clear any stale pinned flags for this group, then set the current ones.
+      await TelegramStoredMessageModel.updateOne(
+        { groupReference: normalizedReference },
+        { $set: { "messages.$[].pinned": false } },
+      );
+      const updateResult = await TelegramStoredMessageModel.updateOne(
+        { groupReference: normalizedReference },
+        { $set: { "messages.$[elem].pinned": true } },
+        { arrayFilters: [{ "elem.messageId": { $in: pinnedIds } }], multi: false },
+      );
+
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
+      return res.json({
+        message: `Pinned sync complete. ${pinnedIds.length} pinned message(s) found.`,
+        pinnedCount: pinnedIds.length,
+        updatedCount: Number(updateResult?.modifiedCount || 0),
+      });
+    } catch (error) {
+      next(error);
+    } finally {
+      if (client) {
+        try { await client.disconnect(); } catch {}
+      }
+    }
+  },
+);
+
+// POST /ai/extract-instructors
+// { texts: [...] } — Arabic message fragments (already sliced from instructor keyword).
+// Returns { persons: [...] } — deduplicated instructor names extracted by the LLM.
+TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
+  const texts = Array.isArray(req.body?.texts)
+    ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
+    : [];
+  if (texts.length === 0) {
+    return res.status(400).json({ error: "Field 'texts' is required and must be non-empty." });
+  }
+
+  const groqClient = getGroqClient();
+  const openAiClient = getOpenAIClient();
+  const kimiClient = getKimiClient();
+  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
+  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+
+  const instructions = `You extract Arabic instructor names from educational Telegram messages.
+Rules:
+- Return ONLY a JSON array of strings, no explanation or markdown.
+- Each string is one instructor's full name in Arabic.
+- Include only names that follow title words like دكتور, دكتورة, الدكتور, أستاذ, الأستاذ, etc.
+- Do NOT include the title word itself in the name.
+- Deduplicate: if the same name appears multiple times return it once.
+- If no instructor names are found return [].`;
+
+  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  const input = `Extract instructor names from these Arabic message fragments:\n${textsBlock}`;
+
+  const providerErrors = [];
+  for (const provider of providerOrder) {
+    try {
+      let rawOutput;
+      if (provider === "gemini") {
+        rawOutput = await createGeminiResponse({ instructions, input });
+      } else {
+        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
+        const model = getOpenAiCompatibleModel(provider);
+        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
+      }
+      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      const persons = Array.isArray(parsed)
+        ? parsed.map((p) => String(p || "").trim()).filter(Boolean)
+        : [];
+      return res.json({ persons, count: persons.length });
+    } catch (err) {
+      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
+    }
+  }
+  return res.status(503).json({
+    error: buildAiProviderFailureMessage(providerErrors, "AI instructor extraction failed."),
+  });
+});
 
 export default TelegramRouter;

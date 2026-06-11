@@ -142,8 +142,16 @@ const programIntervalSchema = new Schema(
         intervalTryNum: { type: Number },
         intervalTryID: { type: String, default: "" }, // = intervalID:IT:intervalTryNum
         intervalTryDates: {
-          start: { type: Date },
-          end: { type: Date },
+          start:{
+            day:{ type: Number },
+            month: { type: Number },
+            year:{ type: Number },
+          },
+          end:{
+            day:{ type: Number },
+            month: { type: Number },
+            year:{ type: Number },
+          }        
         },
         intervalTrysubIntervals: [
           {
@@ -187,7 +195,7 @@ const StudyPlannerSchema = new Schema(
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
-    programComponentClasses: { type"د ناصر فنية": [String], default: [] },
+    programComponentClasses: { type: [String], default: [] },
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
     programTermsPerYear: { type: Number, default: null },

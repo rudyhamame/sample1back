@@ -1315,10 +1315,11 @@ const inferIntervalYear = (entry = {}) => {
 };
 
 // ── New structured ID builders ──────────────────────────────────────────────
-const buildIntervalTryID = (intervalID, tryNum) =>
-  intervalID != null && tryNum != null ? `I${intervalID}_T${tryNum}` : "";
-const buildNewSubIntervalID = (intervalTryID, subIntervalNum) =>
-  intervalTryID && subIntervalNum != null ? `${intervalTryID}_SI${subIntervalNum}` : "";
+// Format: parentID + "-" + symbol + num
+const buildIntervalTryID = (intervalID, tryNum, symbol = "IT") =>
+  intervalID != null && tryNum != null ? `${intervalID}-${symbol}${tryNum}` : "";
+const buildNewSubIntervalID = (intervalTryID, subIntervalNum, symbol = "sINT") =>
+  intervalTryID && subIntervalNum != null ? `${intervalTryID}-${symbol}${subIntervalNum}` : "";
 const buildNewCourseID = (subIntervalID, courseNum) =>
   subIntervalID && courseNum != null ? `${subIntervalID}_C${courseNum}` : "";
 const buildNewComponentID = (courseID, componentNum) =>
@@ -1330,19 +1331,48 @@ const buildNewByteArrayID = (lectureID, byteArrayNum) =>
 const buildNewExamID = (componentID, examNum) =>
   componentID && examNum != null ? `${componentID}_E${examNum}` : "";
 
-// Parse structured subIntervalID "I1_T1_SI1" → { intervalNum, tryNum, subIntervalNum }
-// Also handles legacy "1_1" format for backward compatibility
+// Split a segment like "sINT3" → { symbol: "sINT", num: 3 }
+const parseSymbolNum = (segment = "") => {
+  const m = String(segment || "").match(/^([A-Za-z]*)(\d+)$/);
+  return m ? { symbol: m[1] || "", num: Number(m[2]) } : { symbol: "", num: null };
+};
+
+// Parse a structured subIntervalID into its parts.
+// Handles:
+//   new format  "prefix-IT1-sINT2"  (dash-separated, last 2 segments = try + sub)
+//   old format  "I1_T1_SI1"         (underscore-separated for backward compat)
+//   legacy      "1_1"
 const parseStructuredSubIntervalID = (id = "") => {
   const s = trimString(id);
-  const newMatch = s.match(/^I(\d+)_T(\d+)_SI(\d+)$/);
-  if (newMatch) {
-    return { intervalNum: Number(newMatch[1]), tryNum: Number(newMatch[2]), subIntervalNum: Number(newMatch[3]) };
+  // Old underscore format: I1_T1_SI1
+  const oldMatch = s.match(/^I(\d+)_T(\d+)_SI(\d+)$/);
+  if (oldMatch) {
+    return {
+      intervalNum: Number(oldMatch[1]), intervalSymbol: "I",
+      tryNum: Number(oldMatch[2]), intervalTrySymbol: "T",
+      subIntervalNum: Number(oldMatch[3]), subIntervalSymbol: "SI",
+    };
   }
-  const parts = s.split("_").filter(Boolean);
+  // New dash format: split from the right
+  const parts = s.split("-");
   if (parts.length >= 2) {
-    return { intervalNum: Number(parts[0]) || null, tryNum: 1, subIntervalNum: Number(parts[1]) || null };
+    const subPart = parseSymbolNum(parts[parts.length - 1]);
+    const tryPart = parseSymbolNum(parts[parts.length - 2]);
+    const intPart = parts.length >= 3 ? parseSymbolNum(parts[parts.length - 3]) : { symbol: "", num: null };
+    if (subPart.num != null && tryPart.num != null) {
+      return {
+        intervalNum: intPart.num, intervalSymbol: intPart.symbol,
+        tryNum: tryPart.num, intervalTrySymbol: tryPart.symbol,
+        subIntervalNum: subPart.num, subIntervalSymbol: subPart.symbol,
+      };
+    }
   }
-  return { intervalNum: null, tryNum: null, subIntervalNum: null };
+  // Legacy "1_1"
+  const legacyParts = s.split("_").filter(Boolean);
+  if (legacyParts.length >= 2) {
+    return { intervalNum: Number(legacyParts[0]) || null, intervalSymbol: "", tryNum: 1, intervalTrySymbol: "", subIntervalNum: Number(legacyParts[1]) || null, subIntervalSymbol: "" };
+  }
+  return { intervalNum: null, intervalSymbol: "", tryNum: null, intervalTrySymbol: "", subIntervalNum: null, subIntervalSymbol: "" };
 };
 
 // ── Legacy helpers (kept for backward-compat reading of old DB data) ─────────
@@ -1653,26 +1683,32 @@ const flattenProgramIntervalEntry = (entry) => {
     Number.parseInt(trimString(base?.intervalID || base?.intervalNum || base?.intervalId), 10) || null;
   const intervalStatus = normalizePlannerIntervalStatusValue(base?.intervalStatus);
 
+  const intervalSymbol = trimString(base?.intervalSymbol) || "INT";
   // ── New structure: intervalTry[].intervalTrysubIntervals ──────────────────
   const intervalTries = Array.isArray(base?.intervalTry) ? base.intervalTry : [];
   if (intervalTries.length > 0) {
     return intervalTries.flatMap((tryEntry) => {
       const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
       const tryNum = Number.parseInt(trimString(tryBase?.intervalTryNum), 10) || 1;
+      const intervalTrySymbol = trimString(tryBase?.intervalTrySymbol) || "IT";
       const intervalTryID =
-        trimString(tryBase?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum);
+        trimString(tryBase?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum, intervalTrySymbol);
       return (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
         .map((subEntry) => {
           const sub = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
           const subIntervalID = trimString(sub?.subIntervalID || sub?.subIntervalId);
           if (!subIntervalID) return null;
+          const subIntervalSymbol = trimString(sub?.subIntervalSymbol) || "sINT";
           const parsed = parseStructuredSubIntervalID(subIntervalID);
           return {
             intervalIDNum,
+            intervalSymbol,
             intervalTryID,
             intervalTryNum: tryNum,
+            intervalTrySymbol,
             subIntervalID,
             subIntervalNum: Number.parseInt(trimString(sub?.subIntervalNum), 10) || parsed.subIntervalNum || null,
+            subIntervalSymbol,
             subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
             intervalStatus,
             subIntervalDates: {
@@ -1844,6 +1880,35 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
     const base = intervalEntry && typeof intervalEntry === "object" ? toPlainObject(intervalEntry) || {} : {};
     const isTargetInterval = intervalHasTarget(base);
     const currentStatus = normalizePlannerIntervalStatusValue(base?.intervalStatus);
+    let mappedTries = (Array.isArray(base?.intervalTry) ? base.intervalTry : []).map((tryEntry) => {
+      const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
+      return {
+        ...tryBase,
+        intervalTrysubIntervals: (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
+          .map((sub) => {
+            const subBase = sub && typeof sub === "object" ? toPlainObject(sub) || {} : {};
+            const subId = trimString(subBase?.subIntervalID || subBase?.subIntervalId);
+            const isTarget = subId === targetSubIntervalId;
+            return {
+              ...subBase,
+              subIntervalCurrent:
+                requestedStatusLower === "current"
+                  ? isTarget
+                  : requestedStatusLower === "normal" && isTarget
+                    ? false
+                    : Boolean(subBase?.subIntervalCurrent),
+              subIntervalCourses: normalizePlannerIntervalCourseEntries(subBase?.subIntervalCourses),
+            };
+          }),
+      };
+    });
+    // When resetting to normal, keep only the first try (lowest tryNum)
+    if (isTargetInterval && requestedStatusLower === "normal" && mappedTries.length > 1) {
+      mappedTries = [mappedTries.slice().sort((a, b) =>
+        (Number.parseInt(trimString(a?.intervalTryNum), 10) || 0) -
+        (Number.parseInt(trimString(b?.intervalTryNum), 10) || 0)
+      )[0]];
+    }
     return {
       ...base,
       intervalID: base.intervalID ?? base.intervalNum ?? null,
@@ -1854,28 +1919,7 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
             ? "Normal"
             : currentStatus || "Normal",
       ],
-      intervalTry: (Array.isArray(base?.intervalTry) ? base.intervalTry : []).map((tryEntry) => {
-        const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
-        return {
-          ...tryBase,
-          intervalTrysubIntervals: (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
-            .map((sub) => {
-              const subBase = sub && typeof sub === "object" ? toPlainObject(sub) || {} : {};
-              const subId = trimString(subBase?.subIntervalID || subBase?.subIntervalId);
-              const isTarget = subId === targetSubIntervalId;
-              return {
-                ...subBase,
-                subIntervalCurrent:
-                  requestedStatusLower === "current"
-                    ? isTarget
-                    : requestedStatusLower === "normal" && isTarget
-                      ? false
-                      : Boolean(subBase?.subIntervalCurrent),
-                subIntervalCourses: normalizePlannerIntervalCourseEntries(subBase?.subIntervalCourses),
-              };
-            }),
-        };
-      }),
+      intervalTry: mappedTries,
     };
   });
 
@@ -1888,17 +1932,21 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
       const maxTryNum = existingTries.reduce((m, t) =>
         Math.max(m, Number.parseInt(trimString(t?.intervalTryNum), 10) || 0), 0);
       const nextTryNum = maxTryNum + 1;
-      const nextTryID = buildIntervalTryID(failedInterval.intervalID ?? failedInterval.intervalNum, nextTryNum);
+      const trySymbol = trimString(existingTries[0]?.intervalTrySymbol) || "IT";
+      const subSymbol = trimString(existingTries[0]?.intervalTrysubIntervals?.[0]?.subIntervalSymbol) || "sINT";
+      const nextTryID = buildIntervalTryID(failedInterval.intervalID ?? failedInterval.intervalNum, nextTryNum, trySymbol);
       const termsPerYear = Number.parseInt(trimString(studyPlanner?.programTermsPerYear), 10) || 1;
       nextProgramIntervals[targetIndex] = {
         ...failedInterval,
         intervalTry: [
           ...existingTries,
           {
+            intervalTrySymbol: trySymbol,
             intervalTryID: nextTryID,
             intervalTryNum: nextTryNum,
             intervalTrysubIntervals: Array.from({ length: termsPerYear }, (_, i) => ({
-              subIntervalID: buildNewSubIntervalID(nextTryID, i + 1),
+              subIntervalSymbol: subSymbol,
+              subIntervalID: buildNewSubIntervalID(nextTryID, i + 1, subSymbol),
               subIntervalNum: i + 1,
               subIntervalCurrent: false,
               subIntervalDates: { start: null, end: null },
