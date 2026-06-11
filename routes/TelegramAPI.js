@@ -1635,6 +1635,7 @@ const buildStoredTelegramMessageSubdoc = (entry = {}) => {
           }))
           .filter((e) => e.type)
       : [],
+    groupedId: entry?.groupedId != null ? String(entry.groupedId) : null,
   };
 };
 
@@ -2000,6 +2001,7 @@ const listStoredTelegramMessagesFromCollection = async (userId, groupReference =
             photoDataUrl: normalizeString(message.photoDataUrl),
             videoDataUrl: normalizeString(message.videoDataUrl),
             documentDataUrl: normalizeString(message.documentDataUrl),
+            groupedId: message.groupedId != null ? String(message.groupedId) : null,
           },
           getTelegramMessageBucketName({ ...message, groupReference: groupRef }),
         ),
@@ -2076,6 +2078,7 @@ const findStoredTelegramMessage = async (
         photoDataUrl: normalizeString(message.photoDataUrl),
         videoDataUrl: normalizeString(message.videoDataUrl),
         documentDataUrl: normalizeString(message.documentDataUrl),
+        groupedId: message.groupedId != null ? String(message.groupedId) : null,
       },
       getTelegramMessageBucketName({ ...message, groupReference: normalizeGroupReference(doc.groupReference) }),
     );
@@ -2547,6 +2550,7 @@ const queryStoredTelegramMessages = async ({
   searchQuery = "",
   startDateMs = null,
   endDateMs = null,
+  attachmentType = "",
 }) => {
   const normalizedSearch = normalizeString(searchQuery).toLowerCase();
   let messages = await listStoredTelegramMessagesFromCollection(userId, groupReference);
@@ -2594,6 +2598,7 @@ const queryStoredTelegramMessages = async ({
       documentDataUrl: "",
     };
   };
+  const normalizedAttachmentType = normalizeString(attachmentType).toLowerCase();
   const filteredMessages = messages.filter((message) => {
     const messageDateMs = Number(message?.date || 0) || 0;
 
@@ -2603,6 +2608,16 @@ const queryStoredTelegramMessages = async ({
 
     if (endDateMs !== null && messageDateMs > endDateMs) {
       return false;
+    }
+
+    if (normalizedAttachmentType && normalizedAttachmentType !== "all") {
+      const kind = normalizeString(message?.attachmentKind).toLowerCase();
+      if (normalizedAttachmentType === "text") {
+        if (kind && kind !== "text") return false;
+      } else {
+        const typeKey = classifyDocumentType(message);
+        if (typeKey !== normalizedAttachmentType) return false;
+      }
     }
 
     if (!normalizedSearch) {
@@ -2641,10 +2656,13 @@ const queryStoredTelegramMessages = async ({
     if (attachmentKind === "document" || attachmentKind === "pdf") return "pdf";
     return "other";
   };
-  const typeCounts = { all: messages.length, image: 0, pdf: 0, word: 0, excel: 0, powerpoint: 0, archive: 0, code: 0, other: 0 };
+  const typeCounts = { all: messages.length, text: 0, image: 0, pdf: 0, word: 0, excel: 0, powerpoint: 0, archive: 0, code: 0, other: 0 };
   messages.forEach((message) => {
     const kind = String(message?.attachmentKind || "").trim().toLowerCase();
-    if (!kind || kind === "text" || kind === "video" || kind === "audio") return;
+    if (!kind || kind === "text" || kind === "video" || kind === "audio") {
+      typeCounts.text = (typeCounts.text || 0) + 1;
+      return;
+    }
     const typeKey = classifyDocumentType(message);
     typeCounts[typeKey] = (typeCounts[typeKey] || 0) + 1;
   });
@@ -2786,6 +2804,7 @@ const normalizeStoredMessage = (entry, bucketName = "texts") => ({
           type: String(e.type || "").trim(),
         }))
     : [],
+  groupedId: entry?.groupedId != null ? String(entry.groupedId) : null,
 });
 
 const persistTelegramCredentials = async ({
@@ -3049,6 +3068,7 @@ const buildMessagePayload = (message, options = {}) => {
           }))
           .filter((e) => e.type && e.length > 0)
       : [],
+    groupedId: message?.groupedId != null ? String(message.groupedId) : null,
     pinned: Boolean(message?.pinned),
   };
 };
@@ -4146,6 +4166,7 @@ const handleStoredMessagesRequest = async (req, res, next) => {
     }
 
     const allGroups = String(req.query?.allGroups || "").trim().toLowerCase() === "true";
+    const attachmentType = normalizeString(req.query.attachmentType || req.query.type || "").toLowerCase();
     const groupReference = normalizeGroupReference(
       req.query.group ||
         req.query.groupReference,
@@ -4212,6 +4233,7 @@ const handleStoredMessagesRequest = async (req, res, next) => {
         searchQuery,
         startDateMs,
         endDateMs,
+        attachmentType,
       });
     const storedSummary = await buildStoredTelegramGroupSummary(user, memoryDoc);
     const responseGroupReference = allGroups ? "" : groupReference;

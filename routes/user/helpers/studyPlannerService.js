@@ -43,7 +43,7 @@ const getStudyPlannerRoot = (memoryDoc) => {
       : memoryDoc?.studyPlanAid && typeof memoryDoc.studyPlanAid === "object"
         ? toPlainObject(memoryDoc.studyPlanAid)
         : {};
-  const currentProgramComponents = Array.isArray(currentPlanner?.programComponents)
+  const currentProgramComponents = Array.isArray(currentPlanner?.programComponentClasses)
     ? normalizeProgramComponentsForPlanner(currentPlanner)
     : [];
   const currentProgramExamClasses =
@@ -67,7 +67,7 @@ const getStudyPlannerRoot = (memoryDoc) => {
     programExamClasses: currentProgramExamClasses,
     programExams: currentProgramExams,
     programFailingRules: currentProgramFailingRules,
-    programComponents: currentProgramComponents,
+    programComponentClasses: currentProgramComponents,
     programIntervals: currentProgramIntervals,
     studyOrganizer: (() => {
       const { _id, ...organizerWithoutId } = currentOrganizer || {};
@@ -157,6 +157,9 @@ const normalizeProgramFailingRuleEntry = (entry = null) => {
   const thresholdUnit = trimString(normalizedEntry?.thresholdUnit);
   const thresholdMode = trimString(normalizedEntry?.thresholdMode);
   const thresholdNumber = toFiniteNumber(normalizedEntry?.thresholdNumber, null);
+  const thresholdRuleRaw = trimString(normalizedEntry?.thresholdRule);
+  const validThresholdRules = ["less than", "equal", "more than"];
+  const thresholdRule = validThresholdRules.includes(thresholdRuleRaw) ? thresholdRuleRaw : null;
 
   if (!thresholdUnit && !thresholdMode && !Number.isFinite(thresholdNumber)) {
     return null;
@@ -166,6 +169,7 @@ const normalizeProgramFailingRuleEntry = (entry = null) => {
     thresholdMode: thresholdMode || null,
     thresholdUnit: thresholdUnit || null,
     thresholdNumber: Number.isFinite(thresholdNumber) ? thresholdNumber : null,
+    thresholdRule: thresholdRule || null,
   };
 };
 
@@ -191,8 +195,8 @@ export const normalizeProgramFailingRulesForPlanner = (planner = {}) => {
 export const normalizeProgramComponentsForPlanner = (planner = {}) => {
   const normalizedPlanner =
     planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
-  const components = Array.isArray(normalizedPlanner?.programComponents)
-    ? normalizedPlanner.programComponents
+  const components = Array.isArray(normalizedPlanner?.programComponentClasses)
+    ? normalizedPlanner.programComponentClasses
     : [];
   return components.map((entry) => normalizeProgramComponentValue(entry)).filter(Boolean);
 };
@@ -1310,56 +1314,65 @@ const inferIntervalYear = (entry = {}) => {
   return trimString(yearMatch?.[1] || "");
 };
 
+// ── New structured ID builders ──────────────────────────────────────────────
+const buildIntervalTryID = (intervalID, tryNum) =>
+  intervalID != null && tryNum != null ? `I${intervalID}_T${tryNum}` : "";
+const buildNewSubIntervalID = (intervalTryID, subIntervalNum) =>
+  intervalTryID && subIntervalNum != null ? `${intervalTryID}_SI${subIntervalNum}` : "";
+const buildNewCourseID = (subIntervalID, courseNum) =>
+  subIntervalID && courseNum != null ? `${subIntervalID}_C${courseNum}` : "";
+const buildNewComponentID = (courseID, componentNum) =>
+  courseID && componentNum != null ? `${courseID}_CP${componentNum}` : "";
+const buildNewLectureID = (componentID, lectureNum) =>
+  componentID && lectureNum != null ? `${componentID}_L${lectureNum}` : "";
+const buildNewByteArrayID = (lectureID, byteArrayNum) =>
+  lectureID && byteArrayNum != null ? `${lectureID}_B${byteArrayNum}` : "";
+const buildNewExamID = (componentID, examNum) =>
+  componentID && examNum != null ? `${componentID}_E${examNum}` : "";
+
+// Parse structured subIntervalID "I1_T1_SI1" → { intervalNum, tryNum, subIntervalNum }
+// Also handles legacy "1_1" format for backward compatibility
+const parseStructuredSubIntervalID = (id = "") => {
+  const s = trimString(id);
+  const newMatch = s.match(/^I(\d+)_T(\d+)_SI(\d+)$/);
+  if (newMatch) {
+    return { intervalNum: Number(newMatch[1]), tryNum: Number(newMatch[2]), subIntervalNum: Number(newMatch[3]) };
+  }
+  const parts = s.split("_").filter(Boolean);
+  if (parts.length >= 2) {
+    return { intervalNum: Number(parts[0]) || null, tryNum: 1, subIntervalNum: Number(parts[1]) || null };
+  }
+  return { intervalNum: null, tryNum: null, subIntervalNum: null };
+};
+
+// ── Legacy helpers (kept for backward-compat reading of old DB data) ─────────
 const buildPlannerSubIntervalId = (entry = {}) => {
   const explicitSubIntervalId = trimString(
-    entry?.subIntervalID ||
-      entry?.subIntervalId ||
-      entry?.subintervalId,
+    entry?.subIntervalID || entry?.subIntervalId || entry?.subintervalId,
   );
-  if (explicitSubIntervalId) {
-    return explicitSubIntervalId;
+  if (explicitSubIntervalId) return explicitSubIntervalId;
+  const intervalNum = trimString(entry?.intervalNum || entry?.intervalID);
+  const tryNum = entry?.intervalTryNum ?? 1;
+  const subIntervalNum = trimString(entry?.subIntervalNum || entry?.subintervalNum || entry?.term);
+  if (intervalNum && subIntervalNum) {
+    return buildNewSubIntervalID(buildIntervalTryID(intervalNum, tryNum), subIntervalNum);
   }
-  const intervalNum = trimString(entry?.intervalNum);
-  const subIntervalNum = trimString(
-    entry?.subIntervalNum || entry?.subintervalNum || entry?.term,
-  );
-  if (!intervalNum || !subIntervalNum) {
-    const year = inferIntervalYear(entry);
-    const term = inferIntervalTerm(entry);
-    if (!year || !term) {
-      return "";
-    }
-    return `${year}_${term}`;
-  }
-  return `${intervalNum}_${subIntervalNum}`;
+  const year = inferIntervalYear(entry);
+  const term = inferIntervalTerm(entry);
+  return year && term ? `${year}_${term}` : "";
 };
 
 const parsePlannerSubIntervalYearTerm = (subIntervalId = "") => {
-  const normalizedId = trimString(subIntervalId);
-  if (!normalizedId) {
-    return {
-      year: "",
-      term: "",
-    };
+  const s = trimString(subIntervalId);
+  if (!s) return { year: "", term: "" };
+  const parsed = parseStructuredSubIntervalID(s);
+  if (parsed.intervalNum != null && parsed.subIntervalNum != null) {
+    return { year: String(parsed.intervalNum), term: String(parsed.subIntervalNum) };
   }
-  if (normalizedId.includes("_")) {
-    const [year = "", term = ""] = normalizedId.split("_");
-    return {
-      year: trimString(year),
-      term: trimString(term),
-    };
-  }
-  const normalizedDigits = normalizedId.replace(/\D/g, "");
-  if (normalizedDigits.length < 5) {
-    return {
-      year: "",
-      term: "",
-    };
-  }
-  return {
-    year: normalizedDigits.slice(0, 4),
-    term: normalizedDigits.slice(4, 5),
-  };
+  // legacy date-based fallback
+  const digits = s.replace(/\D/g, "");
+  if (digits.length >= 5) return { year: digits.slice(0, 4), term: digits.slice(4, 5) };
+  return { year: "", term: "" };
 };
 
 const buildPlannerNextIntervalSubIntervals = (
@@ -1367,19 +1380,24 @@ const buildPlannerNextIntervalSubIntervals = (
   programTermsPerYear = 1,
   nextIntervalNum = null,
 ) => {
-  const totalTerms = Math.max(
-    1,
-    toPositiveInteger(programTermsPerYear, 1),
-  );
+  const totalTerms = Math.max(1, toPositiveInteger(programTermsPerYear, 1));
   const targetIntervalNum =
     Number.parseInt(trimString(nextIntervalNum), 10) ||
-    Number.parseInt(trimString(baseInterval?.intervalNum), 10) ||
+    Number.parseInt(trimString(baseInterval?.intervalNum || baseInterval?.intervalID), 10) ||
     1;
-
-  return Array.from({ length: totalTerms }, (_, index) => ({
-    subIntervalID: `${targetIntervalNum}_${index + 1}`,
-    subIntervalCourses: [],
-  }));
+  const tryNum = Number.parseInt(trimString(baseInterval?.intervalTryNum), 10) || 1;
+  const intervalTryID = buildIntervalTryID(targetIntervalNum, tryNum);
+  return [{
+    intervalTryID,
+    intervalTryNum: tryNum,
+    intervalTrysubIntervals: Array.from({ length: totalTerms }, (_, index) => ({
+      subIntervalID: buildNewSubIntervalID(intervalTryID, index + 1),
+      subIntervalNum: index + 1,
+      subIntervalCurrent: false,
+      subIntervalDates: { start: null, end: null },
+      subIntervalCourses: [],
+    })),
+  }];
 };
 
 const normalizePlannerIntervalStatusValue = (value = "Normal") => {
@@ -1399,17 +1417,25 @@ const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []
         .filter(Boolean),
     ),
   );
-  studyPlanner.programIntervals = intervalIds.map((subIntervalId, index) => ({
-    intervalId: String(index + 1),
-    intervalNum: index + 1,
-    intervalStatus: ["Normal"],
-    intervalsubIntervals: [
-      {
-        subIntervalID: subIntervalId,
-        subIntervalCourses: [],
-      },
-    ],
-  }));
+  studyPlanner.programIntervals = intervalIds.map((subIntervalId, index) => {
+    const intervalNum = index + 1;
+    const tryID = buildIntervalTryID(intervalNum, 1);
+    return {
+      intervalID: intervalNum,
+      intervalStatus: ["Normal"],
+      intervalTry: [{
+        intervalTryID: tryID,
+        intervalTryNum: 1,
+        intervalTrysubIntervals: [{
+          subIntervalID: subIntervalId || buildNewSubIntervalID(tryID, 1),
+          subIntervalNum: 1,
+          subIntervalCurrent: false,
+          subIntervalDates: { start: null, end: null },
+          subIntervalCourses: [],
+        }],
+      }],
+    };
+  });
 };
 
 const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
@@ -1452,10 +1478,11 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
           ? Number.parseFloat(source.courseWeight)
           : null;
     const normalizedCourseID = trimString(source?.courseID || source?.courseId);
-    const parsedCourseIDNum = Number.parseInt(
-      String(normalizedCourseID || "").split("_")?.[2] || "",
-      10,
-    );
+    // Parse courseNum from new format "I1_T1_SI1_C2" → 2, or legacy "1_1_3" → 3
+    const courseIDCMatch = (normalizedCourseID || "").match(/_C(\d+)$/);
+    const parsedCourseIDNum = courseIDCMatch
+      ? Number.parseInt(courseIDCMatch[1], 10)
+      : Number.parseInt(String(normalizedCourseID || "").split("_")?.[2] || "", 10);
     const parsedCourseWeight = Number.isFinite(
       Number.parseFloat(normalizedCourseWeight),
     )
@@ -1525,13 +1552,18 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
               normalizedComponentEntry?.componentName ||
               normalizedComponentEntry?.componentId,
           );
+          const componentNum = Number.isFinite(
+            Number.parseInt(normalizedComponentEntry?.componentNum, 10),
+          )
+            ? Number.parseInt(normalizedComponentEntry.componentNum, 10)
+            : null;
           const componentID =
             trimString(normalizedComponentEntry?.componentID) ||
-            (normalizedCourseID && componentClass
-              ? `${normalizedCourseID}_${componentClass}`
-              : "");
+            buildNewComponentID(normalizedCourseID, componentNum) ||
+            (normalizedCourseID && componentClass ? `${normalizedCourseID}_${componentClass}` : "");
           return {
             componentID,
+            componentNum,
             componentClass,
             componentWeight: computedComponentWeight,
             componentLocation: sanitizeStudyLocation(
@@ -1556,12 +1588,20 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                 if (!lectureName) {
                   return null;
                 }
+                const lectureNum = Number.isFinite(
+                  Number.parseInt(normalizedLectureEntry?.lectureNum, 10),
+                )
+                  ? Number.parseInt(normalizedLectureEntry.lectureNum, 10)
+                  : null;
+                const storedLectureID = trimString(normalizedLectureEntry?.lectureID);
+                const autoLectureID =
+                  !storedLectureID && componentID && lectureNum != null
+                    ? buildNewLectureID(componentID, lectureNum)
+                    : "";
+                const resolvedLectureID = storedLectureID || autoLectureID || "";
                 return {
-                  lectureNum: Number.isFinite(
-                    Number.parseInt(normalizedLectureEntry?.lectureNum, 10),
-                  )
-                    ? Number.parseInt(normalizedLectureEntry.lectureNum, 10)
-                    : null,
+                  lectureID: resolvedLectureID,
+                  lectureNum,
                   lectureName,
                   lectureInstructors: normalizeStringArray(
                     normalizedLectureEntry?.lectureInstructors,
@@ -1585,13 +1625,17 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                   lecture_pagesFinished: normalizeLecturePagesFinished(
                     normalizedLectureEntry?.lecture_pagesFinished,
                   ),
-                  lectureBytes: Array.isArray(
-                    normalizedLectureEntry?.lectureBytes,
-                  )
+                  lectureBytes: (Array.isArray(normalizedLectureEntry?.lectureBytes)
                     ? normalizedLectureEntry.lectureBytes
                     : Array.isArray(normalizedLectureEntry?.lectureContent)
                       ? normalizedLectureEntry.lectureContent
-                    : [],
+                      : []
+                  ).map((ba, baIdx) => ({
+                    ...((ba && typeof ba === "object") ? ba : { byteArrayName: ba }),
+                    byteArrayID:
+                      trimString(ba?.byteArrayID) ||
+                      buildNewByteArrayID(resolvedLectureID, baIdx + 1),
+                  })),
                 };
               })
               .filter(Boolean),
@@ -1601,173 +1645,139 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
     })
     .filter((courseEntry) => Boolean(courseEntry.courseName));
 
-const normalizePlannerIntervalEntries = (intervals = []) => {
-  const flattenedEntries = (Array.isArray(intervals) ? intervals : []).flatMap(
-    (entry) => {
-      const baseEntry =
-        entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
-      const intervalId = trimString(baseEntry?.intervalId);
-      const intervalStatus = normalizePlannerIntervalStatusValue(
-        baseEntry?.intervalStatus,
-      );
-      const nestedSubIntervals = Array.isArray(baseEntry?.intervalsubIntervals)
-        ? baseEntry.intervalsubIntervals
-        : [];
+// Flatten one programInterval entry into sub-interval records.
+// Handles both the new intervalTry structure and legacy intervalsubIntervals.
+const flattenProgramIntervalEntry = (entry) => {
+  const base = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+  const intervalIDNum =
+    Number.parseInt(trimString(base?.intervalID || base?.intervalNum || base?.intervalId), 10) || null;
+  const intervalStatus = normalizePlannerIntervalStatusValue(base?.intervalStatus);
 
-      if (nestedSubIntervals.length > 0) {
-        const normalizedParentIntervalNum =
-          Number.parseInt(trimString(baseEntry?.intervalNum), 10) || null;
-        return nestedSubIntervals
-          .map((subIntervalEntry) => {
-            const normalizedSubIntervalEntry =
-              subIntervalEntry && typeof subIntervalEntry === "object"
-                ? toPlainObject(subIntervalEntry) || {}
-                : {};
-            const subIntervalId = buildPlannerSubIntervalId(
-              {
-                ...normalizedSubIntervalEntry,
-                intervalNum: normalizedParentIntervalNum,
-              },
-            );
-            if (!subIntervalId) {
-              return null;
-            }
-            return {
-              intervalId:
-                intervalId ||
-                trimString(baseEntry?.intervalNum) ||
-                subIntervalId,
-              intervalNum: normalizedParentIntervalNum,
-              subIntervalId,
-              subIntervalNum: parsePlannerSubIntervalYearTerm(subIntervalId)?.term || "",
-              subIntervalCurrent: Boolean(
-                normalizedSubIntervalEntry?.subIntervalCurrent,
-              ),
-              intervalStatus,
-              subIntervalDates: {
-                start: parseOptionalDate(
-                  normalizedSubIntervalEntry?.subIntervalDates?.start,
-                ),
-                end: parseOptionalDate(
-                  normalizedSubIntervalEntry?.subIntervalDates?.end,
-                ),
-              },
-              intervalCourses: normalizePlannerIntervalCourseEntries(
-                normalizedSubIntervalEntry?.subIntervalCourses,
-              ),
-            };
-          })
-          .filter(Boolean);
-      }
-
-      const subIntervalId = buildPlannerSubIntervalId(baseEntry);
-      if (!subIntervalId) {
-        return [];
-      }
-      return [
-        {
-          intervalId:
-            intervalId ||
-            trimString(baseEntry?.intervalNum) ||
-            (typeof baseEntry?.regular === "boolean" && baseEntry.regular === false
-              ? subIntervalId
-              : subIntervalId),
-          intervalNum:
-            Number.parseInt(trimString(baseEntry?.intervalNum), 10) || null,
-          subIntervalId,
-          subIntervalNum:
-            parsePlannerSubIntervalYearTerm(subIntervalId)?.term || "",
-          intervalStatus,
-          subIntervalDates: {
-            start: parseOptionalDate(baseEntry?.subIntervalDates?.start),
-            end: parseOptionalDate(baseEntry?.subIntervalDates?.end),
-          },
-          subIntervalCurrent: Boolean(baseEntry?.subIntervalCurrent),
-          intervalCourses: normalizePlannerIntervalCourseEntries(
-            baseEntry?.intervalCourses,
-          ),
-        },
-      ];
-    },
-  );
-
-  const groupedIntervals = flattenedEntries.reduce((map, entry) => {
-    const subIntervalId = trimString(entry?.subIntervalId);
-    if (!subIntervalId) {
-      return map;
-    }
-    const intervalId =
-      trimString(entry?.intervalId) ||
-      trimString(entry?.intervalNum) ||
-      (typeof entry?.regular === "boolean" && entry.regular === false
-        ? subIntervalId
-        : subIntervalId);
-    const storageIntervalId =
-      trimString(entry?.intervalNum) || intervalId || subIntervalId;
-    const previousInterval = map.get(storageIntervalId) || {
-      intervalId: storageIntervalId,
-      intervalStatus: "Normal",
-      intervalsubIntervals: [],
-    };
-    const nextSubIntervals = Array.from(
-      new Map(
-        [
-          ...(Array.isArray(previousInterval.intervalsubIntervals)
-            ? previousInterval.intervalsubIntervals
-            : []),
-          {
-            subIntervalId,
-            subIntervalNum: parsePlannerSubIntervalYearTerm(subIntervalId)?.term || "",
-            subIntervalCurrent: Boolean(entry?.subIntervalCurrent),
+  // ── New structure: intervalTry[].intervalTrysubIntervals ──────────────────
+  const intervalTries = Array.isArray(base?.intervalTry) ? base.intervalTry : [];
+  if (intervalTries.length > 0) {
+    return intervalTries.flatMap((tryEntry) => {
+      const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
+      const tryNum = Number.parseInt(trimString(tryBase?.intervalTryNum), 10) || 1;
+      const intervalTryID =
+        trimString(tryBase?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum);
+      return (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
+        .map((subEntry) => {
+          const sub = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
+          const subIntervalID = trimString(sub?.subIntervalID || sub?.subIntervalId);
+          if (!subIntervalID) return null;
+          const parsed = parseStructuredSubIntervalID(subIntervalID);
+          return {
+            intervalIDNum,
+            intervalTryID,
+            intervalTryNum: tryNum,
+            subIntervalID,
+            subIntervalNum: Number.parseInt(trimString(sub?.subIntervalNum), 10) || parsed.subIntervalNum || null,
+            subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
+            intervalStatus,
             subIntervalDates: {
-              start: parseOptionalDate(entry?.subIntervalDates?.start),
-              end: parseOptionalDate(entry?.subIntervalDates?.end),
+              start: parseOptionalDate(sub?.subIntervalDates?.start),
+              end: parseOptionalDate(sub?.subIntervalDates?.end),
             },
-            subIntervalCourses: normalizePlannerIntervalCourseEntries(
-              entry?.intervalCourses,
-            ),
-          },
-        ].map((subEntry) => [
-          trimString(subEntry?.subIntervalId),
-          {
-            subIntervalId: trimString(
-              subEntry?.subIntervalID || subEntry?.subIntervalId,
-            ),
-            subIntervalNum:
-              trimString(subEntry?.subIntervalNum) ||
-              parsePlannerSubIntervalYearTerm(
-                subEntry?.subIntervalID || subEntry?.subIntervalId,
-              )?.term ||
-              "",
-            subIntervalCurrent: Boolean(subEntry?.subIntervalCurrent),
-            subIntervalDates: {
-              start: parseOptionalDate(subEntry?.subIntervalDates?.start),
-              end: parseOptionalDate(subEntry?.subIntervalDates?.end),
-            },
-            subIntervalCourses: normalizePlannerIntervalCourseEntries(
-              subEntry?.subIntervalCourses,
-            ),
-          },
-        ]),
-      ).values(),
-    ).filter((subEntry) => Boolean(subEntry?.subIntervalId));
-
-    map.set(storageIntervalId, {
-      intervalId: storageIntervalId,
-      intervalNum:
-        Number.parseInt(trimString(entry?.intervalNum), 10) ||
-        Number.parseInt(storageIntervalId, 10) ||
-        null,
-      intervalStatus:
-        normalizePlannerIntervalStatusValue(entry?.intervalStatus) ||
-        previousInterval.intervalStatus ||
-        "Normal",
-      intervalsubIntervals: nextSubIntervals,
+            intervalCourses: normalizePlannerIntervalCourseEntries(sub?.subIntervalCourses),
+          };
+        })
+        .filter(Boolean);
     });
-    return map;
-  }, new Map());
+  }
 
-  return Array.from(groupedIntervals.values());
+  // ── Legacy structure: intervalsubIntervals[] ──────────────────────────────
+  const legacySubIntervals = Array.isArray(base?.intervalsubIntervals) ? base.intervalsubIntervals : [];
+  if (legacySubIntervals.length > 0) {
+    return legacySubIntervals.map((subEntry) => {
+      const sub = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
+      const subIntervalID = trimString(sub?.subIntervalID || sub?.subIntervalId || sub?.subIntervalNum);
+      if (!subIntervalID) return null;
+      const tryNum = Number.parseInt(trimString(sub?.subIntervalTryNum), 10) || 1;
+      const intervalTryID = buildIntervalTryID(intervalIDNum, tryNum);
+      return {
+        intervalIDNum,
+        intervalTryID,
+        intervalTryNum: tryNum,
+        subIntervalID,
+        subIntervalNum: Number.parseInt(trimString(sub?.subIntervalNum), 10) ||
+          parseStructuredSubIntervalID(subIntervalID).subIntervalNum || null,
+        subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
+        intervalStatus,
+        subIntervalDates: {
+          start: parseOptionalDate(sub?.subIntervalDates?.start),
+          end: parseOptionalDate(sub?.subIntervalDates?.end),
+        },
+        intervalCourses: normalizePlannerIntervalCourseEntries(sub?.subIntervalCourses),
+      };
+    }).filter(Boolean);
+  }
+
+  // ── Flat entry (single sub-interval per object) ───────────────────────────
+  const subIntervalID = trimString(
+    base?.subIntervalID || base?.subIntervalId || base?.subintervalId,
+  );
+  if (!subIntervalID) return [];
+  const tryNum = Number.parseInt(trimString(base?.intervalTryNum), 10) || 1;
+  const intervalTryID =
+    trimString(base?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum);
+  const parsed = parseStructuredSubIntervalID(subIntervalID);
+  return [{
+    intervalIDNum,
+    intervalTryID,
+    intervalTryNum: tryNum,
+    subIntervalID,
+    subIntervalNum: Number.parseInt(trimString(base?.subIntervalNum), 10) || parsed.subIntervalNum || null,
+    subIntervalCurrent: Boolean(base?.subIntervalCurrent),
+    intervalStatus,
+    subIntervalDates: {
+      start: parseOptionalDate(base?.subIntervalDates?.start),
+      end: parseOptionalDate(base?.subIntervalDates?.end),
+    },
+    intervalCourses: normalizePlannerIntervalCourseEntries(base?.intervalCourses || base?.subIntervalCourses),
+  }];
+};
+
+// Reassemble flat sub-interval records → programIntervals[].intervalTry[].intervalTrysubIntervals[]
+const assembleProgramIntervals = (flatEntries) => {
+  // Group: intervalIDNum → Map(intervalTryID → Map(subIntervalID → subEntry))
+  const intervalMap = new Map();
+  for (const entry of flatEntries) {
+    const iKey = String(entry.intervalIDNum ?? "");
+    const tKey = entry.intervalTryID || "";
+    const sKey = entry.subIntervalID || "";
+    if (!sKey) continue;
+    if (!intervalMap.has(iKey)) {
+      intervalMap.set(iKey, { intervalIDNum: entry.intervalIDNum, intervalStatus: entry.intervalStatus, tries: new Map() });
+    }
+    const iEntry = intervalMap.get(iKey);
+    if (entry.intervalStatus && entry.intervalStatus !== "Normal") iEntry.intervalStatus = entry.intervalStatus;
+    if (!iEntry.tries.has(tKey)) {
+      iEntry.tries.set(tKey, { intervalTryID: tKey, intervalTryNum: entry.intervalTryNum, subIntervals: new Map() });
+    }
+    const tEntry = iEntry.tries.get(tKey);
+    tEntry.subIntervals.set(sKey, {
+      subIntervalID: sKey,
+      subIntervalNum: entry.subIntervalNum != null ? String(entry.subIntervalNum) : "",
+      subIntervalCurrent: Boolean(entry.subIntervalCurrent),
+      subIntervalDates: entry.subIntervalDates || { start: null, end: null },
+      subIntervalCourses: normalizePlannerIntervalCourseEntries(entry.intervalCourses),
+    });
+  }
+  return Array.from(intervalMap.values()).map((iEntry) => ({
+    intervalID: iEntry.intervalIDNum,
+    intervalStatus: [normalizePlannerIntervalStatusValue(iEntry.intervalStatus)],
+    intervalTry: Array.from(iEntry.tries.values()).map((tEntry) => ({
+      intervalTryID: tEntry.intervalTryID,
+      intervalTryNum: tEntry.intervalTryNum,
+      intervalTrysubIntervals: Array.from(tEntry.subIntervals.values()),
+    })),
+  }));
+};
+
+const normalizePlannerIntervalEntries = (intervals = []) => {
+  const flat = (Array.isArray(intervals) ? intervals : []).flatMap(flattenProgramIntervalEntry);
+  return assembleProgramIntervals(flat);
 };
 
 export const updateStudyPlanAidInPlanner = (memoryDoc, payload = {}) => {
@@ -1787,52 +1797,13 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-  const normalizedIntervals = normalizePlannerIntervalEntries(
+  studyPlanner.programIntervals = normalizePlannerIntervalEntries(
     normalizedPayload?.intervals,
   );
-  studyPlanner.programIntervals = normalizedIntervals.map((intervalEntry) => ({
-    intervalId: String(intervalEntry?.intervalId || "").trim(),
-    intervalNum:
-      Number.parseInt(trimString(intervalEntry?.intervalNum), 10) ||
-      Number.parseInt(String(intervalEntry?.intervalId || "").trim(), 10) ||
-      null,
-    intervalStatus: [
-      normalizePlannerIntervalStatusValue(intervalEntry?.intervalStatus),
-    ],
-    intervalsubIntervals: (Array.isArray(intervalEntry?.intervalsubIntervals)
-      ? intervalEntry.intervalsubIntervals
-      : []
-    ).map((subIntervalEntry) => ({
-      subIntervalNum: String(
-        subIntervalEntry?.subIntervalNum ||
-          parsePlannerSubIntervalYearTerm(
-            subIntervalEntry?.subIntervalID ||
-              subIntervalEntry?.subIntervalId ||
-              "",
-          )?.term ||
-          "",
-      ).trim(),
-      subIntervalID: String(
-        subIntervalEntry?.subIntervalID ||
-          subIntervalEntry?.subIntervalId ||
-          "",
-      ).trim(),
-      subIntervalCurrent: Boolean(subIntervalEntry?.subIntervalCurrent),
-      subIntervalDates: {
-        start: parseOptionalDate(subIntervalEntry?.subIntervalDates?.start),
-        end: parseOptionalDate(subIntervalEntry?.subIntervalDates?.end),
-      },
-      subIntervalCourses: normalizePlannerIntervalCourseEntries(
-        subIntervalEntry?.subIntervalCourses,
-      ),
-    })),
-  }));
-
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     memoryDoc.markModified("studyPlanner.programIntervals");
   }
-
   return studyPlanner;
 };
 
@@ -1848,51 +1819,34 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
       normalizedPayload?.subIntervalId ||
       normalizedPayload?.subintervalId,
   );
-  const targetIntervalId = trimString(normalizedPayload?.intervalId);
   const requestedStatus = normalizePlannerIntervalStatusValue(
     normalizedPayload?.intervalStatus,
   );
   const requestedStatusLower = requestedStatus.toLowerCase();
 
-  if (!targetSubIntervalId && !targetIntervalId) {
+  if (!targetSubIntervalId) {
     throw new Error("SubInterval ID is required.");
   }
+
+  const intervalHasTarget = (intervalEntry) => {
+    const base = intervalEntry && typeof intervalEntry === "object" ? toPlainObject(intervalEntry) || {} : {};
+    return (Array.isArray(base?.intervalTry) ? base.intervalTry : []).some((tryEntry) =>
+      (Array.isArray(tryEntry?.intervalTrysubIntervals) ? tryEntry.intervalTrysubIntervals : [])
+        .some((sub) => trimString(sub?.subIntervalID || sub?.subIntervalId) === targetSubIntervalId),
+    );
+  };
+
   const currentProgramIntervals = Array.isArray(studyPlanner?.programIntervals)
     ? studyPlanner.programIntervals
     : [];
+
   const nextProgramIntervals = currentProgramIntervals.map((intervalEntry) => {
-    const baseInterval =
-      intervalEntry && typeof intervalEntry === "object"
-        ? toPlainObject(intervalEntry) || {}
-        : {};
-    const intervalId = trimString(baseInterval?.intervalId);
-    const subIntervals = Array.isArray(baseInterval?.intervalsubIntervals)
-      ? baseInterval.intervalsubIntervals.map((subIntervalEntry) =>
-          subIntervalEntry && typeof subIntervalEntry === "object"
-            ? toPlainObject(subIntervalEntry) || {}
-            : {},
-        )
-      : [];
-    const hasTargetSubInterval = subIntervals.some(
-      (subIntervalEntry) =>
-        trimString(
-          subIntervalEntry?.subIntervalID ||
-            subIntervalEntry?.subIntervalId ||
-            subIntervalEntry?.subIntervalNum,
-        ) === targetSubIntervalId,
-    );
-    const isTargetInterval = targetSubIntervalId
-      ? hasTargetSubInterval
-      : intervalId === targetIntervalId;
-    const currentStatus = normalizePlannerIntervalStatusValue(
-      baseInterval?.intervalStatus,
-    );
+    const base = intervalEntry && typeof intervalEntry === "object" ? toPlainObject(intervalEntry) || {} : {};
+    const isTargetInterval = intervalHasTarget(base);
+    const currentStatus = normalizePlannerIntervalStatusValue(base?.intervalStatus);
     return {
-      ...baseInterval,
-      intervalNum:
-        Number.parseInt(trimString(baseInterval?.intervalNum), 10) ||
-        Number.parseInt(intervalId, 10) ||
-        null,
+      ...base,
+      intervalID: base.intervalID ?? base.intervalNum ?? null,
       intervalStatus: [
         isTargetInterval
           ? requestedStatus
@@ -1900,93 +1854,63 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
             ? "Normal"
             : currentStatus || "Normal",
       ],
-      intervalsubIntervals: subIntervals.map((subIntervalEntry) => {
-        const currentSubIntervalId = trimString(
-          subIntervalEntry?.subIntervalID ||
-            subIntervalEntry?.subIntervalId ||
-            subIntervalEntry?.subIntervalNum,
-        );
-        const isTargetSubInterval = currentSubIntervalId === targetSubIntervalId;
+      intervalTry: (Array.isArray(base?.intervalTry) ? base.intervalTry : []).map((tryEntry) => {
+        const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
         return {
-          ...subIntervalEntry,
-          subIntervalCurrent:
-            requestedStatusLower === "current"
-              ? isTargetSubInterval
-              : requestedStatusLower === "normal" && isTargetSubInterval
-                ? false
-                : Boolean(subIntervalEntry?.subIntervalCurrent),
-          subIntervalCourses: normalizePlannerIntervalCourseEntries(
-            subIntervalEntry?.subIntervalCourses,
-          ),
+          ...tryBase,
+          intervalTrysubIntervals: (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
+            .map((sub) => {
+              const subBase = sub && typeof sub === "object" ? toPlainObject(sub) || {} : {};
+              const subId = trimString(subBase?.subIntervalID || subBase?.subIntervalId);
+              const isTarget = subId === targetSubIntervalId;
+              return {
+                ...subBase,
+                subIntervalCurrent:
+                  requestedStatusLower === "current"
+                    ? isTarget
+                    : requestedStatusLower === "normal" && isTarget
+                      ? false
+                      : Boolean(subBase?.subIntervalCurrent),
+                subIntervalCourses: normalizePlannerIntervalCourseEntries(subBase?.subIntervalCourses),
+              };
+            }),
         };
       }),
     };
   });
 
+  // On failure: add a new try (not a new interval) for the same interval
   if (requestedStatusLower === "failed") {
-    const targetIndex = currentProgramIntervals.findIndex((intervalEntry) => {
-      const baseInterval =
-        intervalEntry && typeof intervalEntry === "object"
-          ? toPlainObject(intervalEntry) || {}
-          : {};
-      const intervalId = trimString(baseInterval?.intervalId);
-      const subIntervals = Array.isArray(baseInterval?.intervalsubIntervals)
-        ? baseInterval.intervalsubIntervals
-        : [];
-      const matchesSubInterval = subIntervals.some(
-        (subIntervalEntry) =>
-          trimString(
-            subIntervalEntry?.subIntervalID ||
-              subIntervalEntry?.subIntervalId ||
-              subIntervalEntry?.subIntervalNum,
-          ) === targetSubIntervalId,
-      );
-      return targetSubIntervalId
-        ? matchesSubInterval
-        : intervalId === targetIntervalId;
-    });
-
-    if (targetIndex >= 0 && targetIndex + 1 < nextProgramIntervals.length) {
-      const nextIntervalIndex = targetIndex + 1;
-      nextProgramIntervals[nextIntervalIndex] = {
-        ...nextProgramIntervals[nextIntervalIndex],
-        intervalStatus: ["Makeup"],
+    const targetIndex = currentProgramIntervals.findIndex(intervalHasTarget);
+    if (targetIndex >= 0) {
+      const failedInterval = toPlainObject(nextProgramIntervals[targetIndex]) || {};
+      const existingTries = Array.isArray(failedInterval.intervalTry) ? failedInterval.intervalTry : [];
+      const maxTryNum = existingTries.reduce((m, t) =>
+        Math.max(m, Number.parseInt(trimString(t?.intervalTryNum), 10) || 0), 0);
+      const nextTryNum = maxTryNum + 1;
+      const nextTryID = buildIntervalTryID(failedInterval.intervalID ?? failedInterval.intervalNum, nextTryNum);
+      const termsPerYear = Number.parseInt(trimString(studyPlanner?.programTermsPerYear), 10) || 1;
+      nextProgramIntervals[targetIndex] = {
+        ...failedInterval,
+        intervalTry: [
+          ...existingTries,
+          {
+            intervalTryID: nextTryID,
+            intervalTryNum: nextTryNum,
+            intervalTrysubIntervals: Array.from({ length: termsPerYear }, (_, i) => ({
+              subIntervalID: buildNewSubIntervalID(nextTryID, i + 1),
+              subIntervalNum: i + 1,
+              subIntervalCurrent: false,
+              subIntervalDates: { start: null, end: null },
+              subIntervalCourses: [],
+            })),
+          },
+        ],
       };
-
-      const intervalNumbers = nextProgramIntervals
-        .map((entry) => Number.parseInt(trimString(entry?.intervalNum), 10))
-        .filter((value) => Number.isInteger(value));
-      const maxIntervalNumber = intervalNumbers.length
-        ? Math.max(...intervalNumbers)
-        : nextProgramIntervals.length;
-      const nextIntervalNumber = maxIntervalNumber + 1;
-      const hasTrailingInterval = nextProgramIntervals.some(
-        (entry) =>
-          Number.parseInt(trimString(entry?.intervalNum), 10) ===
-          nextIntervalNumber,
-      );
-      if (!hasTrailingInterval) {
-        const baseInterval =
-          nextProgramIntervals[nextProgramIntervals.length - 1] ||
-          nextProgramIntervals[nextIntervalIndex] ||
-          {};
-        nextProgramIntervals.push({
-          ...toPlainObject(baseInterval),
-          intervalId: String(nextIntervalNumber),
-          intervalNum: nextIntervalNumber,
-          intervalStatus: ["Normal"],
-          intervalsubIntervals: buildPlannerNextIntervalSubIntervals(
-            baseInterval,
-            studyPlanner?.programTermsPerYear,
-            nextIntervalNumber,
-          ),
-        });
-      }
     }
   }
 
   studyPlanner.programIntervals = nextProgramIntervals;
-
   return studyPlanner;
 };
 
@@ -1994,15 +1918,15 @@ export const updateStudyPlannerProgramInPlanner = (memoryDoc, payload = {}) => {
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-  const programId = trimString(normalizedPayload?.programId);
+  const programId = trimString(normalizedPayload?.programID || normalizedPayload?.programId);
 
   if (!programId) {
     throw new Error("Program ID is required.");
   }
 
-  studyPlanner.programId = programId;
-  if (!Array.isArray(studyPlanner.programComponents)) {
-    studyPlanner.programComponents = [];
+  studyPlanner.programID = programId;
+  if (!Array.isArray(studyPlanner.programComponentClasses)) {
+    studyPlanner.programComponentClasses = [];
   }
   if (!Array.isArray(studyPlanner.programIntervals)) {
     studyPlanner.programIntervals = [];
@@ -2021,6 +1945,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const nextProgramName = trimString(normalizedPayload?.programName);
   const nextProgramLanguage = trimString(normalizedPayload?.programLanguage);
   const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
   const nextProgramFaculty = trimString(normalizedPayload?.programFaculty);
@@ -2104,6 +2029,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     : null;
 
   if (
+    !nextProgramName &&
     !nextProgramLanguage &&
     !nextProgramUniversity &&
     !nextProgramFaculty &&
@@ -2123,6 +2049,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     );
   }
 
+  if ("programName" in normalizedPayload) {
+    studyPlanner.programName = nextProgramName;
+  }
   if ("programLanguage" in normalizedPayload) {
     studyPlanner.programLanguage = nextProgramLanguage;
   }
@@ -2193,8 +2122,8 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
           };
     }
   }
-  if (!Array.isArray(studyPlanner.programComponents)) {
-    studyPlanner.programComponents = [];
+  if (!Array.isArray(studyPlanner.programComponentClasses)) {
+    studyPlanner.programComponentClasses = [];
   }
   if (!Array.isArray(studyPlanner.programIntervals)) {
     studyPlanner.programIntervals = [];
@@ -2213,8 +2142,8 @@ export const updateStudyPlannerComponentsInPlanner = (memoryDoc, payload = {}) =
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-  const rawProgramComponents = Array.isArray(normalizedPayload?.programComponents)
-    ? normalizedPayload.programComponents
+  const rawProgramComponents = Array.isArray(normalizedPayload?.programComponentClasses)
+    ? normalizedPayload.programComponentClasses
     : [];
   const rawComponentIds = Array.isArray(normalizedPayload?.componentIds)
     ? normalizedPayload.componentIds
@@ -2229,7 +2158,7 @@ export const updateStudyPlannerComponentsInPlanner = (memoryDoc, payload = {}) =
     ),
   );
 
-  studyPlanner.programComponents = componentEntries;
+  studyPlanner.programComponentClasses = componentEntries;
   if (!Array.isArray(studyPlanner.programIntervals)) {
     studyPlanner.programIntervals = [];
   }

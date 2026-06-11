@@ -11,22 +11,21 @@ const locationSchema = new Schema(
   { _id: false },
 );
 
-const byteArraySemanticsSchema = new Schema({
-  byteArraySemanticsVolumeUnit: { type: String, default: "" }, //page, image, words, letters
-  byteArraySemanticsVolume: { type: Number, default: null }, // number of pages, number of images ...
-  byteArraySemanticsEditors: { type: [String], default: [] }, // a subset of programEditors
-  byteArraySemanticsConcepts: { type: [String], default: [] },
-});
 
-const lectureByteArraysSchema = new Schema(
+
+const lectureDocumentsSchema = new Schema(
   {
-    //morphe
-    byteArrayName: { type: String, default: "" }, //Bacteria
-    byteArraySemantics: { type: [byteArraySemanticsSchema], default: [] }, // morphe
-    byteArraySyntax: { type: String, default: "" }, //PDF, IMAGE ...
-    byteArrayLength: { type: Number, default: 0, min: 0 },
-    // Hyle
-    byteArray: { type: String, default: "" },
+    documentSymbol: { type: String, default: "DOC" },
+    documentNum: { type: Number, default: null },
+    documentID: { type: String, default: "" }, // = lectureID:DOC:documentNum
+    documentName: { type: String, default: "" },
+    documentSemanticsVolumeUnit: { type: String, default: "" }, // page, image, words, letters
+    documentSemanticsVolume: { type: Number, default: null }, // number of pages, number of images ...
+    documentSemanticsEditors: { type: [String], default: [] }, // a subset of programEditors
+    documentSemanticsConcepts: { type: [String], default: [] },
+    documentType: { type: String, default: "" }, // PDF, IMAGE ...
+    documentByteSize: { type: Number, default: 0, min: 0 },
+    documentURL: { type: String, default: "" },
   },
   { _id: true },
 );
@@ -102,66 +101,73 @@ const lectureVolumeSchema = new Schema(
   },
   { _id: false },
 );
-const examPartSchema = new Schema(
+
+const examLecturesSchema = new Schema(
   {
-    examPartID: { type: String, default: "" },
-    componentID: { type: String, default: "" },
-    examClass: { type: String, default: "" },
+    lectureSymbol: { type: String, default: "LEC" },
+    lectureNum: { type: Number },
+    lectureID: { type: String, default: "" }, // = examID:LEC:lectureNum
+    lectureName: { type: String, default: "" },
+    lectureInstructors: { type: [String], default: [] },
+    lectureInstructionDate: { type: Date, default: null },
+    lectureDocuments: { type: [lectureDocumentsSchema], default: [] },
+  },
+  { _id: true },
+);
+
+const componentExamsSchema = new Schema(
+  {
+    examSymbol: { type: String, default: "EXM" },
+    examNum: { type: Number },
+    examID: { type: String, default: "" }, // = componentID:EXM:examNum
     examLocation: { type: locationSchema, default: null },
     examDate: { type: Date },
     examTime: { type: String, default: "" },
-    examlectureIDs: { type: [String], default: [] },
     examWeight: { type: Number, default: null },
     examGrade: { type: Number, default: null },
+    examsLectures: { type: [examLecturesSchema], default: [] },
   },
   { _id: false },
 );
 
-const programExamsSchema = new Schema(
+const programIntervalSchema = new Schema(
   {
-    componentID: { type: String, default: "" },
-    examParts: { type: [examPartSchema], default: [] },
-  },
-  { _id: false },
-);
-const componentLecturesSchema = new Schema( 
-  {
-    lectureID: { type: String, default: "" },
-    lectureNum: { type: Number, default: ""},
-    lectureName: { type: String, default: "" },
-    lectureInstructors: { type: [String], default: [] },
-    lectureInstructionDate: { type: Date, default: null },
-    lectureBytes: { type: [lectureByteArraysSchema], default: [] },
-  },
-  { _id: true },
-);
-const programIntervalSchema = new Schema( 
-  {
-        intervalNum:{ type: Number, default: null },
-        intervalStatus: [{ type: String, default: "Normal" }],
-        intervalsubIntervals: [
+    intervalSymbol: { type: String, default: "INT" },
+    intervalNum: { type: Number },
+    intervalID: { type: String, default: "" }, // = programID:INT:intervalNum
+    intervalStatus: [{ type: String, default: "Normal" }],
+    intervalTry: [
+      {
+        intervalTrySymbol: { type: String, default: "IT" },
+        intervalTryNum: { type: Number },
+        intervalTryID: { type: String, default: "" }, // = intervalID:IT:intervalTryNum
+        intervalTryDates: {
+          start: { type: Date },
+          end: { type: Date },
+        },
+        intervalTrysubIntervals: [
           {
-            subIntervalID: { type: String, default: "" },
-            subIntervalNum:{ type: Number},
-            subIntervalDates:{
-              start:{type: Date},
-              end: {type: Date},
-            },
-            subIntervalCurrent: {type: Boolean, default: false},
+            subIntervalSymbol: { type: String, default: "sINT" },
+            subIntervalNum: { type: Number },
+            subIntervalID: { type: String, default: "" }, // = intervalTryID:sINT:subIntervalNum
+            subIntervalCurrent: { type: Boolean, default: false },
             subIntervalCourses: [
-              {//materials to examine
-                courseID: { type: String, default: "" },
-                courseNum: { type: Number},
+              {
+                courseSymbol: { type: String, default: "CRS" },
+                courseNum: { type: Number },
+                courseID: { type: String, default: "" }, // = subIntervalID:CRS:courseNum
                 courseName: { type: String, default: "" },
                 courseCode: { type: String, default: "" },
-                courseWeight: { type: Number, default: 100},
+                courseWeight: { type: Number, default: 100 },
                 courseComponents: [
                   {
-                    componentID: { type: String, default: "" },
+                    componentSymbol: { type: String, default: "COMP" },
+                    componentNum: { type: Number },
+                    componentID: { type: String, default: "" }, // = courseID:COMP:componentNum
                     componentClass: { type: String, default: "" },
                     componentWeight: { type: Number, default: null },
                     componentLocation: { type: locationSchema, default: null },
-                    componentLectures: {type: [componentLecturesSchema], default: []},
+                    componentExams: { type: [componentExamsSchema], default: [] },
                   },
                 ],
               },
@@ -169,16 +175,19 @@ const programIntervalSchema = new Schema(
           },
         ],
       },
-      { _id: false },
-    );
+    ],
+  },
+  { _id: false },
+);
 
 const StudyPlannerSchema = new Schema(
   {
-    programId: { type: String, default: "" },
+    programID: { type: String, default: "" }, // root of the XID chain
+    programName: { type: String, default: "" },
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
-    programComponents: { type: [String], default: [] },
+    programComponentClasses: { type"د ناصر فنية": [String], default: [] },
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
     programTermsPerYear: { type: Number, default: null },
@@ -189,10 +198,10 @@ const StudyPlannerSchema = new Schema(
       thresholdMode: { type: String, default: null }, // "interval" or "course"
       thresholdUnit: { type: String, default: null },
       thresholdNumber: { type: Number, default: null },
+      thresholdRule: { type: String, enum: ["less than", "equal", "more than"], default: null }
     }],
-    programIntervals: { type: [programIntervalSchema], default: [] }, //materials to examine
-    programExamClasses:{ type: [String], default: [] },
-    programExams: { type: [programExamsSchema], default: [] }, //exams 
+    programExamClasses: { type: [String], default: [] },
+    programIntervals: { type: [programIntervalSchema], default: [] },
   },
   { _id: true, strict: true },
 );
