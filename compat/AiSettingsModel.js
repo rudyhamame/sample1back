@@ -5,7 +5,7 @@ const resolveDefaultAiProvider = () => {
     .trim()
     .toLowerCase();
 
-  if (["openai", "groq", "gemini"].includes(appProvider)) {
+  if (["openai", "groq", "gemini", "kimi"].includes(appProvider)) {
     return appProvider;
   }
 
@@ -44,7 +44,7 @@ const buildQuery = (executor) => ({
 const normalizeAiSettings = (user) => ({
   subject: user?._id || null,
   settings: {
-    aiProvider: String(user?.settings?.aiProvider || resolveDefaultAiProvider()),
+    aiProvider: String(user?.settings?.ai?.aiProvider || user?.settings?.aiProvider || resolveDefaultAiProvider()),
     languageOfReply: String(user?.settings?.languageOfReply || "english"),
     inputType: String(user?.settings?.inputType || "text"),
     outputType: String(user?.settings?.outputType || "text"),

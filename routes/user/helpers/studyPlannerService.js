@@ -1320,10 +1320,10 @@ const buildIntervalTryID = (intervalID, tryNum, symbol = "IT") =>
   intervalID != null && tryNum != null ? `${intervalID}-${symbol}${tryNum}` : "";
 const buildNewSubIntervalID = (intervalTryID, subIntervalNum, symbol = "sINT") =>
   intervalTryID && subIntervalNum != null ? `${intervalTryID}-${symbol}${subIntervalNum}` : "";
-const buildNewCourseID = (subIntervalID, courseNum) =>
-  subIntervalID && courseNum != null ? `${subIntervalID}_C${courseNum}` : "";
-const buildNewComponentID = (courseID, componentNum) =>
-  courseID && componentNum != null ? `${courseID}_CP${componentNum}` : "";
+const buildNewCourseID = (subIntervalID, courseNum, courseSymbol = "CRS") =>
+  subIntervalID && courseNum != null ? `${subIntervalID}-${courseSymbol}${courseNum}` : "";
+const buildNewComponentID = (courseID, componentNum, componentSymbol = "COMP") =>
+  courseID && componentNum != null ? `${courseID}-${componentSymbol}${componentNum}` : "";
 const buildNewLectureID = (componentID, lectureNum) =>
   componentID && lectureNum != null ? `${componentID}_L${lectureNum}` : "";
 const buildNewByteArrayID = (lectureID, byteArrayNum) =>
@@ -1508,11 +1508,14 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
           ? Number.parseFloat(source.courseWeight)
           : null;
     const normalizedCourseID = trimString(source?.courseID || source?.courseId);
-    // Parse courseNum from new format "I1_T1_SI1_C2" → 2, or legacy "1_1_3" → 3
-    const courseIDCMatch = (normalizedCourseID || "").match(/_C(\d+)$/);
-    const parsedCourseIDNum = courseIDCMatch
-      ? Number.parseInt(courseIDCMatch[1], 10)
-      : Number.parseInt(String(normalizedCourseID || "").split("_")?.[2] || "", 10);
+    // Parse courseNum from dash format "INT1-IT1-sINT1-CRS2" → 2, underscore format "I1_T1_SI1_C2" → 2, or legacy "1_1_3" → 3
+    const courseIDDashMatch = (normalizedCourseID || "").match(/-[A-Za-z]+(\d+)$/);
+    const courseIDCMatch = !courseIDDashMatch ? (normalizedCourseID || "").match(/_C(\d+)$/) : null;
+    const parsedCourseIDNum = courseIDDashMatch
+      ? Number.parseInt(courseIDDashMatch[1], 10)
+      : courseIDCMatch
+        ? Number.parseInt(courseIDCMatch[1], 10)
+        : Number.parseInt(String(normalizedCourseID || "").split("_")?.[2] || "", 10);
     const parsedCourseWeight = Number.isFinite(
       Number.parseFloat(normalizedCourseWeight),
     )
@@ -1587,9 +1590,10 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
           )
             ? Number.parseInt(normalizedComponentEntry.componentNum, 10)
             : null;
+          const componentSymbol = trimString(normalizedComponentEntry?.componentSymbol) || "COMP";
           const componentID =
             trimString(normalizedComponentEntry?.componentID) ||
-            buildNewComponentID(normalizedCourseID, componentNum) ||
+            buildNewComponentID(normalizedCourseID, componentNum, componentSymbol) ||
             (normalizedCourseID && componentClass ? `${normalizedCourseID}_${componentClass}` : "");
           return {
             componentID,
@@ -1855,9 +1859,9 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
       normalizedPayload?.subIntervalId ||
       normalizedPayload?.subintervalId,
   );
-  const requestedStatus = normalizePlannerIntervalStatusValue(
-    normalizedPayload?.intervalStatus,
-  );
+  const rawStatus = normalizePlannerIntervalStatusValue(normalizedPayload?.intervalStatus);
+  const isCancelRetaking = rawStatus.toLowerCase() === "cancelretaking";
+  const requestedStatus = isCancelRetaking ? "Failed" : rawStatus;
   const requestedStatusLower = requestedStatus.toLowerCase();
 
   if (!targetSubIntervalId) {
@@ -1909,6 +1913,13 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
         (Number.parseInt(trimString(b?.intervalTryNum), 10) || 0)
       )[0]];
     }
+    // When cancelling retaking, remove the last try (highest tryNum), keep the rest
+    if (isTargetInterval && isCancelRetaking && mappedTries.length > 1) {
+      mappedTries = mappedTries.slice().sort((a, b) =>
+        (Number.parseInt(trimString(a?.intervalTryNum), 10) || 0) -
+        (Number.parseInt(trimString(b?.intervalTryNum), 10) || 0)
+      ).slice(0, -1);
+    }
     return {
       ...base,
       intervalID: base.intervalID ?? base.intervalNum ?? null,
@@ -1924,7 +1935,7 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
   });
 
   // On failure: add a new try (not a new interval) for the same interval
-  if (requestedStatusLower === "failed") {
+  if (requestedStatusLower === "failed" && !isCancelRetaking) {
     const targetIndex = currentProgramIntervals.findIndex(intervalHasTarget);
     if (targetIndex >= 0) {
       const failedInterval = toPlainObject(nextProgramIntervals[targetIndex]) || {};
@@ -2044,11 +2055,49 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const hasProgramInstructors = "programInstructors" in normalizedPayload;
   const hasProgramEditors = "programEditors" in normalizedPayload;
   const hasProgramLocations = "programLocations" in normalizedPayload;
+  const hasProgramCoursesNames = "programCoursesNames" in normalizedPayload;
+  const hasProgramCoursesNamesCodes = "programCoursesNamesCodes" in normalizedPayload;
+  const hasProgramCurrentIntervalTryNum = "programCurrentIntervalTryNum" in normalizedPayload;
+  const hasProgramAIExtractions = "programAIExtractions" in normalizedPayload;
   const nextProgramInstructors = hasProgramInstructors
-    ? normalizeStringArray(normalizedPayload?.programInstructors)
+    ? (Array.isArray(normalizedPayload?.programInstructors)
+        ? normalizedPayload.programInstructors
+        : []
+      )
+        .map((entry) => {
+          if (entry && typeof entry === "object") {
+            const obj = toPlainObject(entry) || {};
+            const firstName = trimString(obj?.firstName) || "";
+            const lastName = trimString(obj?.lastName) || "";
+            return firstName || lastName ? { firstName, lastName } : null;
+          }
+          const str = trimString(entry);
+          if (!str) return null;
+          const idx = str.indexOf(" ");
+          return idx === -1
+            ? { firstName: str, lastName: "" }
+            : { firstName: str.slice(0, idx).trim(), lastName: str.slice(idx + 1).trim() };
+        })
+        .filter(Boolean)
     : [];
   const nextProgramEditors = hasProgramEditors
     ? normalizeStringArray(normalizedPayload?.programEditors)
+    : [];
+  const nextProgramCoursesNames = hasProgramCoursesNames
+    ? normalizeStringArray(normalizedPayload?.programCoursesNames)
+    : [];
+  const nextProgramCoursesNamesCodes = hasProgramCoursesNamesCodes
+    ? (Array.isArray(normalizedPayload?.programCoursesNamesCodes)
+        ? normalizedPayload.programCoursesNamesCodes
+        : []
+      )
+        .map((entry) => {
+          const obj = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+          const courseName = trimString(obj?.courseName) || "";
+          const courseCode = trimString(obj?.courseCode) || "";
+          return courseName ? { courseName, courseCode } : null;
+        })
+        .filter(Boolean)
     : [];
   const nextProgramLocations = hasProgramLocations
     ? (Array.isArray(normalizedPayload?.programLocations)
@@ -2090,7 +2139,11 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramFailingRules &&
     !hasProgramInstructors &&
     !hasProgramEditors &&
-    !hasProgramLocations
+    !hasProgramLocations &&
+    !hasProgramCoursesNames &&
+    !hasProgramCoursesNamesCodes &&
+    !hasProgramCurrentIntervalTryNum &&
+    !hasProgramAIExtractions
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
@@ -2123,6 +2176,38 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if (hasProgramLocations) {
     studyPlanner.programLocations = nextProgramLocations;
+  }
+  if (hasProgramCoursesNames) {
+    studyPlanner.programCoursesNames = nextProgramCoursesNames;
+  }
+  if (hasProgramCoursesNamesCodes) {
+    studyPlanner.programCoursesNamesCodes = nextProgramCoursesNamesCodes;
+  }
+  if (hasProgramCurrentIntervalTryNum) {
+    const raw = normalizedPayload?.programCurrentIntervalTryNum;
+    const rawObj = raw && typeof raw === "object" ? toPlainObject(raw) || {} : {};
+    const intervalNum = toFiniteNumber(rawObj?.intervalNum, null);
+    const intervalTryNum = toFiniteNumber(rawObj?.intervalTryNum, null);
+    studyPlanner.programCurrentIntervalTryNum = (intervalNum !== null || intervalTryNum !== null)
+      ? { intervalNum, intervalTryNum }
+      : null;
+  }
+  if (hasProgramAIExtractions) {
+    studyPlanner.programAIExtractions = (Array.isArray(normalizedPayload?.programAIExtractions)
+      ? normalizedPayload.programAIExtractions
+      : []
+    )
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const obj = toPlainObject(entry) || {};
+        const extractionGoal = trimString(obj?.extractionGoal) || "";
+        const extractionItems = Array.isArray(obj?.extractionItems)
+          ? obj.extractionItems.map((s) => trimString(s) || "").filter(Boolean)
+          : [];
+        const extractionTimestamp = trimString(obj?.extractionTimestamp) || "";
+        return { extractionGoal, extractionItems, extractionTimestamp };
+      })
+      .filter(Boolean);
   }
   if (hasProgramStartYear) {
     studyPlanner.programStartYear = Number.isFinite(nextProgramStartYear)

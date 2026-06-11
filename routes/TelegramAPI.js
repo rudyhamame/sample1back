@@ -4943,6 +4943,124 @@ const buildLectureSuggestionPayload = ({
   };
 };
 
+// POST /ai/extract-instructors
+// { texts: [...] } — Arabic message fragments (already sliced from instructor keyword).
+// Returns { persons: [...] } — deduplicated instructor names extracted by the LLM.
+TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
+  const texts = Array.isArray(req.body?.texts)
+    ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
+    : [];
+  if (texts.length === 0) {
+    return res.status(400).json({ error: "Field 'texts' is required and must be non-empty." });
+  }
+
+  const groqClient = getGroqClient();
+  const openAiClient = getOpenAIClient();
+  const kimiClient = getKimiClient();
+  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
+  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+
+  const instructions = `You extract Arabic instructor names from educational Telegram messages.
+Rules:
+- Return ONLY a JSON array of strings, no explanation or markdown.
+- Each string is one instructor's full name in Arabic.
+- Include only names that follow title words like دكتور, دكتورة, الدكتور, أستاذ, الأستاذ, etc.
+- Do NOT include the title word itself in the name.
+- Deduplicate: if the same name appears multiple times return it once.
+- If no instructor names are found return [].`;
+
+  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  const input = `Extract instructor names from these Arabic message fragments:\n${textsBlock}`;
+
+  const providerErrors = [];
+  for (const provider of providerOrder) {
+    try {
+      let rawOutput;
+      if (provider === "gemini") {
+        rawOutput = await createGeminiResponse({ instructions, input });
+      } else {
+        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
+        const model = getOpenAiCompatibleModel(provider);
+        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
+      }
+      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      const persons = Array.isArray(parsed)
+        ? parsed.map((p) => String(p || "").trim()).filter(Boolean)
+        : [];
+      return res.json({ persons, count: persons.length });
+    } catch (err) {
+      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
+    }
+  }
+  return res.status(503).json({
+    error: buildAiProviderFailureMessage(providerErrors, "AI instructor extraction failed."),
+  });
+});
+
+// POST /ai/extract-courses
+// { texts: [...] } — Arabic or mixed-language message texts from an academic group.
+// Returns { courses: [{ courseName, courseCode }] } — deduplicated course objects extracted by the LLM.
+TelegramRouter.post("/ai/extract-courses", checkAuth, async (req, res) => {
+  const texts = Array.isArray(req.body?.texts)
+    ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
+    : [];
+  if (texts.length === 0) {
+    return res.status(400).json({ error: "Field 'texts' is required and must be non-empty." });
+  }
+
+  const groqClient = getGroqClient();
+  const openAiClient = getOpenAIClient();
+  const kimiClient = getKimiClient();
+  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
+  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+
+  const instructions = `You extract academic course names and codes from educational Telegram messages.
+Rules:
+- Return ONLY a JSON array of objects, no explanation or markdown.
+- Each object must have exactly two fields:
+  "courseName": the most official/formal name of the course (Arabic, English, or mixed).
+  "courseCode": the shorthand abbreviation or code students use in chat (e.g. "Calc", "OrgChem", "رياضيات 2", "فيز1").
+- If no shorthand code can be inferred, set "courseCode" to an empty string "".
+- Include only distinct courses. Deduplicate: if the same course appears multiple times return it once.
+- Do NOT include generic words like "course", "subject", "مادة", "مقرر" as the courseName unless they are part of the official name.
+- If no courses are found return [].
+Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem"},{"courseName":"فيزياء عامة","courseCode":"فيز"}]`;
+
+  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  const input = `Extract course names and codes from these academic Telegram messages:\n${textsBlock}`;
+
+  const providerErrors = [];
+  for (const provider of providerOrder) {
+    try {
+      let rawOutput;
+      if (provider === "gemini") {
+        rawOutput = await createGeminiResponse({ instructions, input });
+      } else {
+        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
+        const model = getOpenAiCompatibleModel(provider);
+        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
+      }
+      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      const courses = Array.isArray(parsed)
+        ? parsed
+            .map((c) => ({
+              courseName: String(c?.courseName || "").trim(),
+              courseCode: String(c?.courseCode || "").trim(),
+            }))
+            .filter((c) => c.courseName)
+        : [];
+      return res.json({ courses, count: courses.length });
+    } catch (err) {
+      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
+    }
+  }
+  return res.status(503).json({
+    error: buildAiProviderFailureMessage(providerErrors, "AI course extraction failed."),
+  });
+});
+
 TelegramRouter.use("/ai", checkAuth, (_req, res) =>
   res.status(410).json({
     message:
@@ -6982,60 +7100,5 @@ TelegramRouter.post(
     }
   },
 );
-
-// POST /ai/extract-instructors
-// { texts: [...] } — Arabic message fragments (already sliced from instructor keyword).
-// Returns { persons: [...] } — deduplicated instructor names extracted by the LLM.
-TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
-  const texts = Array.isArray(req.body?.texts)
-    ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
-    : [];
-  if (texts.length === 0) {
-    return res.status(400).json({ error: "Field 'texts' is required and must be non-empty." });
-  }
-
-  const groqClient = getGroqClient();
-  const openAiClient = getOpenAIClient();
-  const kimiClient = getKimiClient();
-  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
-  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
-
-  const instructions = `You extract Arabic instructor names from educational Telegram messages.
-Rules:
-- Return ONLY a JSON array of strings, no explanation or markdown.
-- Each string is one instructor's full name in Arabic.
-- Include only names that follow title words like دكتور, دكتورة, الدكتور, أستاذ, الأستاذ, etc.
-- Do NOT include the title word itself in the name.
-- Deduplicate: if the same name appears multiple times return it once.
-- If no instructor names are found return [].`;
-
-  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const input = `Extract instructor names from these Arabic message fragments:\n${textsBlock}`;
-
-  const providerErrors = [];
-  for (const provider of providerOrder) {
-    try {
-      let rawOutput;
-      if (provider === "gemini") {
-        rawOutput = await createGeminiResponse({ instructions, input });
-      } else {
-        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
-        const model = getOpenAiCompatibleModel(provider);
-        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
-      }
-      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-      const persons = Array.isArray(parsed)
-        ? parsed.map((p) => String(p || "").trim()).filter(Boolean)
-        : [];
-      return res.json({ persons, count: persons.length });
-    } catch (err) {
-      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
-    }
-  }
-  return res.status(503).json({
-    error: buildAiProviderFailureMessage(providerErrors, "AI instructor extraction failed."),
-  });
-});
 
 export default TelegramRouter;

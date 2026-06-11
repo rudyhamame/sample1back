@@ -76,7 +76,7 @@ const resolveDefaultAiProvider = () => {
     .trim()
     .toLowerCase();
 
-  if (["openai", "groq", "gemini"].includes(appProvider)) {
+  if (["openai", "groq", "gemini", "kimi"].includes(appProvider)) {
     return appProvider;
   }
 
@@ -3426,7 +3426,7 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
       .trim()
       .toLowerCase();
 
-    const nextAiProvider = ["openai", "groq", "gemini"].includes(
+    const nextAiProvider = ["openai", "groq", "gemini", "kimi"].includes(
       requestedAiProvider,
     )
       ? requestedAiProvider
@@ -3701,8 +3701,8 @@ UserRouter.put("/profile", checkAuth, async function (req, res, next) {
 
     if (hasField("aiProvider")) {
       await upsertAiSettings(req.authentication.userId, {
-        aiProvider: nextAiProvider,
-        updatedAt: new Date(),
+        "ai.aiProvider": nextAiProvider,
+        "ai.updatedAt": new Date(),
       });
     }
 

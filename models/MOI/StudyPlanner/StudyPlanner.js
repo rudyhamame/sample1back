@@ -141,24 +141,24 @@ const programIntervalSchema = new Schema(
         intervalTrySymbol: { type: String, default: "IT" },
         intervalTryNum: { type: Number },
         intervalTryID: { type: String, default: "" }, // = intervalID:IT:intervalTryNum
-        intervalTryDates: {
-          start:{
-            day:{ type: Number },
-            month: { type: Number },
-            year:{ type: Number },
-          },
-          end:{
-            day:{ type: Number },
-            month: { type: Number },
-            year:{ type: Number },
-          }        
-        },
         intervalTrysubIntervals: [
           {
             subIntervalSymbol: { type: String, default: "sINT" },
             subIntervalNum: { type: Number },
             subIntervalID: { type: String, default: "" }, // = intervalTryID:sINT:subIntervalNum
             subIntervalCurrent: { type: Boolean, default: false },
+            subIntervalTryDates: {
+              start:{
+                day:{ type: Number },
+                month: { type: Number },
+                year:{ type: Number },
+              },
+              end:{
+                day:{ type: Number },
+                month: { type: Number },
+                year:{ type: Number },
+              }        
+            },
             subIntervalCourses: [
               {
                 courseSymbol: { type: String, default: "CRS" },
@@ -188,10 +188,42 @@ const programIntervalSchema = new Schema(
   { _id: false },
 );
 
+const programInstructorsSchema = new Schema (
+  {
+    firstName: {type: String},
+    lastName: {type: String},
+  },
+  { _id: false }
+);
+
+const programCoursesNamesCodesSchema = new Schema (
+  {
+    courseName: {type: String},
+    courseCode: {type: String},
+  },  
+  { _id: false }
+);
+
+const programCurrentIntervalTryNumSchema = new Schema(
+  {
+    intervalNum: { type: Number, default: null },
+    intervalTryNum: { type: Number, default: null },
+  },
+  { _id: false }
+);
+
+const programAIExtractionsSchema = new Schema(
+  {
+    extractionGoal: { type: String, default: null },
+    extractionItems: { type: [String], default: [] },
+    extractionTimestamp: {type: String},
+  }
+);
 const StudyPlannerSchema = new Schema(
   {
     programID: { type: String, default: "" }, // root of the XID chain
     programName: { type: String, default: "" },
+    programCurrentIntervalTryNum: { type: programCurrentIntervalTryNumSchema, default: null },
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
@@ -199,9 +231,10 @@ const StudyPlannerSchema = new Schema(
     programStartYear: { type: Number, default: null },
     programTotalYears: { type: Number, default: null },
     programTermsPerYear: { type: Number, default: null },
-    programInstructors: { type: [String], default: [] },
+    programInstructors: { type: [programInstructorsSchema], default: [] },
     programEditors: { type: [String], default: [] },
     programLocations: { type: [locationSchema], default: [] },
+    programCoursesNamesCodes: { type: [programCoursesNamesCodesSchema], default: [] },
     programFailingRules: [{
       thresholdMode: { type: String, default: null }, // "interval" or "course"
       thresholdUnit: { type: String, default: null },
@@ -210,6 +243,7 @@ const StudyPlannerSchema = new Schema(
     }],
     programExamClasses: { type: [String], default: [] },
     programIntervals: { type: [programIntervalSchema], default: [] },
+    programAIExtractions: {type: [programAIExtractionsSchema], default: []}
   },
   { _id: true, strict: true },
 );

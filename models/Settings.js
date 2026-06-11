@@ -6,7 +6,7 @@ const resolveDefaultAiProvider = () => {
     .trim()
     .toLowerCase();
 
-  if (["openai", "groq", "gemini"].includes(appProvider)) {
+  if (["openai", "groq", "gemini", "kimi"].includes(appProvider)) {
     return appProvider;
   }
 
