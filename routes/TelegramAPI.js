@@ -19,6 +19,7 @@ import {
   flattenMemoryCoursesForPlanner,
 } from "./user/helpers/studyPlannerService.js";
 import TelegramStoredMessageModel from "../models/TelegramStoredMessage.js";
+import { buildTelegramExtractInstructorsPrompt } from "../prompts/telegramExtractInstructorsPrompt.js";
 
 const TelegramRouter = express.Router();
 const TELEGRAM_ADMIN_USERNAME = "rudyhamame";
@@ -4945,7 +4946,7 @@ const buildLectureSuggestionPayload = ({
 
 // POST /ai/extract-instructors
 // { texts: [...] } — Arabic message fragments (already sliced from instructor keyword).
-// Returns { persons: [...] } — deduplicated instructor names extracted by the LLM.
+// Returns { programInstructorNames: [...], persons: [...] } — richer instructor records plus legacy person names.
 TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
   const texts = Array.isArray(req.body?.texts)
     ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
@@ -4959,21 +4960,9 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
   const kimiClient = getKimiClient();
   const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
   const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
-
-  const instructions = `You extract Arabic instructor names from educational Telegram messages.
-Rules:
-- Return ONLY a JSON array of objects, no explanation or markdown.
-- Each object must have exactly two fields:
-  "firstName": the instructor's first name (in Arabic).
-  "lastName": the instructor's last name / family name (in Arabic).
-- Both firstName and lastName are required. If you cannot determine the last name, skip that instructor entirely.
-- Include only names that follow title words like دكتور, دكتورة, الدكتور, أستاذ, الأستاذ, etc.
-- Do NOT include the title word itself in the name.
-- Deduplicate: if the same person appears multiple times return them once.
-- If no instructor names are found return [].`;
-
-  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const input = `Extract instructor names from these Arabic message fragments:\n${textsBlock}`;
+  const prompt = buildTelegramExtractInstructorsPrompt(texts);
+  const instructions = "Return valid JSON only.";
+  const input = prompt;
 
   const providerErrors = [];
   for (const provider of providerOrder) {
@@ -4986,26 +4975,76 @@ Rules:
         const model = getOpenAiCompatibleModel(provider);
         rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
       }
-      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-      const seen = new Set();
-      const persons = Array.isArray(parsed)
+      const jsonMatch =
+        rawOutput.match(/\{[\s\S]*\}/) ||
+        rawOutput.match(/\[[\s\S]*\]/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const parsedEntries = Array.isArray(parsed)
         ? parsed
-            .map((p) => {
-              if (p && typeof p === "object") {
-                return { firstName: String(p?.firstName || "").trim(), lastName: String(p?.lastName || "").trim() };
-              }
-              return null;
-            })
-            .filter((p) => p && p.firstName && p.lastName)
-            .filter((p) => {
-              const key = `${p.firstName}|${p.lastName}`;
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            })
-        : [];
-      return res.json({ persons, count: persons.length });
+        : Array.isArray(parsed?.programInstructorNames)
+          ? parsed.programInstructorNames
+          : [];
+      const seen = new Set();
+      const programInstructorNames = parsedEntries
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return null;
+          }
+
+          const firstName = String(entry?.firstName || "").trim();
+          const lastName = String(entry?.lastName || "").trim();
+          const fullName = String(
+            entry?.fullName || [firstName, lastName].filter(Boolean).join(" "),
+          ).trim();
+          const personality = String(entry?.personality || "").trim() || null;
+          const courseNames = Array.isArray(entry?.courseNames)
+            ? entry.courseNames
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            : [];
+          const evidence = Array.isArray(entry?.evidence)
+            ? entry.evidence
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            : [];
+          const confidence = ["high", "medium", "low"].includes(
+            String(entry?.confidence || "").trim().toLowerCase(),
+          )
+            ? String(entry.confidence).trim().toLowerCase()
+            : "low";
+
+          if (!fullName) {
+            return null;
+          }
+
+          return {
+            firstName: firstName || null,
+            lastName: lastName || null,
+            fullName,
+            personality,
+            courseNames,
+            evidence,
+            confidence,
+          };
+        })
+        .filter((person) => person && person.fullName)
+        .filter((person) => {
+          const key = person.fullName.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      const persons = programInstructorNames
+        .map((person) => ({
+          firstName: String(person?.firstName || "").trim(),
+          lastName: String(person?.lastName || "").trim(),
+        }))
+        .filter((person) => person.firstName && person.lastName);
+      return res.json({
+        programInstructorNames,
+        persons,
+        count: programInstructorNames.length,
+      });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
     }
