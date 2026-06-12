@@ -131,7 +131,7 @@ app.set("trust proxy", true);
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(morgan("dev"));
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 const io = new Server(server, {
   cors: {

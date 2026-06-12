@@ -4962,11 +4962,14 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
 
   const instructions = `You extract Arabic instructor names from educational Telegram messages.
 Rules:
-- Return ONLY a JSON array of strings, no explanation or markdown.
-- Each string is one instructor's full name in Arabic.
+- Return ONLY a JSON array of objects, no explanation or markdown.
+- Each object must have exactly two fields:
+  "firstName": the instructor's first name (in Arabic).
+  "lastName": the instructor's last name / family name (in Arabic).
+- Both firstName and lastName are required. If you cannot determine the last name, skip that instructor entirely.
 - Include only names that follow title words like دكتور, دكتورة, الدكتور, أستاذ, الأستاذ, etc.
 - Do NOT include the title word itself in the name.
-- Deduplicate: if the same name appears multiple times return it once.
+- Deduplicate: if the same person appears multiple times return them once.
 - If no instructor names are found return [].`;
 
   const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
@@ -4985,8 +4988,22 @@ Rules:
       }
       const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
       const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      const seen = new Set();
       const persons = Array.isArray(parsed)
-        ? parsed.map((p) => String(p || "").trim()).filter(Boolean)
+        ? parsed
+            .map((p) => {
+              if (p && typeof p === "object") {
+                return { firstName: String(p?.firstName || "").trim(), lastName: String(p?.lastName || "").trim() };
+              }
+              return null;
+            })
+            .filter((p) => p && p.firstName && p.lastName)
+            .filter((p) => {
+              const key = `${p.firstName}|${p.lastName}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            })
         : [];
       return res.json({ persons, count: persons.length });
     } catch (err) {
@@ -5058,6 +5075,78 @@ Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem"},{"cou
   }
   return res.status(503).json({
     error: buildAiProviderFailureMessage(providerErrors, "AI course extraction failed."),
+  });
+});
+
+// POST /ai/extract-course-info
+// { texts: [...] } — academic group messages.
+// Returns { courses: [{ courseName, courseCode, courseWeight, courseComponents: [{ componentClass, componentWeight }] }] }
+TelegramRouter.post("/ai/extract-course-info", checkAuth, async (req, res) => {
+  const texts = Array.isArray(req.body?.texts)
+    ? req.body.texts.map((t) => String(t || "").trim()).filter(Boolean)
+    : [];
+  if (texts.length === 0) {
+    return res.status(400).json({ error: "Field 'texts' is required and must be non-empty." });
+  }
+
+  const groqClient = getGroqClient();
+  const openAiClient = getOpenAIClient();
+  const kimiClient = getKimiClient();
+  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
+  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+
+  const instructions = `You extract detailed academic course information from educational Telegram messages.
+Rules:
+- Return ONLY a JSON array of course objects, no explanation or markdown.
+- Each course object must have:
+  "courseName": full official course name (String)
+  "courseCode": shorthand code students use (String, empty string if unknown)
+  "courseWeight": credit hours or weight as a number (Number, null if unknown)
+  "courseComponents": array of component objects, each with:
+    "componentClass": the type of component, e.g. "Lecture", "Lab", "Tutorial", "Exam" (String)
+    "componentWeight": weight or percentage of this component (Number, null if unknown)
+- Deduplicate: if the same course appears multiple times, merge its info and return it once.
+- If no courses are found return [].
+Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem","courseWeight":3,"courseComponents":[{"componentClass":"Lecture","componentWeight":60},{"componentClass":"Lab","componentWeight":40}]}]`;
+
+  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  const input = `Extract course info from these academic Telegram messages:\n${textsBlock}`;
+
+  const providerErrors = [];
+  for (const provider of providerOrder) {
+    try {
+      let rawOutput;
+      if (provider === "gemini") {
+        rawOutput = await createGeminiResponse({ instructions, input });
+      } else {
+        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
+        const model = getOpenAiCompatibleModel(provider);
+        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
+      }
+      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      const courses = Array.isArray(parsed)
+        ? parsed
+            .map((c) => ({
+              courseName: String(c?.courseName || "").trim(),
+              courseCode: String(c?.courseCode || "").trim(),
+              courseWeight: Number.isFinite(Number(c?.courseWeight)) ? Number(c.courseWeight) : null,
+              courseComponents: Array.isArray(c?.courseComponents)
+                ? c.courseComponents.map((comp) => ({
+                    componentClass: String(comp?.componentClass || "").trim(),
+                    componentWeight: Number.isFinite(Number(comp?.componentWeight)) ? Number(comp.componentWeight) : null,
+                  })).filter((comp) => comp.componentClass)
+                : [],
+            }))
+            .filter((c) => c.courseName)
+        : [];
+      return res.json({ courses, count: courses.length });
+    } catch (err) {
+      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
+    }
+  }
+  return res.status(503).json({
+    error: buildAiProviderFailureMessage(providerErrors, "AI course info extraction failed."),
   });
 });
 

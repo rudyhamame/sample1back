@@ -338,6 +338,72 @@ const parseOptionalDate = (value) => {
   return Number.isNaN(nextDate.getTime()) ? null : nextDate;
 };
 
+const parseDateToComponents = (value) => {
+  const buildDateField = (year, month, day) => {
+    if (
+      !Number.isInteger(year) ||
+      year < 1000 ||
+      year > 9999 ||
+      !Number.isInteger(month) ||
+      month < 1 ||
+      month > 12 ||
+      !Number.isInteger(day) ||
+      day < 1 ||
+      day > 31
+    ) {
+      return null;
+    }
+    const isoValue = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const nextDate = new Date(`${isoValue}T00:00:00.000Z`);
+    return Number.isNaN(nextDate.getTime()) ? null : nextDate;
+  };
+  // Already {day, month, year, date} object
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime())
+        ? { day: null, month: null, year: null, date: null }
+        : {
+            day: value.getUTCDate(),
+            month: value.getUTCMonth() + 1,
+            year: value.getUTCFullYear(),
+            date: value,
+          };
+    }
+    const day = Number.isFinite(Number(value?.day)) ? Number(value.day) : null;
+    const month = Number.isFinite(Number(value?.month)) ? Number(value.month) : null;
+    const year = Number.isFinite(Number(value?.year)) ? Number(value.year) : null;
+    const rawDate = value?.date;
+    const normalizedDate = rawDate instanceof Date
+      ? (Number.isNaN(rawDate.getTime()) ? null : rawDate)
+      : parseOptionalDate(rawDate);
+    return {
+      day,
+      month,
+      year,
+      date: normalizedDate || buildDateField(year, month, day),
+    };
+  }
+  const s = trimString(value);
+  if (!s || s === "-") return { day: null, month: null, year: null, date: null };
+  // Full ISO: "2025-09-01"
+  const fullMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (fullMatch) {
+    const year = Number(fullMatch[1]);
+    const month = Number(fullMatch[2]);
+    const day = Number(fullMatch[3]);
+    return {
+      day,
+      month,
+      year,
+      date: buildDateField(year, month, day),
+    };
+  }
+  // Year only: "2025"
+  const yearMatch = s.match(/^(\d{4})$/);
+  if (yearMatch) return { day: null, month: null, year: Number(yearMatch[1]), date: null };
+  return { day: null, month: null, year: null, date: null };
+};
+
 const normalizeReferenceIds = (value) =>
   (Array.isArray(value) ? value : [value])
     .map((entry) => normalizeIdString(entry))
@@ -1314,82 +1380,89 @@ const inferIntervalYear = (entry = {}) => {
   return trimString(yearMatch?.[1] || "");
 };
 
-// ── New structured ID builders ──────────────────────────────────────────────
-// Format: parentID + "-" + symbol + num
+// ════════════════════════════════════════════════════════════════════════════
+// ID BIBLE
+// ────────────────────────────────────────────────────────────────────────────
+// Every ID is pure concatenation — no separators except ": " after programID.
+// No dashes, no underscores, no colons anywhere else.
+//
+// HIERARCHY
+//   intervalID    = programID + ": " + INT{n}
+//   intervalTryID = intervalID + IT{n}
+//   subIntervalID = intervalTryID + sINT{n}
+//   courseID      = subIntervalID + CRS{n}
+//   componentID   = courseID + COMP{n}
+//   lectureID     = componentID + L{n}
+//   byteArrayID   = lectureID + B{n}
+//   examID        = componentID + E{n}
+//
+// EXAMPLE  (programID = "P1")
+//   intervalID    → "P1: INT1"
+//   intervalTryID → "P1: INT1IT1"
+//   subIntervalID → "P1: INT1IT1sINT2"
+//   courseID      → "P1: INT1IT1sINT2CRS1"
+//   componentID   → "P1: INT1IT1sINT2CRS1COMP1"
+//   lectureID     → "P1: INT1IT1sINT2CRS1COMP1L1"
+//   byteArrayID   → "P1: INT1IT1sINT2CRS1COMP1L1B1"
+//   examID        → "P1: INT1IT1sINT2CRS1COMP1E1"
+// ════════════════════════════════════════════════════════════════════════════
 const buildIntervalTryID = (intervalID, tryNum, symbol = "IT") =>
-  intervalID != null && tryNum != null ? `${intervalID}-${symbol}${tryNum}` : "";
+  intervalID != null && tryNum != null ? `${intervalID}${symbol}${tryNum}` : "";
 const buildNewSubIntervalID = (intervalTryID, subIntervalNum, symbol = "sINT") =>
-  intervalTryID && subIntervalNum != null ? `${intervalTryID}-${symbol}${subIntervalNum}` : "";
+  intervalTryID && subIntervalNum != null ? `${intervalTryID}${symbol}${subIntervalNum}` : "";
 const buildNewCourseID = (subIntervalID, courseNum, courseSymbol = "CRS") =>
-  subIntervalID && courseNum != null ? `${subIntervalID}-${courseSymbol}${courseNum}` : "";
+  subIntervalID && courseNum != null ? `${subIntervalID}${courseSymbol}${courseNum}` : "";
 const buildNewComponentID = (courseID, componentNum, componentSymbol = "COMP") =>
-  courseID && componentNum != null ? `${courseID}-${componentSymbol}${componentNum}` : "";
+  courseID && componentNum != null ? `${courseID}${componentSymbol}${componentNum}` : "";
 const buildNewLectureID = (componentID, lectureNum) =>
-  componentID && lectureNum != null ? `${componentID}_L${lectureNum}` : "";
+  componentID && lectureNum != null ? `${componentID}L${lectureNum}` : "";
 const buildNewByteArrayID = (lectureID, byteArrayNum) =>
-  lectureID && byteArrayNum != null ? `${lectureID}_B${byteArrayNum}` : "";
+  lectureID && byteArrayNum != null ? `${lectureID}B${byteArrayNum}` : "";
 const buildNewExamID = (componentID, examNum) =>
-  componentID && examNum != null ? `${componentID}_E${examNum}` : "";
+  componentID && examNum != null ? `${componentID}E${examNum}` : "";
 
 // Split a segment like "sINT3" → { symbol: "sINT", num: 3 }
 const parseSymbolNum = (segment = "") => {
-  const m = String(segment || "").match(/^([A-Za-z]*)(\d+)$/);
+  const m = String(segment || "").trim().match(/^([A-Za-z]+)(\d+)$/);
   return m ? { symbol: m[1] || "", num: Number(m[2]) } : { symbol: "", num: null };
 };
 
-// Parse a structured subIntervalID into its parts.
-// Handles:
-//   new format  "prefix-IT1-sINT2"  (dash-separated, last 2 segments = try + sub)
-//   old format  "I1_T1_SI1"         (underscore-separated for backward compat)
-//   legacy      "1_1"
-const parseStructuredSubIntervalID = (id = "") => {
-  const s = trimString(id);
-  // Old underscore format: I1_T1_SI1
-  const oldMatch = s.match(/^I(\d+)_T(\d+)_SI(\d+)$/);
-  if (oldMatch) {
-    return {
-      intervalNum: Number(oldMatch[1]), intervalSymbol: "I",
-      tryNum: Number(oldMatch[2]), intervalTrySymbol: "T",
-      subIntervalNum: Number(oldMatch[3]), subIntervalSymbol: "SI",
-    };
+const parseStructuredIntervalID = (id = "") => {
+  const normalizedId = trimString(id);
+  if (!normalizedId) {
+    return { symbol: "", num: null };
   }
-  // New dash format: split from the right
-  const parts = s.split("-");
-  if (parts.length >= 2) {
-    const subPart = parseSymbolNum(parts[parts.length - 1]);
-    const tryPart = parseSymbolNum(parts[parts.length - 2]);
-    const intPart = parts.length >= 3 ? parseSymbolNum(parts[parts.length - 3]) : { symbol: "", num: null };
-    if (subPart.num != null && tryPart.num != null) {
-      return {
-        intervalNum: intPart.num, intervalSymbol: intPart.symbol,
-        tryNum: tryPart.num, intervalTrySymbol: tryPart.symbol,
-        subIntervalNum: subPart.num, subIntervalSymbol: subPart.symbol,
-      };
-    }
-  }
-  // Legacy "1_1"
-  const legacyParts = s.split("_").filter(Boolean);
-  if (legacyParts.length >= 2) {
-    return { intervalNum: Number(legacyParts[0]) || null, intervalSymbol: "", tryNum: 1, intervalTrySymbol: "", subIntervalNum: Number(legacyParts[1]) || null, subIntervalSymbol: "" };
-  }
-  return { intervalNum: null, intervalSymbol: "", tryNum: null, intervalTrySymbol: "", subIntervalNum: null, subIntervalSymbol: "" };
+  const m = normalizedId.match(/([A-Za-z]+)(\d+)$/);
+  return m ? { symbol: m[1], num: Number(m[2]) } : { symbol: "", num: null };
 };
 
-// ── Legacy helpers (kept for backward-compat reading of old DB data) ─────────
+const parseStructuredSubIntervalID = (id = "") => {
+  const s = trimString(id);
+  const empty = { intervalNum: null, intervalSymbol: "", tryNum: null, intervalTrySymbol: "", subIntervalNum: null, subIntervalSymbol: "" };
+  const m = s.match(/([A-Za-z]+)(\d+)([A-Za-z]+)(\d+)([A-Za-z]+)(\d+)$/);
+  if (!m) return empty;
+  return {
+    intervalNum: Number(m[2]),
+    intervalSymbol: m[1],
+    tryNum: Number(m[4]),
+    intervalTrySymbol: m[3],
+    subIntervalNum: Number(m[6]),
+    subIntervalSymbol: m[5],
+  };
+};
+
 const buildPlannerSubIntervalId = (entry = {}) => {
   const explicitSubIntervalId = trimString(
-    entry?.subIntervalID || entry?.subIntervalId || entry?.subintervalId,
+    entry?.subIntervalID || entry?.subIntervalId,
   );
   if (explicitSubIntervalId) return explicitSubIntervalId;
-  const intervalNum = trimString(entry?.intervalNum || entry?.intervalID);
-  const tryNum = entry?.intervalTryNum ?? 1;
+  const intervalID = trimString(entry?.intervalID || entry?.intervalId || entry?.intervalNum);
+  const tryNum = entry?.intervalTryNum;
   const subIntervalNum = trimString(entry?.subIntervalNum || entry?.subintervalNum || entry?.term);
-  if (intervalNum && subIntervalNum) {
-    return buildNewSubIntervalID(buildIntervalTryID(intervalNum, tryNum), subIntervalNum);
+  if (intervalID && subIntervalNum) {
+    return buildNewSubIntervalID(buildIntervalTryID(intervalID, tryNum), subIntervalNum);
   }
-  const year = inferIntervalYear(entry);
-  const term = inferIntervalTerm(entry);
-  return year && term ? `${year}_${term}` : "";
+  return "";
 };
 
 const parsePlannerSubIntervalYearTerm = (subIntervalId = "") => {
@@ -1399,10 +1472,92 @@ const parsePlannerSubIntervalYearTerm = (subIntervalId = "") => {
   if (parsed.intervalNum != null && parsed.subIntervalNum != null) {
     return { year: String(parsed.intervalNum), term: String(parsed.subIntervalNum) };
   }
-  // legacy date-based fallback
-  const digits = s.replace(/\D/g, "");
-  if (digits.length >= 5) return { year: digits.slice(0, 4), term: digits.slice(4, 5) };
   return { year: "", term: "" };
+};
+
+const assertStructuredSubIntervalID = (
+  subIntervalID = "",
+  intervalTryID = "",
+  subIntervalNum = null,
+  subIntervalSymbol = "sINT",
+) => {
+  const normalizedSubIntervalID = trimString(subIntervalID);
+  const normalizedTryID = trimString(intervalTryID);
+  const normalizedSubNum = Number.parseInt(String(subIntervalNum ?? ""), 10);
+  const normalizedSubSymbol = trimString(subIntervalSymbol) || "sINT";
+  const expectedSubIntervalID =
+    Number.isInteger(normalizedSubNum) && normalizedSubNum > 0
+      ? buildNewSubIntervalID(normalizedTryID, normalizedSubNum, normalizedSubSymbol)
+      : "";
+  if (!normalizedSubIntervalID || !normalizedTryID || !expectedSubIntervalID) {
+    throw new Error("Invalid subInterval ID chain.");
+  }
+  if (normalizedSubIntervalID !== expectedSubIntervalID) {
+    throw new Error(
+      `Invalid subInterval ID. Expected ${expectedSubIntervalID} but received ${normalizedSubIntervalID}.`,
+    );
+  }
+};
+
+const assertStructuredIntervalPayload = (entry = {}) => {
+  const base = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+  const intervalID = trimString(base?.intervalID || base?.intervalId);
+  if (!intervalID) {
+    throw new Error("intervalID is required.");
+  }
+  const parsedIntervalID = parseStructuredIntervalID(intervalID);
+  const intervalNum = Number.parseInt(trimString(base?.intervalNum), 10);
+  const intervalSymbol = trimString(base?.intervalSymbol) || parsedIntervalID.symbol;
+  if (!Number.isInteger(intervalNum) || intervalNum < 1) {
+    throw new Error(`Invalid intervalNum for ${intervalID}.`);
+  }
+  if (!parsedIntervalID.symbol || parsedIntervalID.num !== intervalNum) {
+    throw new Error(`intervalID must end with ${intervalSymbol}${intervalNum}.`);
+  }
+  if (intervalSymbol !== parsedIntervalID.symbol) {
+    throw new Error(`intervalSymbol mismatch for ${intervalID}.`);
+  }
+  const intervalTries = Array.isArray(base?.intervalTry) ? base.intervalTry : [];
+  if (intervalTries.length < 1) {
+    throw new Error(`intervalTry is required for ${intervalID}.`);
+  }
+  intervalTries.forEach((tryEntry) => {
+    const tryBase = tryEntry && typeof tryEntry === "object" ? toPlainObject(tryEntry) || {} : {};
+    const tryNum = Number.parseInt(trimString(tryBase?.intervalTryNum), 10);
+    const trySymbol = trimString(tryBase?.intervalTrySymbol) || "IT";
+    const intervalTryID = trimString(tryBase?.intervalTryID);
+    const expectedTryID =
+      Number.isInteger(tryNum) && tryNum > 0
+        ? buildIntervalTryID(intervalID, tryNum, trySymbol)
+        : "";
+    if (!intervalTryID || !expectedTryID) {
+      throw new Error(`Invalid intervalTryID for ${intervalID}.`);
+    }
+    if (intervalTryID !== expectedTryID) {
+      throw new Error(
+        `Invalid intervalTryID. Expected ${expectedTryID} but received ${intervalTryID}.`,
+      );
+    }
+    const subIntervals = Array.isArray(tryBase?.intervalTrysubIntervals)
+      ? tryBase.intervalTrysubIntervals
+      : [];
+    if (subIntervals.length < 1) {
+      throw new Error(`intervalTrysubIntervals is required for ${intervalTryID}.`);
+    }
+    subIntervals.forEach((subEntry) => {
+      const subBase =
+        subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
+      const subIntervalID = trimString(subBase?.subIntervalID || subBase?.subIntervalId);
+      const subIntervalNum = Number.parseInt(trimString(subBase?.subIntervalNum), 10);
+      const subIntervalSymbol = trimString(subBase?.subIntervalSymbol) || "sINT";
+      assertStructuredSubIntervalID(
+        subIntervalID,
+        intervalTryID,
+        subIntervalNum,
+        subIntervalSymbol,
+      );
+    });
+  });
 };
 
 const buildPlannerNextIntervalSubIntervals = (
@@ -1411,12 +1566,9 @@ const buildPlannerNextIntervalSubIntervals = (
   nextIntervalNum = null,
 ) => {
   const totalTerms = Math.max(1, toPositiveInteger(programTermsPerYear, 1));
-  const targetIntervalNum =
-    Number.parseInt(trimString(nextIntervalNum), 10) ||
-    Number.parseInt(trimString(baseInterval?.intervalNum || baseInterval?.intervalID), 10) ||
-    1;
-  const tryNum = Number.parseInt(trimString(baseInterval?.intervalTryNum), 10) || 1;
-  const intervalTryID = buildIntervalTryID(targetIntervalNum, tryNum);
+  const targetIntervalID = trimString(baseInterval?.intervalID || baseInterval?.intervalId);
+  const tryNum = Number.parseInt(trimString(baseInterval?.intervalTryNum), 10);
+  const intervalTryID = buildIntervalTryID(targetIntervalID, tryNum);
   return [{
     intervalTryID,
     intervalTryNum: tryNum,
@@ -1424,7 +1576,7 @@ const buildPlannerNextIntervalSubIntervals = (
       subIntervalID: buildNewSubIntervalID(intervalTryID, index + 1),
       subIntervalNum: index + 1,
       subIntervalCurrent: false,
-      subIntervalDates: { start: null, end: null },
+      subIntervalTryDates: { start: { day: null, month: null, year: null, date: null }, end: { day: null, month: null, year: null, date: null } },
       subIntervalCourses: [],
     })),
   }];
@@ -1440,6 +1592,8 @@ const normalizePlannerIntervalStatusValue = (value = "Normal") => {
 
 const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []) => {
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const programID = trimString(studyPlanner?.programID);
+  const intervalSymbol = "INT";
   const intervalIds = Array.from(
     new Set(
       (Array.isArray(intervals) ? intervals : [])
@@ -1449,9 +1603,12 @@ const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []
   );
   studyPlanner.programIntervals = intervalIds.map((subIntervalId, index) => {
     const intervalNum = index + 1;
-    const tryID = buildIntervalTryID(intervalNum, 1);
+    const intervalID = buildIntervalID(programID, intervalSymbol, intervalNum);
+    const tryID = buildIntervalTryID(intervalID, 1);
     return {
-      intervalID: intervalNum,
+      intervalID,
+      intervalNum,
+      intervalSymbol,
       intervalStatus: ["Normal"],
       intervalTry: [{
         intervalTryID: tryID,
@@ -1460,7 +1617,7 @@ const syncPlannerComponentIntervalsFromStudyPlanAid = (memoryDoc, intervals = []
           subIntervalID: subIntervalId || buildNewSubIntervalID(tryID, 1),
           subIntervalNum: 1,
           subIntervalCurrent: false,
-          subIntervalDates: { start: null, end: null },
+          subIntervalTryDates: { start: { day: null, month: null, year: null, date: null }, end: { day: null, month: null, year: null, date: null } },
           subIntervalCourses: [],
         }],
       }],
@@ -1508,14 +1665,11 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
           ? Number.parseFloat(source.courseWeight)
           : null;
     const normalizedCourseID = trimString(source?.courseID || source?.courseId);
-    // Parse courseNum from dash format "INT1-IT1-sINT1-CRS2" → 2, underscore format "I1_T1_SI1_C2" → 2, or legacy "1_1_3" → 3
+    // Parse courseNum from strict dash format "INT1-IT1-sINT1-CRS2" → 2
     const courseIDDashMatch = (normalizedCourseID || "").match(/-[A-Za-z]+(\d+)$/);
-    const courseIDCMatch = !courseIDDashMatch ? (normalizedCourseID || "").match(/_C(\d+)$/) : null;
     const parsedCourseIDNum = courseIDDashMatch
       ? Number.parseInt(courseIDDashMatch[1], 10)
-      : courseIDCMatch
-        ? Number.parseInt(courseIDCMatch[1], 10)
-        : Number.parseInt(String(normalizedCourseID || "").split("_")?.[2] || "", 10);
+      : null;
     const parsedCourseWeight = Number.isFinite(
       Number.parseFloat(normalizedCourseWeight),
     )
@@ -1605,86 +1759,59 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                 normalizedComponentEntry?.location ||
                 {},
             ),
-            componentLectures: (Array.isArray(
-              normalizedComponentEntry?.componentLectures,
-            )
-              ? normalizedComponentEntry.componentLectures
+            componentExams: (Array.isArray(normalizedComponentEntry?.componentExams)
+              ? normalizedComponentEntry.componentExams
               : []
-            )
-              .map((lectureEntry) => {
-                const normalizedLectureEntry =
-                  lectureEntry && typeof lectureEntry === "object"
-                    ? toPlainObject(lectureEntry) || {}
-                    : {};
-                const lectureName =
-                  trimString(normalizedLectureEntry?.lectureName) ||
-                  trimString(normalizedLectureEntry?.lectureId);
-                if (!lectureName) {
-                  return null;
-                }
-                const lectureNum = Number.isFinite(
-                  Number.parseInt(normalizedLectureEntry?.lectureNum, 10),
-                )
-                  ? Number.parseInt(normalizedLectureEntry.lectureNum, 10)
-                  : null;
-                const storedLectureID = trimString(normalizedLectureEntry?.lectureID);
-                const autoLectureID =
-                  !storedLectureID && componentID && lectureNum != null
-                    ? buildNewLectureID(componentID, lectureNum)
-                    : "";
-                const resolvedLectureID = storedLectureID || autoLectureID || "";
-                return {
-                  lectureID: resolvedLectureID,
-                  lectureNum,
-                  lectureName,
-                  lectureInstructors: normalizeStringArray(
-                    normalizedLectureEntry?.lectureInstructors,
-                  ),
-                  lectureEditors: normalizeStringArray(
-                    normalizedLectureEntry?.lectureEditors,
-                  ),
-                  lectureInstructionDate: parseOptionalDate(
-                    normalizedLectureEntry?.lectureInstructionDate ||
-                      normalizedLectureEntry?.lectureGivenDate,
-                  ),
-                  lectureEditedDate: parseOptionalDate(
-                    normalizedLectureEntry?.lectureEditedDate,
-                  ),
-                  lectureLocation: sanitizeStudyLocation(
-                    normalizedLectureEntry?.lectureLocation || {},
-                  ),
-                  lectureVolume: sanitizeStudyVolume(
-                    normalizedLectureEntry?.lectureVolume || {},
-                  ),
-                  lecture_pagesFinished: normalizeLecturePagesFinished(
-                    normalizedLectureEntry?.lecture_pagesFinished,
-                  ),
-                  lectureBytes: (Array.isArray(normalizedLectureEntry?.lectureBytes)
-                    ? normalizedLectureEntry.lectureBytes
-                    : Array.isArray(normalizedLectureEntry?.lectureContent)
-                      ? normalizedLectureEntry.lectureContent
-                      : []
-                  ).map((ba, baIdx) => ({
-                    ...((ba && typeof ba === "object") ? ba : { byteArrayName: ba }),
-                    byteArrayID:
-                      trimString(ba?.byteArrayID) ||
-                      buildNewByteArrayID(resolvedLectureID, baIdx + 1),
-                  })),
-                };
-              })
-              .filter(Boolean),
+            ).map((examEntry) => {
+              const exam = examEntry && typeof examEntry === "object" ? toPlainObject(examEntry) || {} : {};
+              const examNum = Number.isFinite(Number.parseInt(exam?.examNum, 10))
+                ? Number.parseInt(exam.examNum, 10)
+                : null;
+              const examSymbol = trimString(exam?.examSymbol) || "EXM";
+              const examID = trimString(exam?.examID) ||
+                (componentID && examNum != null ? buildNewExamID(componentID, examNum) : "");
+              return {
+                examSymbol,
+                examNum,
+                examID,
+                examLocation: sanitizeStudyLocation(exam?.examLocation || {}),
+                examDate: parseOptionalDate(exam?.examDate || null),
+                examTime: trimString(exam?.examTime) || "",
+                examWeight: Number.isFinite(Number(exam?.examWeight)) ? Number(exam.examWeight) : null,
+                examGrade: Number.isFinite(Number(exam?.examGrade)) ? Number(exam.examGrade) : null,
+                examsLectures: Array.isArray(exam?.examsLectures) ? exam.examsLectures.map((lec) => {
+                  const l = lec && typeof lec === "object" ? toPlainObject(lec) || {} : {};
+                  return {
+                    lectureSymbol: trimString(l?.lectureSymbol) || "LEC",
+                    lectureNum: Number.isFinite(Number.parseInt(l?.lectureNum, 10)) ? Number.parseInt(l.lectureNum, 10) : null,
+                    lectureID: trimString(l?.lectureID) || "",
+                    lectureName: trimString(l?.lectureName) || "",
+                    lectureInstructors: normalizeStringArray(l?.lectureInstructors),
+                    lectureInstructionDate: parseOptionalDate(l?.lectureInstructionDate || null),
+                    lectureDocuments: Array.isArray(l?.lectureDocuments) ? l.lectureDocuments : [],
+                  };
+                }).filter((l) => Boolean(l.lectureName || l.lectureID)) : [],
+              };
+            }).filter((exam) => Boolean(exam.examID || exam.examNum != null)),
           };
         }),
       };
     })
     .filter((courseEntry) => Boolean(courseEntry.courseName));
 
-// Flatten one programInterval entry into sub-interval records.
-// Handles both the new intervalTry structure and legacy intervalsubIntervals.
+// Flatten one programInterval entry into strict sub-interval records.
 const flattenProgramIntervalEntry = (entry) => {
   const base = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
-  const intervalIDNum =
-    Number.parseInt(trimString(base?.intervalID || base?.intervalNum || base?.intervalId), 10) || null;
+  const hasStructuredTries = Array.isArray(base?.intervalTry) && base.intervalTry.length > 0;
+  if (hasStructuredTries) {
+    assertStructuredIntervalPayload(base);
+  }
+  const rawIntervalRef = trimString(base?.intervalID || base?.intervalId || base?.intervalNum);
+  const resolvedIntervalID = rawIntervalRef;
+  const directNum = Number.parseInt(rawIntervalRef, 10);
+  const intervalIDNum = Number.isFinite(directNum)
+    ? directNum
+    : parseStructuredIntervalID(rawIntervalRef).num ?? null;
   const intervalStatus = normalizePlannerIntervalStatusValue(base?.intervalStatus);
 
   const intervalSymbol = trimString(base?.intervalSymbol) || "INT";
@@ -1696,7 +1823,7 @@ const flattenProgramIntervalEntry = (entry) => {
       const tryNum = Number.parseInt(trimString(tryBase?.intervalTryNum), 10) || 1;
       const intervalTrySymbol = trimString(tryBase?.intervalTrySymbol) || "IT";
       const intervalTryID =
-        trimString(tryBase?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum, intervalTrySymbol);
+        trimString(tryBase?.intervalTryID) || buildIntervalTryID(resolvedIntervalID, tryNum, intervalTrySymbol);
       return (Array.isArray(tryBase?.intervalTrysubIntervals) ? tryBase.intervalTrysubIntervals : [])
         .map((subEntry) => {
           const sub = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
@@ -1715,9 +1842,9 @@ const flattenProgramIntervalEntry = (entry) => {
             subIntervalSymbol,
             subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
             intervalStatus,
-            subIntervalDates: {
-              start: parseOptionalDate(sub?.subIntervalDates?.start),
-              end: parseOptionalDate(sub?.subIntervalDates?.end),
+            subIntervalTryDates: {
+              start: parseDateToComponents(sub?.subIntervalTryDates?.start ?? sub?.subIntervalDates?.start),
+              end: parseDateToComponents(sub?.subIntervalTryDates?.end ?? sub?.subIntervalDates?.end),
             },
             intervalCourses: normalizePlannerIntervalCourseEntries(sub?.subIntervalCourses),
           };
@@ -1726,60 +1853,51 @@ const flattenProgramIntervalEntry = (entry) => {
     });
   }
 
-  // ── Legacy structure: intervalsubIntervals[] ──────────────────────────────
-  const legacySubIntervals = Array.isArray(base?.intervalsubIntervals) ? base.intervalsubIntervals : [];
-  if (legacySubIntervals.length > 0) {
-    return legacySubIntervals.map((subEntry) => {
-      const sub = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
-      const subIntervalID = trimString(sub?.subIntervalID || sub?.subIntervalId || sub?.subIntervalNum);
-      if (!subIntervalID) return null;
-      const tryNum = Number.parseInt(trimString(sub?.subIntervalTryNum), 10) || 1;
-      const intervalTryID = buildIntervalTryID(intervalIDNum, tryNum);
-      return {
-        intervalIDNum,
-        intervalTryID,
-        intervalTryNum: tryNum,
-        subIntervalID,
-        subIntervalNum: Number.parseInt(trimString(sub?.subIntervalNum), 10) ||
-          parseStructuredSubIntervalID(subIntervalID).subIntervalNum || null,
-        subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
-        intervalStatus,
-        subIntervalDates: {
-          start: parseOptionalDate(sub?.subIntervalDates?.start),
-          end: parseOptionalDate(sub?.subIntervalDates?.end),
-        },
-        intervalCourses: normalizePlannerIntervalCourseEntries(sub?.subIntervalCourses),
-      };
-    }).filter(Boolean);
-  }
-
-  // ── Flat entry (single sub-interval per object) ───────────────────────────
+  // ── Flat UI row entry (current client submit shape) ───────────────────────
   const subIntervalID = trimString(
-    base?.subIntervalID || base?.subIntervalId || base?.subintervalId,
+    base?.subIntervalID || base?.subIntervalId,
   );
   if (!subIntervalID) return [];
   const tryNum = Number.parseInt(trimString(base?.intervalTryNum), 10) || 1;
+  const trySymbol = trimString(base?.intervalTrySymbol) || "IT";
   const intervalTryID =
-    trimString(base?.intervalTryID) || buildIntervalTryID(intervalIDNum, tryNum);
+    trimString(base?.intervalTryID) || buildIntervalTryID(resolvedIntervalID, tryNum, trySymbol);
   const parsed = parseStructuredSubIntervalID(subIntervalID);
+  assertStructuredSubIntervalID(
+    subIntervalID,
+    intervalTryID,
+    Number.parseInt(trimString(base?.subIntervalNum), 10) || parsed.subIntervalNum || null,
+    trimString(base?.subIntervalSymbol) || parsed.subIntervalSymbol || "sINT",
+  );
   return [{
     intervalIDNum,
+    intervalSymbol,
     intervalTryID,
     intervalTryNum: tryNum,
+    intervalTrySymbol: trySymbol,
     subIntervalID,
     subIntervalNum: Number.parseInt(trimString(base?.subIntervalNum), 10) || parsed.subIntervalNum || null,
+    subIntervalSymbol: trimString(base?.subIntervalSymbol) || parsed.subIntervalSymbol || "sINT",
     subIntervalCurrent: Boolean(base?.subIntervalCurrent),
     intervalStatus,
-    subIntervalDates: {
-      start: parseOptionalDate(base?.subIntervalDates?.start),
-      end: parseOptionalDate(base?.subIntervalDates?.end),
+    subIntervalTryDates: {
+      start: parseDateToComponents(base?.subIntervalTryDates?.start ?? base?.subIntervalDates?.start),
+      end: parseDateToComponents(base?.subIntervalTryDates?.end ?? base?.subIntervalDates?.end),
     },
     intervalCourses: normalizePlannerIntervalCourseEntries(base?.intervalCourses || base?.subIntervalCourses),
   }];
 };
 
+const buildIntervalID = (programID, intervalSymbol, intervalIDNum) => {
+  const sym = trimString(intervalSymbol) || "INT";
+  const num = intervalIDNum != null ? String(intervalIDNum) : "";
+  const symNum = `${sym}${num}`;
+  const pid = trimString(programID);
+  return pid ? `${pid}: ${symNum}` : symNum;
+};
+
 // Reassemble flat sub-interval records → programIntervals[].intervalTry[].intervalTrysubIntervals[]
-const assembleProgramIntervals = (flatEntries) => {
+const assembleProgramIntervals = (flatEntries, programID = "") => {
   // Group: intervalIDNum → Map(intervalTryID → Map(subIntervalID → subEntry))
   const intervalMap = new Map();
   for (const entry of flatEntries) {
@@ -1788,7 +1906,12 @@ const assembleProgramIntervals = (flatEntries) => {
     const sKey = entry.subIntervalID || "";
     if (!sKey) continue;
     if (!intervalMap.has(iKey)) {
-      intervalMap.set(iKey, { intervalIDNum: entry.intervalIDNum, intervalStatus: entry.intervalStatus, tries: new Map() });
+      intervalMap.set(iKey, {
+        intervalIDNum: entry.intervalIDNum,
+        intervalSymbol: entry.intervalSymbol || "INT",
+        intervalStatus: entry.intervalStatus,
+        tries: new Map(),
+      });
     }
     const iEntry = intervalMap.get(iKey);
     if (entry.intervalStatus && entry.intervalStatus !== "Normal") iEntry.intervalStatus = entry.intervalStatus;
@@ -1800,12 +1923,17 @@ const assembleProgramIntervals = (flatEntries) => {
       subIntervalID: sKey,
       subIntervalNum: entry.subIntervalNum != null ? String(entry.subIntervalNum) : "",
       subIntervalCurrent: Boolean(entry.subIntervalCurrent),
-      subIntervalDates: entry.subIntervalDates || { start: null, end: null },
+      subIntervalTryDates: {
+        start: parseDateToComponents(entry.subIntervalTryDates?.start ?? entry.subIntervalDates?.start),
+        end: parseDateToComponents(entry.subIntervalTryDates?.end ?? entry.subIntervalDates?.end),
+      },
       subIntervalCourses: normalizePlannerIntervalCourseEntries(entry.intervalCourses),
     });
   }
   return Array.from(intervalMap.values()).map((iEntry) => ({
-    intervalID: iEntry.intervalIDNum,
+    intervalID: buildIntervalID(programID, iEntry.intervalSymbol, iEntry.intervalIDNum),
+    intervalNum: iEntry.intervalIDNum,
+    intervalSymbol: iEntry.intervalSymbol,
     intervalStatus: [normalizePlannerIntervalStatusValue(iEntry.intervalStatus)],
     intervalTry: Array.from(iEntry.tries.values()).map((tEntry) => ({
       intervalTryID: tEntry.intervalTryID,
@@ -1815,9 +1943,121 @@ const assembleProgramIntervals = (flatEntries) => {
   }));
 };
 
-const normalizePlannerIntervalEntries = (intervals = []) => {
+const syncProgramCurrentIntervalTrySelection = (
+  programIntervals = [],
+  programCurrentIntervalTryNum = null,
+  explicitSubIntervalID = "",
+) => {
+  const sourceIntervals = Array.isArray(programIntervals) ? programIntervals : [];
+  const currentMeta =
+    programCurrentIntervalTryNum &&
+    typeof programCurrentIntervalTryNum === "object"
+      ? toPlainObject(programCurrentIntervalTryNum) || {}
+      : null;
+  const normalizedExplicitSubIntervalID = trimString(explicitSubIntervalID);
+  const selectedIntervalNum = toFiniteNumber(currentMeta?.intervalNum, null);
+  const selectedTryNum = toFiniteNumber(currentMeta?.intervalTryNum, null);
+  const selectedSubIntervalNum = toFiniteNumber(currentMeta?.subIntervalNum, null);
+  const hasSelection =
+    Number.isFinite(selectedIntervalNum) && Number.isFinite(selectedTryNum);
+
+  return sourceIntervals.map((intervalEntry) => {
+    const base =
+      intervalEntry && typeof intervalEntry === "object"
+        ? toPlainObject(intervalEntry) || {}
+        : {};
+    const intervalNum = toFiniteNumber(base?.intervalNum, null);
+    const mappedTries = (Array.isArray(base?.intervalTry) ? base.intervalTry : []).map(
+      (tryEntry) => {
+        const tryBase =
+          tryEntry && typeof tryEntry === "object"
+            ? toPlainObject(tryEntry) || {}
+            : {};
+        const tryNum = toFiniteNumber(tryBase?.intervalTryNum, null);
+        const isSelectedTry =
+          hasSelection &&
+          intervalNum === selectedIntervalNum &&
+          tryNum === selectedTryNum;
+        const subIntervals = Array.isArray(tryBase?.intervalTrysubIntervals)
+          ? [...tryBase.intervalTrysubIntervals]
+          : [];
+        const activeSubIndex = isSelectedTry
+          ? normalizedExplicitSubIntervalID
+            ? subIntervals.findIndex((subEntry) => {
+                const subBase =
+                  subEntry && typeof subEntry === "object"
+                    ? toPlainObject(subEntry) || {}
+                    : {};
+                return (
+                  trimString(subBase?.subIntervalID || subBase?.subIntervalId) ===
+                  normalizedExplicitSubIntervalID
+                );
+              })
+            : Number.isFinite(selectedSubIntervalNum)
+              ? subIntervals.findIndex((subEntry) => {
+                  const subBase =
+                    subEntry && typeof subEntry === "object"
+                      ? toPlainObject(subEntry) || {}
+                      : {};
+                  return toFiniteNumber(subBase?.subIntervalNum, null) === selectedSubIntervalNum;
+                })
+            : subIntervals.reduce((bestIndex, subEntry, index) => {
+                const subBase =
+                  subEntry && typeof subEntry === "object"
+                    ? toPlainObject(subEntry) || {}
+                    : {};
+                const subNum = Number.parseInt(trimString(subBase?.subIntervalNum), 10);
+                if (!Number.isFinite(subNum) || subNum <= 0) {
+                  return bestIndex;
+                }
+                if (bestIndex === -1) {
+                  return index;
+                }
+                const bestBase =
+                  subIntervals[bestIndex] && typeof subIntervals[bestIndex] === "object"
+                    ? toPlainObject(subIntervals[bestIndex]) || {}
+                    : {};
+                const bestNum = Number.parseInt(trimString(bestBase?.subIntervalNum), 10);
+                return !Number.isFinite(bestNum) || subNum < bestNum ? index : bestIndex;
+              }, -1)
+          : -1;
+
+        return {
+          ...tryBase,
+          intervalTrysubIntervals: subIntervals.map((subEntry, index) => {
+            const subBase =
+              subEntry && typeof subEntry === "object"
+                ? toPlainObject(subEntry) || {}
+                : {};
+            return {
+              ...subBase,
+              subIntervalCurrent: isSelectedTry ? index === activeSubIndex : false,
+            };
+          }),
+        };
+      },
+    );
+    return {
+      ...base,
+      intervalTry: mappedTries,
+    };
+  });
+};
+
+const normalizePlannerIntervalEntries = (intervals = [], programID = "") => {
+  const sourceIntervals = Array.isArray(intervals) ? intervals : [];
+  sourceIntervals.forEach((entry) => {
+    const base = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+    if (Array.isArray(base?.intervalsubIntervals)) {
+      throw new Error("Legacy intervalsubIntervals is not supported.");
+    }
+    const rawSubIntervalID = trimString(base?.subIntervalID || base?.subIntervalId);
+    if (rawSubIntervalID && rawSubIntervalID.includes("_")) {
+      throw new Error(`Legacy subIntervalID is not supported: ${rawSubIntervalID}`);
+    }
+  });
   const flat = (Array.isArray(intervals) ? intervals : []).flatMap(flattenProgramIntervalEntry);
-  return assembleProgramIntervals(flat);
+  return assembleProgramIntervals(flat, programID);
 };
 
 export const updateStudyPlanAidInPlanner = (memoryDoc, payload = {}) => {
@@ -1837,8 +2077,10 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const programID = trimString(studyPlanner?.programID);
   studyPlanner.programIntervals = normalizePlannerIntervalEntries(
     normalizedPayload?.intervals,
+    programID,
   );
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
@@ -1947,6 +2189,33 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
       const subSymbol = trimString(existingTries[0]?.intervalTrysubIntervals?.[0]?.subIntervalSymbol) || "sINT";
       const nextTryID = buildIntervalTryID(failedInterval.intervalID ?? failedInterval.intervalNum, nextTryNum, trySymbol);
       const termsPerYear = Number.parseInt(trimString(studyPlanner?.programTermsPerYear), 10) || 1;
+      const lastTry = existingTries[existingTries.length - 1] || {};
+      const lastSubIntervals = Array.isArray(lastTry.intervalTrysubIntervals) ? lastTry.intervalTrysubIntervals : [];
+      const shiftRetakeDateByOneYear = (rawDate = {}) => {
+        const parsedDate = parseDateToComponents(rawDate);
+        const currentYear =
+          Number.isInteger(Number(parsedDate?.year)) && Number(parsedDate.year) >= 1000
+            ? Number(parsedDate.year)
+            : null;
+        const nextYear = currentYear != null ? currentYear + 1 : null;
+        const month =
+          Number.isInteger(Number(parsedDate?.month)) && Number(parsedDate.month) >= 1 && Number(parsedDate.month) <= 12
+            ? Number(parsedDate.month)
+            : null;
+        const day =
+          Number.isInteger(Number(parsedDate?.day)) && Number(parsedDate.day) >= 1 && Number(parsedDate.day) <= 31
+            ? Number(parsedDate.day)
+            : null;
+        return {
+          day,
+          month,
+          year: nextYear,
+          date:
+            nextYear != null && month != null && day != null
+              ? new Date(`${String(nextYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00.000Z`)
+              : null,
+        };
+      };
       nextProgramIntervals[targetIndex] = {
         ...failedInterval,
         intervalTry: [
@@ -1955,14 +2224,22 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
             intervalTrySymbol: trySymbol,
             intervalTryID: nextTryID,
             intervalTryNum: nextTryNum,
-            intervalTrysubIntervals: Array.from({ length: termsPerYear }, (_, i) => ({
-              subIntervalSymbol: subSymbol,
-              subIntervalID: buildNewSubIntervalID(nextTryID, i + 1, subSymbol),
-              subIntervalNum: i + 1,
-              subIntervalCurrent: false,
-              subIntervalDates: { start: null, end: null },
-              subIntervalCourses: [],
-            })),
+            intervalTrysubIntervals: Array.from({ length: termsPerYear }, (_, i) => {
+              const prevSub = lastSubIntervals[i] || {};
+              const nextStart = shiftRetakeDateByOneYear(prevSub.subIntervalTryDates?.start || {});
+              const nextEnd = shiftRetakeDateByOneYear(prevSub.subIntervalTryDates?.end || {});
+              return {
+                subIntervalSymbol: subSymbol,
+                subIntervalID: buildNewSubIntervalID(nextTryID, i + 1, subSymbol),
+                subIntervalNum: i + 1,
+                subIntervalCurrent: false,
+                subIntervalTryDates: {
+                  start: nextStart,
+                  end: nextEnd,
+                },
+                subIntervalCourses: [],
+              };
+            }),
           },
         ],
       };
@@ -2069,14 +2346,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
             const obj = toPlainObject(entry) || {};
             const firstName = trimString(obj?.firstName) || "";
             const lastName = trimString(obj?.lastName) || "";
-            return firstName || lastName ? { firstName, lastName } : null;
+            return firstName && lastName ? { firstName, lastName } : null;
           }
-          const str = trimString(entry);
-          if (!str) return null;
-          const idx = str.indexOf(" ");
-          return idx === -1
-            ? { firstName: str, lastName: "" }
-            : { firstName: str.slice(0, idx).trim(), lastName: str.slice(idx + 1).trim() };
+          return null;
         })
         .filter(Boolean)
     : [];
@@ -2188,9 +2460,23 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     const rawObj = raw && typeof raw === "object" ? toPlainObject(raw) || {} : {};
     const intervalNum = toFiniteNumber(rawObj?.intervalNum, null);
     const intervalTryNum = toFiniteNumber(rawObj?.intervalTryNum, null);
-    studyPlanner.programCurrentIntervalTryNum = (intervalNum !== null || intervalTryNum !== null)
-      ? { intervalNum, intervalTryNum }
+    const subIntervalNum = toFiniteNumber(rawObj?.subIntervalNum, null);
+    const targetSubIntervalId = trimString(
+      normalizedPayload?.subIntervalID || normalizedPayload?.subIntervalId,
+    );
+    studyPlanner.programCurrentIntervalTryNum = (intervalNum !== null || intervalTryNum !== null || subIntervalNum !== null)
+      ? { intervalNum, intervalTryNum, subIntervalNum }
       : null;
+    studyPlanner.programIntervals = syncProgramCurrentIntervalTrySelection(
+      studyPlanner.programIntervals,
+      studyPlanner.programCurrentIntervalTryNum,
+      targetSubIntervalId,
+    );
+    if (typeof memoryDoc?.markModified === "function") {
+      memoryDoc.markModified("studyPlanner");
+      memoryDoc.markModified("studyPlanner.programCurrentIntervalTryNum");
+      memoryDoc.markModified("studyPlanner.programIntervals");
+    }
   }
   if (hasProgramAIExtractions) {
     studyPlanner.programAIExtractions = (Array.isArray(normalizedPayload?.programAIExtractions)
@@ -2200,12 +2486,51 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
       .map((entry) => {
         if (!entry || typeof entry !== "object") return null;
         const obj = toPlainObject(entry) || {};
-        const extractionGoal = trimString(obj?.extractionGoal) || "";
-        const extractionItems = Array.isArray(obj?.extractionItems)
-          ? obj.extractionItems.map((s) => trimString(s) || "").filter(Boolean)
-          : [];
-        const extractionTimestamp = trimString(obj?.extractionTimestamp) || "";
-        return { extractionGoal, extractionItems, extractionTimestamp };
+        const result = {};
+        if (Array.isArray(obj?.coursesNameCode)) {
+          result.coursesNameCode = obj.coursesNameCode
+            .map((c) => {
+              const co = c && typeof c === "object" ? toPlainObject(c) || {} : {};
+              return { courseName: trimString(co?.courseName) || "", courseCode: trimString(co?.courseCode) || "" };
+            })
+            .filter((c) => c.courseName || c.courseCode);
+        }
+        if (Array.isArray(obj?.instructorsNames)) {
+          result.instructorsNames = obj.instructorsNames
+            .map((n) => {
+              const no = n && typeof n === "object" ? toPlainObject(n) || {} : {};
+              return { firstName: trimString(no?.firstName) || "", lastName: trimString(no?.lastName) || "" };
+            })
+            .filter((n) => n.firstName && n.lastName);
+        }
+        if (Array.isArray(obj?.subIntervalCourses)) {
+          result.subIntervalCourses = obj.subIntervalCourses
+            .map((c) => {
+              const co = c && typeof c === "object" ? toPlainObject(c) || {} : {};
+              return {
+                courseSymbol: trimString(co?.courseSymbol) || "CRS",
+                courseNum: Number.isFinite(co?.courseNum) ? co.courseNum : undefined,
+                courseID: trimString(co?.courseID) || "",
+                courseName: trimString(co?.courseName) || "",
+                courseCode: trimString(co?.courseCode) || "",
+                courseWeight: Number.isFinite(co?.courseWeight) ? co.courseWeight : 100,
+                courseComponents: Array.isArray(co?.courseComponents)
+                  ? co.courseComponents.map((comp) => {
+                      const cp = comp && typeof comp === "object" ? toPlainObject(comp) || {} : {};
+                      return {
+                        componentSymbol: trimString(cp?.componentSymbol) || "COMP",
+                        componentNum: Number.isFinite(cp?.componentNum) ? cp.componentNum : undefined,
+                        componentID: trimString(cp?.componentID) || "",
+                        componentClass: trimString(cp?.componentClass) || "",
+                        componentWeight: Number.isFinite(cp?.componentWeight) ? cp.componentWeight : null,
+                      };
+                    })
+                  : [],
+              };
+            })
+            .filter((c) => c.courseName || c.courseCode);
+        }
+        return Object.keys(result).length > 0 ? result : null;
       })
       .filter(Boolean);
   }
@@ -2267,6 +2592,10 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
 
   ensureStudyOrganizer(memoryDoc);
   ensureStudyPlanAid(memoryDoc);
+
+  if (typeof memoryDoc?.markModified === "function") {
+    memoryDoc.markModified("studyPlanner");
+  }
 
   return studyPlanner;
 };
