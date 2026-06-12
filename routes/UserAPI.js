@@ -13,7 +13,7 @@ import cloudinary from "../helpers/cloudinary.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import UserModel from "../compat/UserModel.js";
-import VisitLogEntryModel from "../models/VisitLogEntry.js";
+import VisitorsModel from "../models/Visitors.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
@@ -1138,39 +1138,6 @@ const isPendingFriendRequestPair = ({ receiverMode, requesterMode }) =>
 const VISIT_LOG_OWNER_USERNAME = "rudyhamame";
 const VISIT_LOG_LIMIT = 200;
 
-const normalizeVisitLogEntry = (entry = {}) => ({
-  ip: String(entry?.ip || "").trim(),
-  country: String(entry?.country || "Unknown").trim() || "Unknown",
-  visitedAt: entry?.visitedAt ? new Date(entry.visitedAt) : new Date(),
-});
-
-const seedVisitLogCollectionFromLegacyOwner = async (legacyOwner = null) => {
-  const storedCount = await VisitLogEntryModel.countDocuments({});
-  if (storedCount > 0) {
-    return false;
-  }
-
-  const legacyVisitLog = Array.isArray(legacyOwner?.visitLog)
-    ? legacyOwner.visitLog
-    : [];
-  if (legacyVisitLog.length === 0) {
-    return false;
-  }
-
-  const normalizedLegacyEntries = legacyVisitLog
-    .slice(0, VISIT_LOG_LIMIT)
-    .map((entry) => normalizeVisitLogEntry(entry))
-    .filter((entry) => Boolean(entry.ip));
-
-  if (normalizedLegacyEntries.length === 0) {
-    return false;
-  }
-
-  await VisitLogEntryModel.insertMany(normalizedLegacyEntries, {
-    ordered: true,
-  });
-  return true;
-};
 const APP_LAST_UPDATED_CACHE_TTL_MS = 5 * 60 * 1000;
 const HOMETOWN_CITIES_CACHE_TTL_MS = 30 * 60 * 1000;
 
@@ -4545,6 +4512,126 @@ UserRouter.get("/profile/:username", function (req, res, next) {
     .catch(next);
 });
 
+// ── Video Gate ────────────────────────────────────────────────────────────────
+
+UserRouter.get("/video-gate", checkAuth, async function (req, res, next) {
+  try {
+    if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
+      return res.status(403).json({ message: "Not allowed." });
+    }
+
+    const owner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("settings.videoGate")
+      .lean();
+
+    const gate = owner?.settings?.videoGate || {};
+
+    return res.status(200).json({
+      videoGate: {
+        enabled: Boolean(gate.enabled),
+        companyName: String(gate.companyName || ""),
+        hasPassword: Boolean(gate.passwordHash),
+        updatedAt: gate.updatedAt || null,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.put("/video-gate", checkAuth, async function (req, res, next) {
+  try {
+    if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
+      return res.status(403).json({ message: "Not allowed." });
+    }
+
+    const enabled = req.body?.enabled !== false;
+    const companyName = String(req.body?.companyName || "").trim();
+    const password = String(req.body?.password || "").trim();
+
+    if (!companyName) {
+      return res.status(400).json({ message: "Company name is required." });
+    }
+
+    const existing = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("settings.videoGate.passwordHash")
+      .lean();
+
+    const existingHash = existing?.settings?.videoGate?.passwordHash || "";
+
+    if (!password && !existingHash) {
+      return res.status(400).json({ message: "Password is required." });
+    }
+
+    const passwordHash = password ? await bcrypt.hash(password, 10) : existingHash;
+
+    await UserModel.updateOne(
+      { "auth.username": VISIT_LOG_OWNER_USERNAME },
+      {
+        $set: {
+          "settings.videoGate.enabled": enabled,
+          "settings.videoGate.companyName": companyName.toLowerCase(),
+          "settings.videoGate.passwordHash": passwordHash,
+          "settings.videoGate.updatedAt": new Date(),
+        },
+      },
+    );
+
+    return res.status(200).json({
+      videoGate: {
+        enabled,
+        companyName: companyName.toLowerCase(),
+        hasPassword: true,
+        updatedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.post("/video-gate/verify", async function (req, res, next) {
+  try {
+    const companyName = String(req.body?.companyName || "").trim().toLowerCase();
+    const password = String(req.body?.password || "").trim();
+
+    if (!companyName || !password) {
+      return res.status(400).json({ message: "Company name and password are required." });
+    }
+
+    const owner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("settings.videoGate")
+      .lean();
+
+    const gate = owner?.settings?.videoGate;
+
+    if (!gate?.enabled || !gate?.companyName || !gate?.passwordHash) {
+      return res.status(200).json({ verified: true });
+    }
+
+    if (gate.companyName !== companyName) {
+      return res.status(401).json({ verified: false, message: "Invalid credentials." });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, gate.passwordHash);
+    if (!passwordMatches) {
+      return res.status(401).json({ verified: false, message: "Invalid credentials." });
+    }
+
+    return res.status(200).json({ verified: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// ── Visit Log ─────────────────────────────────────────────────────────────────
+
 UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
   try {
     if (req.authentication?.username !== VISIT_LOG_OWNER_USERNAME) {
@@ -4553,38 +4640,21 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    const storedLog = await VisitLogEntryModel.find({})
-      .sort({ visitedAt: -1, createdAt: -1 })
+    const visitors = await VisitorsModel.find({})
+      .sort({ lastSeenAt: -1 })
       .limit(VISIT_LOG_LIMIT)
       .lean();
 
-    if (storedLog.length > 0) {
-      return res.status(200).json({
-        visitLog: storedLog,
-      });
-    }
+    const visitLog = visitors.map((v) => ({
+      _id: String(v._id),
+      ip: v.ip,
+      country: v.geo?.country || "Unknown",
+      visitedAt: v.lastSeenAt || v.firstSeenAt,
+      visitCount: v.visitCount ?? 1,
+      status: v.status || "allowed",
+    }));
 
-    const owner = await UserModel.findOne({
-      "auth.username": VISIT_LOG_OWNER_USERNAME,
-    })
-      .select("visitLog")
-      .lean();
-
-    await seedVisitLogCollectionFromLegacyOwner(owner);
-
-    const visitLog = Array.isArray(owner?.visitLog) ? owner.visitLog : [];
-    const sortedLog = visitLog
-      .slice()
-      .sort(
-        (a, b) =>
-          new Date(b?.visitedAt || 0).getTime() -
-          new Date(a?.visitedAt || 0).getTime(),
-      )
-      .slice(0, VISIT_LOG_LIMIT);
-
-    return res.status(200).json({
-      visitLog: sortedLog,
-    });
+    return res.status(200).json({ visitLog });
   } catch (error) {
     return next(error);
   }
@@ -4594,59 +4664,49 @@ UserRouter.post("/visit-log", async function (req, res, next) {
   try {
     const ip = getRequestIp(req);
     const country = getCountryFromIp(ip);
+    const now = new Date();
 
-    const visitLogOwner = await UserModel.findOne({
-      "auth.username": VISIT_LOG_OWNER_USERNAME,
-    }).select("_id visitLog");
-
-    if (!visitLogOwner) {
-      return res.status(404).json({
-        message: "Visit log owner not found.",
-      });
-    }
-
-    await seedVisitLogCollectionFromLegacyOwner(visitLogOwner);
-
-    const storedEntry = await VisitLogEntryModel.create({
-      ip,
-      country,
-      visitedAt: new Date(),
-    });
-
-    visitLogOwner.visitLog = Array.isArray(visitLogOwner.visitLog)
-      ? visitLogOwner.visitLog
-      : [];
-
-    visitLogOwner.visitLog.unshift({
-      ip,
-      country,
-      visitedAt: storedEntry?.visitedAt || new Date(),
-    });
-
-    visitLogOwner.visitLog = visitLogOwner.visitLog.slice(0, VISIT_LOG_LIMIT);
-    await visitLogOwner.save();
+    const visitor = await VisitorsModel.findOneAndUpdate(
+      { ip },
+      {
+        $set: { lastSeenAt: now, "geo.country": country || "" },
+        $inc: { visitCount: 1 },
+        $push: {
+          visits: {
+            visitedAt: now,
+            country: country || "",
+            path: String(req.headers?.referer || req.path || "/").slice(0, 512),
+            userAgent: String(req.headers?.["user-agent"] || "").slice(0, 512),
+          },
+        },
+        $setOnInsert: { firstSeenAt: now },
+      },
+      { upsert: true, new: true },
+    );
 
     const io = req.app.locals.io;
+    const ownerDoc = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("_id")
+      .lean();
 
-    if (io && visitLogOwner?._id) {
-      io.to(`user:${String(visitLogOwner._id)}`).emit("visit-log:new", {
-        visitLog: {
-          _id: storedEntry?._id ? String(storedEntry._id) : "",
-          ip: storedEntry?.ip || ip,
-          country: storedEntry?.country || country || "Unknown",
-          visitedAt: storedEntry?.visitedAt || new Date(),
-        },
+    const entry = {
+      _id: String(visitor._id),
+      ip: visitor.ip,
+      country: visitor.geo?.country || country || "Unknown",
+      visitedAt: now,
+      visitCount: visitor.visitCount ?? 1,
+      status: visitor.status || "allowed",
+    };
+
+    if (io && ownerDoc?._id) {
+      io.to(`user:${String(ownerDoc._id)}`).emit("visit-log:new", {
+        visitLog: entry,
       });
     }
 
-    return res.status(201).json({
-      visitLog: {
-        _id: storedEntry?._id ? String(storedEntry._id) : "",
-        ip: storedEntry?.ip || ip,
-        country: storedEntry?.country || country || "Unknown",
-        visitedAt: storedEntry?.visitedAt || new Date(),
-      },
-    });
+    return res.status(201).json({ visitLog: entry });
   } catch (error) {
     return next(error);
   }
@@ -4660,22 +4720,8 @@ UserRouter.delete("/visit-log", checkAuth, async function (req, res, next) {
       });
     }
 
-    const owner = await UserModel.findOne({
-      "auth.username": VISIT_LOG_OWNER_USERNAME,
-    }).select("_id visitLog");
-
-    if (!owner) {
-      return res.status(404).json({
-        message: "Visit log owner not found.",
-      });
-    }
-
-    const deletedCount = Array.isArray(owner.visitLog)
-      ? owner.visitLog.length
-      : 0;
-    owner.visitLog = [];
-    await owner.save();
-    await VisitLogEntryModel.deleteMany({});
+    const deletedCount = await VisitorsModel.countDocuments({});
+    await VisitorsModel.deleteMany({});
 
     return res.status(200).json({
       message: "Visit log cleared.",

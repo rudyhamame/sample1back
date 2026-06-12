@@ -59,6 +59,12 @@ const SettingsSchema = new Schema(
       }],
       updatedAt: { type: Date, default: null },
     },
+    videoGate: {
+      enabled: { type: Boolean, default: false },
+      companyName: { type: String, default: "" },
+      passwordHash: { type: String, default: "" },
+      updatedAt: { type: Date, default: null },
+    },
     telegram: {
       status: {
         pageUrl: { type: String, default: "" },

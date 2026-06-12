@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 import ConnectionsSchema from "./MOA/Connections.js";
 import { MemorySchema } from "./Memory.js";
 import SettingsSchema from "./Settings.js";
-import VisitLogSchema from "./VisitLog.js";
 
 const { Schema } = mongoose;
 const TRACE_KEYS = ["user", "telegram", "ai", "chat"];
@@ -192,7 +191,6 @@ const SubjectsSchema = new Schema(
     },
     profile: { type: ProfileSchema, default: () => ({}) },
     connections: { type: [ConnectionsSchema], default: [] },
-    visitLog: { type: [VisitLogSchema], default: [] },
     memory: MemorySchema,
     settings: { type: SettingsSchema, default: () => ({}) },
     status: {
