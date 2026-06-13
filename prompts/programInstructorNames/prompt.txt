@@ -1,13 +1,4 @@
-export const buildTelegramExtractInstructorsPrompt = (messages = []) => {
-  const normalizedMessages = (Array.isArray(messages) ? messages : [])
-    .map((message) => String(message || "").trim())
-    .filter(Boolean);
-
-  const messagesBlock = normalizedMessages
-    .map((message, index) => `${index + 1}. ${message}`)
-    .join("\n");
-
-  return `أنت محرك لاستخراج المعلومات من رسائل تيليغرام عربية.
+أنت محرك لاستخراج أسماء المدرّسين من رسائل تيليغرام عربية.
 
 المهمة:
 استخرج أسماء المدرّسين / المحاضرين / الدكاترة / الشيوخ / الأساتذة / المدرّبين من رسائل تيليغرام، وأرجع JSON فقط.
@@ -27,7 +18,7 @@ export const buildTelegramExtractInstructorsPrompt = (messages = []) => {
 - الألقاب وحدها مثل: الدكتور، الأستاذ، الشيخ، المحاضر
 - أسماء المشاهير أو المؤلفين إلا إذا كانوا مذكورين كمدرّسين داخل البرنامج
 
-المخطط المطلوب:
+المفتاح المطلوب: `programInstructorNames`
 {
   "programInstructorNames": [
     {
@@ -35,7 +26,6 @@ export const buildTelegramExtractInstructorsPrompt = (messages = []) => {
       "lastName": string | null,
       "fullName": string,
       "personality": string | null,
-      "courseNames": string[],
       "evidence": string[],
       "confidence": "high" | "medium" | "low"
     }
@@ -68,17 +58,16 @@ export const buildTelegramExtractInstructorsPrompt = (messages = []) => {
    - منظم
    - سريع
    - متعاون
-10. courseNames يجب أن تحتوي فقط على أسماء الدورات أو المواد أو المحاضرات المرتبطة مباشرة بهذا المدرّس.
-11. evidence يجب أن يحتوي على مقاطع قصيرة حرفية من الرسائل تثبت أن الاسم يعود إلى مدرّس.
-12. إذا تكرر الاسم بصيغ مختلفة، ادمجه في سجل واحد.
-13. لا تترجم الأسماء العربية إلى الإنجليزية.
-14. لا تستخدم transliteration.
-15. حافظ على الكتابة العربية الأصلية قدر الإمكان.
-16. وحّد الاختلافات البسيطة فقط عند وضوح أنها لنفس الشخص، مثل:
+10. evidence يجب أن يحتوي على مقاطع قصيرة حرفية من الرسائل تثبت أن الاسم يعود إلى مدرّس.
+11. إذا تكرر الاسم بصيغ مختلفة، ادمجه في سجل واحد.
+12. لا تترجم الأسماء العربية إلى الإنجليزية.
+13. لا تستخدم transliteration.
+14. حافظ على الكتابة العربية الأصلية قدر الإمكان.
+15. وحّد الاختلافات البسيطة فقط عند وضوح أنها لنفس الشخص، مثل:
    - د. احمد محمد / الدكتور أحمد محمد
    - أ. خالد / الأستاذ خالد
-17. لا تدمج شخصين فقط لأن الاسم الأول متشابه.
-18. إذا كان الاسم مبهماً جداً، ضعه فقط إذا توجد قرينة تعليمية قوية، واجعل confidence = "low".
+16. لا تدمج شخصين فقط لأن الاسم الأول متشابه.
+17. إذا كان الاسم مبهماً جداً، ضعه فقط إذا توجد قرينة تعليمية قوية، واجعل confidence = "low".
 
 قواعد الثقة:
 - high:
@@ -97,5 +86,4 @@ export const buildTelegramExtractInstructorsPrompt = (messages = []) => {
 لا تضف أي نص خارج JSON.
 
 رسائل تيليغرام:
-${messagesBlock}`;
-};
+{{MESSAGES_BLOCK}}

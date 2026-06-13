@@ -1974,6 +1974,30 @@ const getCountryFromIp = (ipAddress) => {
   return lookup?.country || "Unknown";
 };
 
+const getVideoGateVisitorSummary = async () => {
+  const [authorizedCount, recentAuthorizedVisitors] = await Promise.all([
+    VisitorsModel.countDocuments({ "videoGate.unlocked": true }),
+    VisitorsModel.find({ "videoGate.unlocked": true })
+      .sort({ "videoGate.verifiedAt": -1, lastSeenAt: -1 })
+      .limit(8)
+      .select("ip geo.country videoInfoAutho videoGate.authorizedCompany videoGate.verifiedAt")
+      .lean(),
+  ]);
+
+  return {
+    authorizedCount,
+    recentAuthorizedVisitors: recentAuthorizedVisitors.map((visitor) => ({
+      ip: String(visitor?.ip || ""),
+      country: String(visitor?.geo?.country || "Unknown"),
+      companyName: String(
+        visitor?.videoGate?.authorizedCompany || visitor?.videoInfoAutho || "",
+      ),
+      verifiedAt:
+        visitor?.videoGate?.verifiedAt || visitor?.lastSeenAt || null,
+    })),
+  };
+};
+
 const getFrontendLastUpdated = () => {
   const envCommittedAt = String(
     process.env.FRONTEND_LAST_UPDATED || "",
@@ -4528,12 +4552,52 @@ UserRouter.get("/video-gate", checkAuth, async function (req, res, next) {
 
     const gate = owner?.settings?.videoGate || {};
 
+    const visitorSummary = await getVideoGateVisitorSummary();
+
     return res.status(200).json({
       videoGate: {
         enabled: Boolean(gate.enabled),
         companyName: String(gate.companyName || ""),
         hasPassword: Boolean(gate.passwordHash),
         updatedAt: gate.updatedAt || null,
+        ...visitorSummary,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserRouter.get("/video-gate/public", async function (req, res, next) {
+  try {
+    const ip = getRequestIp(req);
+    const owner = await UserModel.findOne({
+      "auth.username": VISIT_LOG_OWNER_USERNAME,
+    })
+      .select("settings.videoGate")
+      .lean();
+
+    const gate = owner?.settings?.videoGate || {};
+    const enabled = gate.enabled === true;
+    const configured = Boolean(gate.companyName && gate.passwordHash);
+    const gateKey = configured
+      ? `${String(gate.updatedAt || "no-date")}:${String(gate.companyName || "")}`
+      : "";
+    const visitor = ip
+      ? await VisitorsModel.findOne({ ip }).select("videoGate").lean()
+      : null;
+    const visitorGate = visitor?.videoGate || {};
+    const visitorUnlocked =
+      configured &&
+      visitorGate?.unlocked === true &&
+      String(visitorGate?.gateKey || "") === gateKey;
+
+    return res.status(200).json({
+      videoGate: {
+        enabled,
+        configured,
+        gateKey,
+        visitorUnlocked,
       },
     });
   } catch (error) {
@@ -4551,6 +4615,59 @@ UserRouter.put("/video-gate", checkAuth, async function (req, res, next) {
     const companyName = String(req.body?.companyName || "").trim();
     const password = String(req.body?.password || "").trim();
 
+    if (enabled) {
+      // Gate ON = public: video is open to all, no verification needed.
+      const updateFields = {
+        "settings.videoGate.enabled": true,
+        "settings.videoGate.updatedAt": new Date(),
+      };
+      if (companyName) {
+        updateFields["settings.videoGate.companyName"] = companyName.toLowerCase();
+      }
+      if (password) {
+        updateFields["settings.videoGate.passwordHash"] = await bcrypt.hash(password, 10);
+      }
+
+      await Promise.all([
+        UserModel.updateOne(
+          { "auth.username": VISIT_LOG_OWNER_USERNAME },
+          { $set: updateFields },
+        ),
+        VisitorsModel.updateMany(
+          {},
+          {
+            $set: {
+              "videoGate.unlocked": false,
+              "videoGate.gateKey": "",
+              "videoGate.authorizedCompany": "",
+              "videoGate.verifiedAt": null,
+              "videoGate.updatedAt": new Date(),
+            },
+          },
+        ),
+      ]);
+
+      const owner = await UserModel.findOne({
+        "auth.username": VISIT_LOG_OWNER_USERNAME,
+      })
+        .select("settings.videoGate")
+        .lean();
+
+      const gate = owner?.settings?.videoGate || {};
+      const visitorSummary = await getVideoGateVisitorSummary();
+
+      return res.status(200).json({
+        videoGate: {
+          enabled: true,
+          companyName: String(gate.companyName || ""),
+          hasPassword: Boolean(gate.passwordHash),
+          updatedAt: gate.updatedAt || null,
+          ...visitorSummary,
+        },
+      });
+    }
+
+    // Gate OFF = restricted: only allowed visitors can view the video.
     if (!companyName) {
       return res.status(400).json({ message: "Company name is required." });
     }
@@ -4569,24 +4686,41 @@ UserRouter.put("/video-gate", checkAuth, async function (req, res, next) {
 
     const passwordHash = password ? await bcrypt.hash(password, 10) : existingHash;
 
-    await UserModel.updateOne(
-      { "auth.username": VISIT_LOG_OWNER_USERNAME },
-      {
-        $set: {
-          "settings.videoGate.enabled": enabled,
-          "settings.videoGate.companyName": companyName.toLowerCase(),
-          "settings.videoGate.passwordHash": passwordHash,
-          "settings.videoGate.updatedAt": new Date(),
+    await Promise.all([
+      UserModel.updateOne(
+        { "auth.username": VISIT_LOG_OWNER_USERNAME },
+        {
+          $set: {
+            "settings.videoGate.enabled": false,
+            "settings.videoGate.companyName": companyName.toLowerCase(),
+            "settings.videoGate.passwordHash": passwordHash,
+            "settings.videoGate.updatedAt": new Date(),
+          },
         },
-      },
-    );
+      ),
+      VisitorsModel.updateMany(
+        {},
+        {
+          $set: {
+            "videoGate.unlocked": false,
+            "videoGate.gateKey": "",
+            "videoGate.authorizedCompany": "",
+            "videoGate.verifiedAt": null,
+            "videoGate.updatedAt": new Date(),
+          },
+        },
+      ),
+    ]);
+
+    const visitorSummary = await getVideoGateVisitorSummary();
 
     return res.status(200).json({
       videoGate: {
-        enabled,
+        enabled: false,
         companyName: companyName.toLowerCase(),
-        hasPassword: true,
+        hasPassword: Boolean(passwordHash),
         updatedAt: new Date(),
+        ...visitorSummary,
       },
     });
   } catch (error) {
@@ -4596,6 +4730,8 @@ UserRouter.put("/video-gate", checkAuth, async function (req, res, next) {
 
 UserRouter.post("/video-gate/verify", async function (req, res, next) {
   try {
+    const ip = getRequestIp(req);
+    const now = new Date();
     const companyName = String(req.body?.companyName || "").trim().toLowerCase();
     const password = String(req.body?.password || "").trim();
 
@@ -4611,8 +4747,16 @@ UserRouter.post("/video-gate/verify", async function (req, res, next) {
 
     const gate = owner?.settings?.videoGate;
 
-    if (!gate?.enabled || !gate?.companyName || !gate?.passwordHash) {
+    if (gate?.enabled) {
+      // Gate ON = public: no verification needed.
       return res.status(200).json({ verified: true });
+    }
+
+    if (!gate?.companyName || !gate?.passwordHash) {
+      return res.status(503).json({
+        verified: false,
+        message: "Video gate is not configured yet.",
+      });
     }
 
     if (gate.companyName !== companyName) {
@@ -4622,6 +4766,30 @@ UserRouter.post("/video-gate/verify", async function (req, res, next) {
     const passwordMatches = await bcrypt.compare(password, gate.passwordHash);
     if (!passwordMatches) {
       return res.status(401).json({ verified: false, message: "Invalid credentials." });
+    }
+
+    const gateKey = `${String(gate.updatedAt || "no-date")}:${String(gate.companyName || "")}`;
+
+    if (ip) {
+      await VisitorsModel.findOneAndUpdate(
+        { ip },
+        {
+          $set: {
+            lastSeenAt: now,
+            videoInfoAutho: companyName,
+            "videoGate.unlocked": true,
+            "videoGate.gateKey": gateKey,
+            "videoGate.authorizedCompany": companyName,
+            "videoGate.verifiedAt": now,
+            "videoGate.updatedAt": now,
+          },
+          $setOnInsert: {
+            firstSeenAt: now,
+            visitCount: 1,
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
     }
 
     return res.status(200).json({ verified: true });
@@ -4652,6 +4820,12 @@ UserRouter.get("/visit-log", checkAuth, async function (req, res, next) {
       visitedAt: v.lastSeenAt || v.firstSeenAt,
       visitCount: v.visitCount ?? 1,
       status: v.status || "allowed",
+      videoInfoAutho: String(v.videoInfoAutho || ""),
+      videoGate: {
+        unlocked: v.videoGate?.unlocked === true,
+        authorizedCompany: String(v.videoGate?.authorizedCompany || ""),
+        verifiedAt: v.videoGate?.verifiedAt || null,
+      },
     }));
 
     return res.status(200).json({ visitLog });

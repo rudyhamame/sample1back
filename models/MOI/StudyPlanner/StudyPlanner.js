@@ -308,11 +308,14 @@ const programIntervalSchema = new Schema(
   { _id: false, strict: "throw" },
 );
 
-// Both firstName and lastName are required; entries missing either field are not stored.
+// Instructor entries now track lecture IDs alongside names and personality.
 const programInstructorsSchema = new Schema (
   {
     firstName: {type: String},
     lastName: {type: String},
+    fullName: {type: String},
+    personality: {type: String},
+    lectureIDs:{type: [String]}
   },
   { _id: false }
 );
@@ -336,14 +339,22 @@ const programCurrentIntervalTryNumSchema = new Schema(
 
 const programAIExtractionsSchema = new Schema(
   {
-    coursesNameCode:[{
+    coursesNameCode:[
+      {
       courseName: { type: String, default: "" },
       courseCode: { type: String, default: "" },
+      confidence: { type: String, default: "low" },
+      status: { type: String, enum:['accepted','rejected'] }
       }
     ],
-    instructorsNames:[{
-      firstName:{ type: String, default: "" },
-      lastName:{ type: String, default: "" },
+    programInstructorNames: [{
+      firstName: { type: String, default: null },
+      lastName: { type: String, default: null },
+      fullName: { type: String, default: "" },
+      personality: { type: String, default: null },
+      evidence: { type: [String], default: [] },
+      confidence: { type: String, default: "low" },
+      status: { type: String, enum:['accepted','rejected'] }
     }],
     subIntervalCourses: [
       {
@@ -364,6 +375,7 @@ const programAIExtractionsSchema = new Schema(
             // componentExams: { type: [componentExamsSchema], default: [] },
           },
         ],
+        status: { type: String, enum:['accepted','rejected'] }
       },
     ],
   }

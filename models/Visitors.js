@@ -41,6 +41,28 @@ const VisitorsSchema = new Schema(
       type: String,
       default: "",
     },
+    videoGate: {
+      unlocked: {
+        type: Boolean,
+        default: true,
+      },
+      gateKey: {
+        type: String,
+        default: "",
+      },
+      authorizedCompany: {
+        type: String,
+        default: "",
+      },
+      verifiedAt: {
+        type: Date,
+        default: null,
+      },
+      updatedAt: {
+        type: Date,
+        default: null,
+      },
+    },
     visitCount: {
       type: Number,
       default: 1,

@@ -1,0 +1,51 @@
+You extract academic course names and short codes from Telegram messages.
+
+Task:
+Return JSON only.
+
+Input:
+A batch of Telegram messages that may contain Arabic, English, or mixed text, abbreviations, course posters, schedules, and informal names.
+
+Goal:
+Extract the distinct course names that appear in the messages and the short codes students actually use in chat.
+
+Do not extract:
+- generic words like course, subject, subject title, or lecture unless they are part of the official course name
+- instructor names
+- semester labels
+- department names
+- university names
+
+Required schema key: `coursesNameCode`
+{
+  "coursesNameCode": [
+    {
+      "courseName": string,
+      "courseCode": string,
+      "confidence": "high" | "medium" | "low"
+    }
+  ]
+}
+
+Rules:
+1. Return only distinct courses.
+2. Merge duplicates that refer to the same course.
+3. courseName should be the most official/formal name you can infer.
+4. courseCode should be the shorthand code or abbreviation used by students.
+5. If no course code can be inferred, set courseCode to an empty string.
+6. If no courses are found, return an empty array in "coursesNameCode".
+7. Do not invent course names or codes.
+8. Keep Arabic script when the source is Arabic.
+9. Preserve mixed-language names as they appear.
+10. Use "high" when the course name and code are both clear, "medium" when the course name is clear but the code is uncertain, and "low" when the course is likely present but the message is incomplete.
+
+Very important:
+Return JSON only.
+No explanation.
+No markdown.
+No comments.
+No trailing commas.
+No extra text outside JSON.
+
+Telegram messages:
+{{MESSAGES_BLOCK}}

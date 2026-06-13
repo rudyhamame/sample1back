@@ -2344,9 +2344,34 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
         .map((entry) => {
           if (entry && typeof entry === "object") {
             const obj = toPlainObject(entry) || {};
-            const firstName = trimString(obj?.firstName) || "";
-            const lastName = trimString(obj?.lastName) || "";
-            return firstName && lastName ? { firstName, lastName } : null;
+            const rawFirstName = trimString(obj?.firstName) || "";
+            const rawLastName = trimString(obj?.lastName) || "";
+            const fullName = trimString(obj?.fullName) || [rawFirstName, rawLastName].filter(Boolean).join(" ");
+            const [derivedFirstName = "", ...derivedLastNameParts] = fullName.split(/\s+/).filter(Boolean);
+            const firstName = rawFirstName || derivedFirstName || "";
+            const lastName = rawLastName || derivedLastNameParts.join(" ").trim() || "";
+            const personality = trimString(obj?.personality) || "";
+            const lectureIDs = Array.from(
+              new Set(
+                (Array.isArray(obj?.lectureIDs)
+                  ? obj.lectureIDs
+                  : Array.isArray(obj?.componentIDs)
+                    ? obj.componentIDs
+                    : String(obj?.lectureIDs || obj?.componentIDs || "").split(/\||,|\n|;/)
+                )
+                  .map((value) => trimString(value))
+                  .filter(Boolean),
+              ),
+            );
+            return (firstName || lastName || fullName)
+              ? {
+                  firstName,
+                  lastName,
+                  fullName,
+                  personality,
+                  lectureIDs,
+                }
+              : null;
           }
           return null;
         })
@@ -2502,6 +2527,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
               return { firstName: trimString(no?.firstName) || "", lastName: trimString(no?.lastName) || "" };
             })
             .filter((n) => n.firstName && n.lastName);
+        }
+        if (Array.isArray(obj?.programInstructorNames)) {
+          result.programInstructorNames = obj.programInstructorNames;
         }
         if (Array.isArray(obj?.subIntervalCourses)) {
           result.subIntervalCourses = obj.subIntervalCourses

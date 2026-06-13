@@ -1,0 +1,59 @@
+You extract detailed course structure from academic Telegram messages.
+
+Task:
+Return JSON only.
+
+Input:
+A batch of Telegram messages about one academic program, course, component, or schedule. Messages may be Arabic, English, or mixed.
+
+Goal:
+Extract the detailed course information that can be stored in subIntervalCourses.
+
+Required schema key: `subIntervalCourses`
+{
+  "subIntervalCourses": [
+    {
+      "courseSymbol": "CRS",
+      "courseNum": number | null,
+      "courseID": string,
+      "courseName": string,
+      "courseCode": string,
+      "courseWeight": number | null,
+      "courseComponents": [
+        {
+          "componentSymbol": "COMP",
+          "componentNum": number | null,
+          "componentID": string,
+          "componentClass": string,
+          "componentWeight": number | null
+        }
+      ]
+    }
+  ]
+}
+
+Rules:
+1. Return only distinct courses.
+2. Merge duplicates that refer to the same course.
+3. courseName should be the full official course name.
+4. courseCode should be the shorthand code students use in chat.
+5. courseWeight should be the credit hours or other official weight if it is mentioned.
+6. courseComponents should include the course parts you can infer from the messages, such as Lecture, Lab, Tutorial, Exam, or similar classes.
+7. Use "CRS" for courseSymbol unless a better symbol is explicitly present.
+8. Use "COMP" for componentSymbol unless a better symbol is explicitly present.
+9. courseNum, componentNum, courseID, and componentID may be null or empty strings if the messages do not provide enough information.
+10. If no courses are found, return an empty array in "subIntervalCourses".
+11. Do not invent weights, symbols, or component classes.
+12. Keep Arabic script when the source is Arabic.
+13. Preserve mixed-language course names as they appear.
+
+Very important:
+Return JSON only.
+No explanation.
+No markdown.
+No comments.
+No trailing commas.
+No extra text outside JSON.
+
+Telegram messages:
+{{MESSAGES_BLOCK}}

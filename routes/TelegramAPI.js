@@ -19,7 +19,9 @@ import {
   flattenMemoryCoursesForPlanner,
 } from "./user/helpers/studyPlannerService.js";
 import TelegramStoredMessageModel from "../models/TelegramStoredMessage.js";
-import { buildTelegramExtractInstructorsPrompt } from "../prompts/telegramExtractInstructorsPrompt.js";
+import { buildTelegramExtractCoursesNameCodePrompt } from "../prompts/coursesNameCode/prompt.js";
+import { buildTelegramExtractProgramInstructorNamesPrompt } from "../prompts/programInstructorNames/prompt.js";
+import { buildTelegramExtractSubIntervalCoursesPrompt } from "../prompts/subIntervalCourses/prompt.js";
 
 const TelegramRouter = express.Router();
 const TELEGRAM_ADMIN_USERNAME = "rudyhamame";
@@ -4960,9 +4962,8 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
   const kimiClient = getKimiClient();
   const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
   const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
-  const prompt = buildTelegramExtractInstructorsPrompt(texts);
+  const input = buildTelegramExtractProgramInstructorNamesPrompt(texts);
   const instructions = "Return valid JSON only.";
-  const input = prompt;
 
   const providerErrors = [];
   for (const provider of providerOrder) {
@@ -4983,7 +4984,9 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
         ? parsed
         : Array.isArray(parsed?.programInstructorNames)
           ? parsed.programInstructorNames
-          : [];
+          : Array.isArray(parsed?.instructorsNames)
+            ? parsed.instructorsNames
+            : [];
       const seen = new Set();
       const programInstructorNames = parsedEntries
         .map((entry) => {
@@ -4997,11 +5000,6 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
             entry?.fullName || [firstName, lastName].filter(Boolean).join(" "),
           ).trim();
           const personality = String(entry?.personality || "").trim() || null;
-          const courseNames = Array.isArray(entry?.courseNames)
-            ? entry.courseNames
-                .map((value) => String(value || "").trim())
-                .filter(Boolean)
-            : [];
           const evidence = Array.isArray(entry?.evidence)
             ? entry.evidence
                 .map((value) => String(value || "").trim())
@@ -5022,7 +5020,6 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
             lastName: lastName || null,
             fullName,
             personality,
-            courseNames,
             evidence,
             confidence,
           };
@@ -5071,20 +5068,8 @@ TelegramRouter.post("/ai/extract-courses", checkAuth, async (req, res) => {
   const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
   const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
 
-  const instructions = `You extract academic course names and codes from educational Telegram messages.
-Rules:
-- Return ONLY a JSON array of objects, no explanation or markdown.
-- Each object must have exactly two fields:
-  "courseName": the most official/formal name of the course (Arabic, English, or mixed).
-  "courseCode": the shorthand abbreviation or code students use in chat (e.g. "Calc", "OrgChem", "رياضيات 2", "فيز1").
-- If no shorthand code can be inferred, set "courseCode" to an empty string "".
-- Include only distinct courses. Deduplicate: if the same course appears multiple times return it once.
-- Do NOT include generic words like "course", "subject", "مادة", "مقرر" as the courseName unless they are part of the official name.
-- If no courses are found return [].
-Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem"},{"courseName":"فيزياء عامة","courseCode":"فيز"}]`;
-
-  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const input = `Extract course names and codes from these academic Telegram messages:\n${textsBlock}`;
+  const input = buildTelegramExtractCoursesNameCodePrompt(texts);
+  const instructions = "Return valid JSON only.";
 
   const providerErrors = [];
   for (const provider of providerOrder) {
@@ -5098,15 +5083,20 @@ Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem"},{"cou
         rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
       }
       const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-      const courses = Array.isArray(parsed)
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const parsedEntries = Array.isArray(parsed)
         ? parsed
-            .map((c) => ({
-              courseName: String(c?.courseName || "").trim(),
-              courseCode: String(c?.courseCode || "").trim(),
-            }))
-            .filter((c) => c.courseName)
-        : [];
+        : Array.isArray(parsed?.coursesNameCode)
+          ? parsed.coursesNameCode
+          : Array.isArray(parsed?.courses)
+            ? parsed.courses
+            : [];
+      const courses = parsedEntries
+        .map((c) => ({
+          courseName: String(c?.courseName || "").trim(),
+          courseCode: String(c?.courseCode || "").trim(),
+        }))
+        .filter((c) => c.courseName);
       return res.json({ courses, count: courses.length });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
@@ -5134,22 +5124,8 @@ TelegramRouter.post("/ai/extract-course-info", checkAuth, async (req, res) => {
   const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
   const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
 
-  const instructions = `You extract detailed academic course information from educational Telegram messages.
-Rules:
-- Return ONLY a JSON array of course objects, no explanation or markdown.
-- Each course object must have:
-  "courseName": full official course name (String)
-  "courseCode": shorthand code students use (String, empty string if unknown)
-  "courseWeight": credit hours or weight as a number (Number, null if unknown)
-  "courseComponents": array of component objects, each with:
-    "componentClass": the type of component, e.g. "Lecture", "Lab", "Tutorial", "Exam" (String)
-    "componentWeight": weight or percentage of this component (Number, null if unknown)
-- Deduplicate: if the same course appears multiple times, merge its info and return it once.
-- If no courses are found return [].
-Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem","courseWeight":3,"courseComponents":[{"componentClass":"Lecture","componentWeight":60},{"componentClass":"Lab","componentWeight":40}]}]`;
-
-  const textsBlock = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const input = `Extract course info from these academic Telegram messages:\n${textsBlock}`;
+  const input = buildTelegramExtractSubIntervalCoursesPrompt(texts);
+  const instructions = "Return valid JSON only.";
 
   const providerErrors = [];
   for (const provider of providerOrder) {
@@ -5163,22 +5139,29 @@ Example output: [{"courseName":"Organic Chemistry","courseCode":"OrgChem","cours
         rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
       }
       const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-      const courses = Array.isArray(parsed)
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const parsedEntries = Array.isArray(parsed)
         ? parsed
-            .map((c) => ({
-              courseName: String(c?.courseName || "").trim(),
-              courseCode: String(c?.courseCode || "").trim(),
-              courseWeight: Number.isFinite(Number(c?.courseWeight)) ? Number(c.courseWeight) : null,
-              courseComponents: Array.isArray(c?.courseComponents)
-                ? c.courseComponents.map((comp) => ({
-                    componentClass: String(comp?.componentClass || "").trim(),
-                    componentWeight: Number.isFinite(Number(comp?.componentWeight)) ? Number(comp.componentWeight) : null,
-                  })).filter((comp) => comp.componentClass)
-                : [],
-            }))
-            .filter((c) => c.courseName)
-        : [];
+        : Array.isArray(parsed?.subIntervalCourses)
+          ? parsed.subIntervalCourses
+          : Array.isArray(parsed?.courses)
+            ? parsed.courses
+            : [];
+      const courses = parsedEntries
+        .map((c) => ({
+          courseName: String(c?.courseName || "").trim(),
+          courseCode: String(c?.courseCode || "").trim(),
+          courseWeight: Number.isFinite(Number(c?.courseWeight)) ? Number(c.courseWeight) : null,
+          courseComponents: Array.isArray(c?.courseComponents)
+            ? c.courseComponents
+                .map((comp) => ({
+                  componentClass: String(comp?.componentClass || "").trim(),
+                  componentWeight: Number.isFinite(Number(comp?.componentWeight)) ? Number(comp.componentWeight) : null,
+                }))
+                .filter((comp) => comp.componentClass)
+            : [],
+        }))
+        .filter((c) => c.courseName);
       return res.json({ courses, count: courses.length });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
