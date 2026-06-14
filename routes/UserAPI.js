@@ -1975,17 +1975,33 @@ const getCountryFromIp = (ipAddress) => {
 };
 
 const getVideoGateVisitorSummary = async () => {
-  const [authorizedCount, recentAuthorizedVisitors] = await Promise.all([
+  const [authorizedCount, recentAuthorizedVisitors, totalVisitors, totalVisits, totalUsers] =
+    await Promise.all([
     VisitorsModel.countDocuments({ "videoGate.unlocked": true }),
     VisitorsModel.find({ "videoGate.unlocked": true })
       .sort({ "videoGate.verifiedAt": -1, lastSeenAt: -1 })
       .limit(8)
       .select("ip geo.country videoInfoAutho videoGate.authorizedCompany videoGate.verifiedAt")
       .lean(),
+    VisitorsModel.countDocuments({}),
+    VisitorsModel.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalVisits: { $sum: { $ifNull: ["$visitCount", 1] } },
+        },
+      },
+    ]),
+    UserModel.countDocuments({}),
   ]);
 
   return {
     authorizedCount,
+    visitStats: {
+      totalVisitors,
+      totalVisits: Number(totalVisits?.[0]?.totalVisits || 0),
+      totalUsers,
+    },
     recentAuthorizedVisitors: recentAuthorizedVisitors.map((visitor) => ({
       ip: String(visitor?.ip || ""),
       country: String(visitor?.geo?.country || "Unknown"),
