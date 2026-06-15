@@ -4587,11 +4587,12 @@ UserRouter.get("/video-gate", checkAuth, async function (req, res, next) {
 UserRouter.get("/video-gate/public", async function (req, res, next) {
   try {
     const ip = getRequestIp(req);
-    const owner = await UserModel.findOne({
-      "auth.username": VISIT_LOG_OWNER_USERNAME,
-    })
-      .select("settings.videoGate")
-      .lean();
+    const [owner, visitorSummary] = await Promise.all([
+      UserModel.findOne({ "auth.username": VISIT_LOG_OWNER_USERNAME })
+        .select("settings.videoGate")
+        .lean(),
+      getVideoGateVisitorSummary(),
+    ]);
 
     const gate = owner?.settings?.videoGate || {};
     const enabled = gate.enabled === true;
@@ -4614,6 +4615,7 @@ UserRouter.get("/video-gate/public", async function (req, res, next) {
         configured,
         gateKey,
         visitorUnlocked,
+        visitStats: visitorSummary.visitStats,
       },
     });
   } catch (error) {

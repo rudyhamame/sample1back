@@ -102,6 +102,24 @@ const lectureVolumeSchema = new Schema(
   { _id: false },
 );
 
+const intervalDatePartsSchema = new Schema(
+  {
+    day: { type: Number, default: null },
+    month: { type: Number, default: null },
+    year: { type: Number, default: null },
+    date: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
+const subIntervalDatesSchema = new Schema(
+  {
+    start: { type: intervalDatePartsSchema, default: () => ({}) },
+    end: { type: intervalDatePartsSchema, default: () => ({}) },
+  },
+  { _id: false },
+);
+
 const examLecturesSchema = new Schema(
   {
     lectureSymbol: { type: String, default: "LEC" },
@@ -142,166 +160,40 @@ const dayEventsSchema = new Schema({
   }],
 });
 
-const programIntervalSchema = new Schema(
+const programIntervalsSchema = new Schema(
   {
     intervalSymbol: { type: String, default: "INT" },
     intervalNum: { type: Number },
     intervalID: { type: String, default: "" }, // = programID: INT{n}
     intervalStatus: [{ type: String, default: "Normal" }],
-    intervalTry: [
+    intervalSubIntervals: [
       {
-        intervalTrySymbol: { type: String, default: "IT" },
-        intervalTryNum: { type: Number },
-        intervalTryID: { type: String, default: "" }, // = intervalID + IT{n}
-        intervalTrysubIntervals: [
+        subIntervalSymbol: { type: String, default: "sINT" },
+        subIntervalNum: { type: Number },
+        subIntervalID: { type: String, default: "" }, // = intervalID + sINT{n}
+        subIntervalDates: { type: subIntervalDatesSchema, default: () => ({}) },
+        subIntervalCourses: [
           {
-            subIntervalSymbol: { type: String, default: "sINT" },
-            subIntervalNum: { type: Number },
-            subIntervalID: { type: String, default: "" }, // = intervalTryID + sINT{n}
-            subIntervalCurrent: { type: Boolean, default: false },
-            subIntervalTryDates: {
-              start: { 
-                day:{type: Number}, 
-                month:{type: Number}, 
-                year:{type: Number},
-                date: {type: Date, default: ""}   
-              },
-              end: { 
-                day:{type: Number}, 
-                month:{type: Number}, 
-                year:{type: Number},
-                date: {type: Date, default: ""}   
-              },
-              calender: [
-                {
-                  daySymbol:{type: String},
-                  dayNum:{type: String},
-                  dayID: {type: String},
-                  dayName: {type: String},
-                  dayHours:{
-                    1:  { type: [dayEventsSchema], default: [] },
-                    2:  { type: [dayEventsSchema], default: [] },
-                    3:  { type: [dayEventsSchema], default: [] },
-                    4:  { type: [dayEventsSchema], default: [] },
-                    5:  { type: [dayEventsSchema], default: [] },
-                    6:  { type: [dayEventsSchema], default: [] },
-                    7:  { type: [dayEventsSchema], default: [] },
-                    8:  { type: [dayEventsSchema], default: [] },
-                    9:  { type: [dayEventsSchema], default: [] },
-                    10: { type: [dayEventsSchema], default: [] },
-                    11: { type: [dayEventsSchema], default: [] },
-                    12: { type: [dayEventsSchema], default: [] },
-                    13: { type: [dayEventsSchema], default: [] },
-                    14: { type: [dayEventsSchema], default: [] },
-                    15: { type: [dayEventsSchema], default: [] },
-                    16: { type: [dayEventsSchema], default: [] },
-                    17: { type: [dayEventsSchema], default: [] },
-                    18: { type: [dayEventsSchema], default: [] },
-                    19: { type: [dayEventsSchema], default: [] },
-                    20: { type: [dayEventsSchema], default: [] },
-                    21: { type: [dayEventsSchema], default: [] },
-                    22: { type: [dayEventsSchema], default: [] },
-                    23: { type: [dayEventsSchema], default: [] },
-                    24: { type: [dayEventsSchema], default: [] },
-                    25: { type: [dayEventsSchema], default: [] },
-                    26: { type: [dayEventsSchema], default: [] },
-                    27: { type: [dayEventsSchema], default: [] },
-                    28: { type: [dayEventsSchema], default: [] },
-                    29: { type: [dayEventsSchema], default: [] },
-                    30: { type: [dayEventsSchema], default: [] },
-                    31: { type: [dayEventsSchema], default: [] },
-                    32: { type: [dayEventsSchema], default: [] },
-                    33: { type: [dayEventsSchema], default: [] },
-                    34: { type: [dayEventsSchema], default: [] },
-                    35: { type: [dayEventsSchema], default: [] },
-                    36: { type: [dayEventsSchema], default: [] },
-                    37: { type: [dayEventsSchema], default: [] },
-                    38: { type: [dayEventsSchema], default: [] },
-                    39: { type: [dayEventsSchema], default: [] },
-                    40: { type: [dayEventsSchema], default: [] },
-                    41: { type: [dayEventsSchema], default: [] },
-                    42: { type: [dayEventsSchema], default: [] },
-                    43: { type: [dayEventsSchema], default: [] },
-                    44: { type: [dayEventsSchema], default: [] },
-                    45: { type: [dayEventsSchema], default: [] },
-                    46: { type: [dayEventsSchema], default: [] },
-                    47: { type: [dayEventsSchema], default: [] },
-                    48: { type: [dayEventsSchema], default: [] },
-                    49: { type: [dayEventsSchema], default: [] },
-                    50: { type: [dayEventsSchema], default: [] },
-                    51: { type: [dayEventsSchema], default: [] },
-                    52: { type: [dayEventsSchema], default: [] },
-                    53: { type: [dayEventsSchema], default: [] },
-                    54: { type: [dayEventsSchema], default: [] },
-                    55: { type: [dayEventsSchema], default: [] },
-                    56: { type: [dayEventsSchema], default: [] },
-                    57: { type: [dayEventsSchema], default: [] },
-                    58: { type: [dayEventsSchema], default: [] },
-                    59: { type: [dayEventsSchema], default: [] },
-                    60: { type: [dayEventsSchema], default: [] },
-                    61: { type: [dayEventsSchema], default: [] },
-                    62: { type: [dayEventsSchema], default: [] },
-                    63: { type: [dayEventsSchema], default: [] },
-                    64: { type: [dayEventsSchema], default: [] },
-                    65: { type: [dayEventsSchema], default: [] },
-                    66: { type: [dayEventsSchema], default: [] },
-                    67: { type: [dayEventsSchema], default: [] },
-                    68: { type: [dayEventsSchema], default: [] },
-                    69: { type: [dayEventsSchema], default: [] },
-                    70: { type: [dayEventsSchema], default: [] },
-                    71: { type: [dayEventsSchema], default: [] },
-                    72: { type: [dayEventsSchema], default: [] },
-                    73: { type: [dayEventsSchema], default: [] },
-                    74: { type: [dayEventsSchema], default: [] },
-                    75: { type: [dayEventsSchema], default: [] },
-                    76: { type: [dayEventsSchema], default: [] },
-                    77: { type: [dayEventsSchema], default: [] },
-                    78: { type: [dayEventsSchema], default: [] },
-                    79: { type: [dayEventsSchema], default: [] },
-                    80: { type: [dayEventsSchema], default: [] },
-                    81: { type: [dayEventsSchema], default: [] },
-                    82: { type: [dayEventsSchema], default: [] },
-                    83: { type: [dayEventsSchema], default: [] },
-                    84: { type: [dayEventsSchema], default: [] },
-                    85: { type: [dayEventsSchema], default: [] },
-                    86: { type: [dayEventsSchema], default: [] },
-                    87: { type: [dayEventsSchema], default: [] },
-                    88: { type: [dayEventsSchema], default: [] },
-                    89: { type: [dayEventsSchema], default: [] },
-                    90: { type: [dayEventsSchema], default: [] },
-                    91: { type: [dayEventsSchema], default: [] },
-                    92: { type: [dayEventsSchema], default: [] },
-                    93: { type: [dayEventsSchema], default: [] },
-                    94: { type: [dayEventsSchema], default: [] },
-                    95: { type: [dayEventsSchema], default: [] },
-                    96: { type: [dayEventsSchema], default: [] },
-                  } 
-                },
-              ],
-            },
-            subIntervalCourses: [
+            courseSymbol: { type: String, default: "CRS" },
+            courseNum: { type: Number },
+            courseID: { type: String, default: "" }, // = subIntervalID + CRS{n}
+            courseName: { type: String, default: "" },
+            courseCode: { type: String, default: "" },
+            courseWeight: { type: Number, default: 100 },
+            courseComponents: [
               {
-                courseSymbol: { type: String, default: "CRS" },
-                courseNum: { type: Number },
-                courseID: { type: String, default: "" }, // = subIntervalID + CRS{n}
-                courseName: { type: String, default: "" },
-                courseCode: { type: String, default: "" },
-                courseWeight: { type: Number, default: 100 },
-                courseComponents: [
-                  {
-                    componentSymbol: { type: String, default: "COMP" },
-                    componentNum: { type: Number },
-                    componentID: { type: String, default: "" }, // = courseID + COMP{n}
-                    componentClass: { type: String, default: "" },
-                    componentWeight: { type: Number, default: null },
-                    componentLocation: { type: locationSchema, default: null },
-                    componentExams: { type: [componentExamsSchema], default: [] },
-                  },
-                ],
+                componentSymbol: { type: String, default: "COMP" },
+                componentNum: { type: Number },
+                componentID: { type: String, default: "" }, // = courseID + COMP{n}
+                componentClass: { type: String, default: "" },
+                componentWeight: { type: Number, default: null },
+                componentLocation: { type: locationSchema, default: null },
+                componentExams: { type: [componentExamsSchema], default: [] },
               },
             ],
           },
         ],
+        subIntervalCurrent: { type: Boolean, default: false },
       },
     ],
   },
@@ -328,10 +220,9 @@ const programCoursesNamesCodesSchema = new Schema (
   { _id: false }
 );
 
-const programCurrentIntervalTryNumSchema = new Schema(
+const programCurrentIntervalSelectionSchema = new Schema(
   {
     intervalNum: { type: Number, default: null },
-    intervalTryNum: { type: Number, default: null },
     subIntervalNum: { type: Number, default: null },
   },
   { _id: false }
@@ -385,7 +276,7 @@ const StudyPlannerSchema = new Schema(
   {
     programID: { type: String, default: "" }, // root of the XID chain
     programName: { type: String, default: "" },
-    programCurrentIntervalTryNum: { type: programCurrentIntervalTryNumSchema, default: null },
+    programCurrentIntervalSelection: { type: programCurrentIntervalSelectionSchema, default: null },
     programUniversity: { type: String, default: "" },
     programFaculty: { type: String, default: "" },
     programLanguage: { type: String, default: "" },
@@ -404,7 +295,7 @@ const StudyPlannerSchema = new Schema(
       thresholdRule: { type: String, enum: ["less than", "equal", "more than"], default: null }
     }],
     programExamClasses: { type: [String], default: [] },
-    programIntervals: { type: [programIntervalSchema], default: [] },
+    programIntervals: { type: [programIntervalsSchema], default: [] },
     programAIExtractions: { type: [programAIExtractionsSchema], default: []}
   },
   { _id: true, strict: true },
