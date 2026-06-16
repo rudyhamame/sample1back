@@ -61,15 +61,43 @@ import {
   serializeStudyOrganizerSettingsForStorage,
 } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 
-const plannerFieldDefaultsObjectToEntries = (fieldDefaults = {}) =>
+const plannerFieldDefaultsToEntries = (fieldDefaults = {}) =>
   Object.entries(
     fieldDefaults && typeof fieldDefaults === "object" ? fieldDefaults : {},
-  )
-    .map(([fieldKey, value]) => ({
-      fieldKey: String(fieldKey || "").trim(),
-      value: String(value ?? "").trim(),
-    }))
-    .filter((entry) => Boolean(entry.fieldKey));
+  ).flatMap(([programMode, fields]) =>
+    Object.entries(fields && typeof fields === "object" ? fields : {}).map(
+      ([field, value]) => ({
+        programMode: String(programMode || "").trim(),
+        field: String(field || "").trim(),
+        value: String(value ?? "").trim(),
+      }),
+    ),
+  ).filter((entry) => Boolean(entry.programMode) && Boolean(entry.field));
+
+const mergePlannerFieldDefaults = (baseValue = {}, incomingValue = {}) => {
+  const merged = normalizePlannerSettingsFieldDefaults(baseValue);
+  const incoming = normalizePlannerSettingsFieldDefaults(incomingValue);
+  return normalizePlannerSettingsFieldDefaults({
+    ...merged,
+    ...incoming,
+    course: {
+      ...(merged.course || {}),
+      ...(incoming.course || {}),
+    },
+    components: {
+      ...(merged.components || {}),
+      ...(incoming.components || {}),
+    },
+    exams: {
+      ...(merged.exams || {}),
+      ...(incoming.exams || {}),
+    },
+    lectures: {
+      ...(merged.lectures || {}),
+      ...(incoming.lectures || {}),
+    },
+  });
+};
 const UserRouter = express.Router();
 const resolveDefaultAiProvider = () => {
   const appProvider = String(process.env.APP_AI_PROVIDER || "")
@@ -114,6 +142,46 @@ const requireSelfParam = (paramName) => (req, res, next) => {
   }
 
   return next();
+};
+
+const SUPADATA_BASE_URL =
+  String(process.env.SUPADATA_BASE_URL || "https://api.supadata.ai/v1").trim() ||
+  "https://api.supadata.ai/v1";
+
+const getSupadataApiKey = () => String(process.env.SUPADATA_API_KEY || "").trim();
+
+const normalizeSupadataMode = (value = "") => {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  return ["native", "auto", "generate"].includes(normalizedValue)
+    ? normalizedValue
+    : "auto";
+};
+
+const buildSupadataUrl = (pathname = "/", query = {}) => {
+  const nextUrl = new URL(pathname.replace(/^\/+/, ""), `${SUPADATA_BASE_URL}/`);
+  Object.entries(query || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") {
+      return;
+    }
+    nextUrl.searchParams.set(key, String(value));
+  });
+  return nextUrl.toString();
+};
+
+const parseSupadataJsonResponse = async (response) => {
+  const payload = await response.json().catch(() => null);
+
+  if (response.ok) {
+    return payload;
+  }
+
+  const message =
+    String(payload?.details || payload?.message || "").trim() ||
+    `Supadata request failed (${response.status}).`;
+  const error = new Error(message);
+  error.status = response.status;
+  error.payload = payload;
+  throw error;
 };
 
 const normalizeAcademicYearInterval = (value = "") => {
@@ -321,17 +389,15 @@ const sanitizeStudyOrganizerSettingsOnMemoryDoc = (memoryDoc) => {
     return;
   }
   const currentSettings =
-    memoryDoc?.studyPlanner?.studyOrganizer?.settings &&
-    typeof memoryDoc.studyPlanner.studyOrganizer.settings === "object"
-      ? memoryDoc.studyPlanner.studyOrganizer.settings
+    memoryDoc?.studyPlanner?.settings &&
+    typeof memoryDoc.studyPlanner.settings === "object"
+      ? memoryDoc.studyPlanner.settings
       : {};
+  const storedSettings = serializeStudyOrganizerSettingsForStorage(
+    normalizeStudyOrganizerSettings(currentSettings),
+  );
   memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
-  memoryDoc.studyPlanner.studyOrganizer =
-    memoryDoc.studyPlanner.studyOrganizer || {};
-  memoryDoc.studyPlanner.studyOrganizer.settings =
-    serializeStudyOrganizerSettingsForStorage(
-      normalizeStudyOrganizerSettings(currentSettings),
-    );
+  memoryDoc.studyPlanner.settings = storedSettings;
 };
 
 const normalizePlannerOptionsSelectEntries = (value) =>
@@ -2950,7 +3016,7 @@ UserRouter.get("/update/:id", async function (req, res, next) {
               "profile.picture.profilePic.index",
               "profile.picture.profilePic.viewport",
               "status",
-              "memory.MOI.studyPlanner.studyOrganizer.settings.messageFriend.to",
+              "memory.MOI.studyPlanner.settings.messageFriend.to",
             ].join(" "),
           )
           .lean()
@@ -3151,6 +3217,166 @@ UserRouter.post(
       });
     } catch (error) {
       return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/planner/document-upload/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  upload.single("file"),
+  async function (req, res) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded." });
+      }
+      const cloudinaryResult = await cloudinary.uploader.upload(req.file.path, {
+        resource_type: "raw",
+        folder: `planner/documents/${req.params.my_id}`,
+        use_filename: true,
+        unique_filename: true,
+      });
+      fs.unlinkSync(req.file.path);
+      return res.status(200).json({
+        url: cloudinaryResult.secure_url,
+        publicId: cloudinaryResult.public_id,
+        bytes: cloudinaryResult.bytes || 0,
+        format: cloudinaryResult.format || "",
+      });
+    } catch (error) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(500).json({
+        message: String(error?.message || "Upload failed."),
+      });
+    }
+  },
+);
+
+UserRouter.post(
+  "/supadata/youtube-to-text/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res) {
+    try {
+      const apiKey = getSupadataApiKey();
+      if (!apiKey) {
+        return res.status(500).json({
+          message: "Missing SUPADATA_API_KEY in the backend environment.",
+        });
+      }
+
+      const youtubeUrl = String(req.body?.url || "").trim();
+      const lang = String(req.body?.lang || "").trim().toLowerCase();
+      const mode = normalizeSupadataMode(req.body?.mode);
+
+      if (!youtubeUrl) {
+        return res.status(400).json({
+          message: "YouTube URL is required.",
+        });
+      }
+
+      const upstreamResponse = await fetch(
+        buildSupadataUrl("/transcript", {
+          url: youtubeUrl,
+          lang,
+          text: "true",
+          mode,
+        }),
+        {
+          method: "GET",
+          headers: {
+            "x-api-key": apiKey,
+          },
+        },
+      );
+
+      const payload = await parseSupadataJsonResponse(upstreamResponse);
+
+      if (payload && typeof payload === "object" && "jobId" in payload) {
+        return res.status(202).json({
+          status: "queued",
+          jobId: String(payload.jobId || "").trim(),
+          source: "supadata",
+        });
+      }
+
+      return res.status(200).json({
+        status: "completed",
+        content: String(payload?.content || "").trim(),
+        lang: String(payload?.lang || "").trim(),
+        availableLangs: Array.isArray(payload?.availableLangs)
+          ? payload.availableLangs
+          : [],
+        source: "supadata",
+      });
+    } catch (error) {
+      return res.status(Number(error?.status) || 500).json({
+        message: String(error?.message || "Failed to fetch transcript."),
+        error: error?.payload || null,
+      });
+    }
+  },
+);
+
+UserRouter.get(
+  "/supadata/youtube-to-text/:my_id/:jobId",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res) {
+    try {
+      const apiKey = getSupadataApiKey();
+      if (!apiKey) {
+        return res.status(500).json({
+          message: "Missing SUPADATA_API_KEY in the backend environment.",
+        });
+      }
+
+      const jobId = String(req.params?.jobId || "").trim();
+      if (!jobId) {
+        return res.status(400).json({
+          message: "Job ID is required.",
+        });
+      }
+
+      const upstreamResponse = await fetch(
+        buildSupadataUrl(`/transcript/${encodeURIComponent(jobId)}`),
+        {
+          method: "GET",
+          headers: {
+            "x-api-key": apiKey,
+          },
+        },
+      );
+
+      const payload = await parseSupadataJsonResponse(upstreamResponse);
+      const normalizedStatus = String(payload?.status || "").trim().toLowerCase();
+
+      return res.status(200).json({
+        status: normalizedStatus || "queued",
+        content:
+          typeof payload?.content === "string"
+            ? payload.content
+            : Array.isArray(payload?.content)
+              ? payload.content
+                  .map((entry) => String(entry?.text || "").trim())
+                  .filter(Boolean)
+                  .join(" ")
+              : "",
+        lang: String(payload?.lang || "").trim(),
+        availableLangs: Array.isArray(payload?.availableLangs)
+          ? payload.availableLangs
+          : [],
+        error: payload?.error || null,
+        source: "supadata",
+      });
+    } catch (error) {
+      return res.status(Number(error?.status) || 500).json({
+        message: String(error?.message || "Failed to fetch transcript job."),
+        error: error?.payload || null,
+      });
     }
   },
 );
@@ -5438,7 +5664,7 @@ UserRouter.post(
           });
         }
         const existingSettings = normalizeStudyOrganizerSettings(
-          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+          memoryDoc?.studyPlanner?.settings || {},
         );
         const predictionEntries = Array.isArray(existingSettings?.predictionTool)
           ? [...existingSettings.predictionTool]
@@ -5490,9 +5716,7 @@ UserRouter.post(
         const storedMergedSettings =
           serializeStudyOrganizerSettingsForStorage(mergedSettings);
         memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
-        memoryDoc.studyPlanner.studyOrganizer =
-          memoryDoc.studyPlanner.studyOrganizer || {};
-        memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+        memoryDoc.studyPlanner.settings = storedMergedSettings;
         await memoryDoc.save();
         return res.status(200).json({
           message: "Prediction tool entry saved successfully.",
@@ -5511,15 +5735,15 @@ UserRouter.post(
         )
       ) {
         const existingUser = await UserModel.findById(userId)
-          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .select("memory.MOI.studyPlanner.settings")
           .lean();
         if (!existingUser?._id) {
           return res.status(404).json({ message: "User not found." });
         }
         const rawSettings =
-          existingUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
-          typeof existingUser.memory.MOI.studyPlanner.studyOrganizer.settings === "object"
-            ? existingUser.memory.MOI.studyPlanner.studyOrganizer.settings
+          existingUser?.memory?.MOI?.studyPlanner?.settings &&
+          typeof existingUser.memory.MOI.studyPlanner.settings === "object"
+            ? existingUser.memory.MOI.studyPlanner.settings
             : {};
         const sourceOptions = Array.isArray(dependentOptionsFromSchemaBody)
           ? dependentOptionsFromSchemaBody
@@ -5609,19 +5833,17 @@ UserRouter.post(
           { _id: userId },
           {
             $set: {
-              "memory.MOI.studyPlanner.studyOrganizer.settings":
-                nextStoredSettings,
+              "memory.MOI.studyPlanner.settings": nextStoredSettings,
             },
           },
         );
         const refreshedUser = await UserModel.findById(userId)
-          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .select("memory.MOI.studyPlanner.settings")
           .lean();
         const refreshedSettings =
-          refreshedUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
-          typeof refreshedUser.memory.MOI.studyPlanner.studyOrganizer.settings ===
-            "object"
-            ? refreshedUser.memory.MOI.studyPlanner.studyOrganizer.settings
+          refreshedUser?.memory?.MOI?.studyPlanner?.settings &&
+          typeof refreshedUser.memory.MOI.studyPlanner.settings === "object"
+            ? refreshedUser.memory.MOI.studyPlanner.settings
             : rawSettings;
         const { selectOptions: _legacySelectOptions, ...rawSettingsWithoutLegacySelectOptions } =
           refreshedSettings || {};
@@ -5635,16 +5857,15 @@ UserRouter.post(
       }
       if (Array.isArray(optionsSelectsPayload)) {
         const existingUser = await UserModel.findById(userId)
-          .select("memory.MOI.studyPlanner.studyOrganizer.settings")
+          .select("memory.MOI.studyPlanner.settings")
           .lean();
         if (!existingUser?._id) {
           return res.status(404).json({ message: "User not found." });
         }
         const rawSettings =
-          existingUser?.memory?.MOI?.studyPlanner?.studyOrganizer?.settings &&
-          typeof existingUser.memory.MOI.studyPlanner.studyOrganizer.settings ===
-            "object"
-            ? existingUser.memory.MOI.studyPlanner.studyOrganizer.settings
+          existingUser?.memory?.MOI?.studyPlanner?.settings &&
+          typeof existingUser.memory.MOI.studyPlanner.settings === "object"
+            ? existingUser.memory.MOI.studyPlanner.settings
             : {};
         const { selectOptions: _legacySelectOptions, ...rawSettingsWithoutLegacySelectOptions } =
           rawSettings || {};
@@ -5694,8 +5915,7 @@ UserRouter.post(
           { _id: userId },
           {
             $set: {
-              "memory.MOI.studyPlanner.studyOrganizer.settings":
-                storedSettings,
+              "memory.MOI.studyPlanner.settings": storedSettings,
             },
           },
         );
@@ -5716,35 +5936,22 @@ UserRouter.post(
           });
         }
         const existingSettings = normalizeStudyOrganizerSettings(
-          memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+          memoryDoc?.studyPlanner?.settings || {},
         );
         const sanitizedSettingsPatch =
           sanitizeLegacyPlannerSelectOptionsPayload(settingsPatch);
         const normalizedPatch = normalizeStudyOrganizerSettings({
           ...existingSettings,
           ...sanitizedSettingsPatch,
-          fieldDefaults:
-            sanitizedSettingsPatch?.fieldDefaults &&
-            typeof sanitizedSettingsPatch.fieldDefaults === "object"
-              ? {
-                  ...(existingSettings?.fieldDefaults || {}),
-                  ...Object.fromEntries(
-                    Object.entries(sanitizedSettingsPatch.fieldDefaults).map(
-                      ([fieldKey, fieldValue]) => [
-                        String(fieldKey || "").trim(),
-                        String(fieldValue ?? "").trim(),
-                      ],
-                    ),
-                  ),
-                }
-              : existingSettings?.fieldDefaults || {},
+          fieldDefaults: mergePlannerFieldDefaults(
+            existingSettings?.fieldDefaults || {},
+            sanitizedSettingsPatch?.fieldDefaults || {},
+          ),
         });
         const storedMergedSettings =
           serializeStudyOrganizerSettingsForStorage(normalizedPatch);
         memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
-        memoryDoc.studyPlanner.studyOrganizer =
-          memoryDoc.studyPlanner.studyOrganizer || {};
-        memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+        memoryDoc.studyPlanner.settings = storedMergedSettings;
         await memoryDoc.save();
         return res.status(200).json({
           message: "Planner settings patch saved successfully.",
@@ -5767,29 +5974,23 @@ UserRouter.post(
         });
       }
       const existingNormalizedSettings = normalizeStudyOrganizerSettings(
-        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+        memoryDoc?.studyPlanner?.settings || {},
       );
       const previousStoredSettings =
         serializeStudyOrganizerSettingsForStorage(existingNormalizedSettings);
       const mergedSettings = normalizeStudyOrganizerSettings({
         ...existingNormalizedSettings,
         ...normalizedIncomingSettings,
-        fieldDefaults:
-          normalizedIncomingSettings?.fieldDefaults &&
-          typeof normalizedIncomingSettings.fieldDefaults === "object"
-            ? {
-                ...(existingNormalizedSettings?.fieldDefaults || {}),
-                ...normalizedIncomingSettings.fieldDefaults,
-              }
-            : existingNormalizedSettings?.fieldDefaults || {},
+        fieldDefaults: mergePlannerFieldDefaults(
+          existingNormalizedSettings?.fieldDefaults || {},
+          normalizedIncomingSettings?.fieldDefaults || {},
+        ),
       });
       const storedSettings = serializeStudyOrganizerSettingsForStorage(
         sanitizeLegacyPlannerSelectOptionsPayload(mergedSettings),
       );
       memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
-      memoryDoc.studyPlanner.studyOrganizer =
-        memoryDoc.studyPlanner.studyOrganizer || {};
-      memoryDoc.studyPlanner.studyOrganizer.settings = storedSettings;
+      memoryDoc.studyPlanner.settings = storedSettings;
       await memoryDoc.save();
 
       const persistedSettings = normalizeStudyOrganizerSettings(storedSettings);
@@ -5826,14 +6027,13 @@ UserRouter.get(
         });
       }
       const settings = normalizeStudyOrganizerSettings(
-        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
-      );
-      const fieldDefaults = normalizePlannerSettingsFieldDefaults(
-        settings?.fieldDefaults,
+        memoryDoc?.studyPlanner?.settings || {},
       );
       return res.status(200).json({
         message: "Planner defaults loaded successfully.",
-        fieldDefaults: plannerFieldDefaultsObjectToEntries(fieldDefaults),
+        fieldDefaults: plannerFieldDefaultsToEntries(
+          normalizePlannerSettingsFieldDefaults(settings?.fieldDefaults),
+        ),
       });
     } catch (error) {
       return next(error);
@@ -5858,43 +6058,43 @@ UserRouter.post(
         });
       }
       const settings = normalizeStudyOrganizerSettings(
-        memoryDoc?.studyPlanner?.studyOrganizer?.settings || {},
+        memoryDoc?.studyPlanner?.settings || {},
       );
-      const currentDefaults =
-        normalizePlannerSettingsFieldDefaults(settings?.fieldDefaults);
       const requestBody =
         req.body && typeof req.body === "object" ? req.body : {};
-      const nextFieldKey = String(requestBody.fieldKey || "").trim();
-      const hasFieldValue =
-        requestBody.fieldValue !== undefined || requestBody.value !== undefined;
-      const nextFieldValue = String(
-        requestBody.fieldValue ?? requestBody.value ?? "",
-      ).trim();
-      const nextDefaultsCandidate = requestBody.fieldDefaults
+      const incomingDefaultsCandidate = Array.isArray(requestBody.fieldDefaults)
         ? requestBody.fieldDefaults
-        : nextFieldKey
-          ? {
-              [nextFieldKey]: hasFieldValue ? nextFieldValue : "",
-            }
-          : {};
+        : requestBody.fieldDefaults &&
+            typeof requestBody.fieldDefaults === "object"
+          ? requestBody.fieldDefaults
+          : requestBody.programMode || requestBody.field
+            ? [
+                {
+                  programMode: requestBody.programMode,
+                  field: requestBody.field,
+                  value: requestBody.value ?? requestBody.fieldValue ?? "",
+                },
+              ]
+            : [];
 
       if (
+        !Array.isArray(requestBody.fieldDefaults) &&
         !requestBody.fieldDefaults &&
-        !nextFieldKey &&
+        !requestBody.field &&
+        !requestBody.programMode &&
         Object.keys(requestBody).length > 0
       ) {
         return res.status(400).json({
           message:
-            "Invalid defaults payload. Send either fieldDefaults or fieldKey.",
+            "Invalid defaults payload. Send fieldDefaults or programMode + field + value.",
         });
       }
       const normalizedIncomingDefaults = normalizePlannerSettingsFieldDefaults(
-        nextDefaultsCandidate,
+        incomingDefaultsCandidate,
       );
-      const nextDefaults = normalizePlannerSettingsFieldDefaults({
-        ...currentDefaults,
-        ...normalizedIncomingDefaults,
-      });
+      const nextDefaults = normalizePlannerSettingsFieldDefaults(
+        normalizedIncomingDefaults,
+      );
       const mergedSettings = normalizeStudyOrganizerSettings({
         ...settings,
         fieldDefaults: nextDefaults,
@@ -5902,13 +6102,11 @@ UserRouter.post(
       const storedMergedSettings =
         serializeStudyOrganizerSettingsForStorage(mergedSettings);
       memoryDoc.studyPlanner = memoryDoc.studyPlanner || {};
-      memoryDoc.studyPlanner.studyOrganizer =
-        memoryDoc.studyPlanner.studyOrganizer || {};
-      memoryDoc.studyPlanner.studyOrganizer.settings = storedMergedSettings;
+      memoryDoc.studyPlanner.settings = storedMergedSettings;
       await memoryDoc.save();
       return res.status(200).json({
         message: "Planner defaults saved successfully.",
-        fieldDefaults: plannerFieldDefaultsObjectToEntries(
+        fieldDefaults: plannerFieldDefaultsToEntries(
           normalizeStudyOrganizerSettings(storedMergedSettings)?.fieldDefaults ||
             {},
         ),

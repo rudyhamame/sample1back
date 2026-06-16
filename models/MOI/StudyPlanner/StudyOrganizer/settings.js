@@ -254,6 +254,130 @@ const PLANNER_SELECT_OPTIONS_ID_ALIASES = {
   ],
 };
 
+const buildEmptyPlannerFieldDefaults = () => ({});
+
+const normalizePlannerFieldDefaultCard = (value = "") => {
+  const normalizedValue = trimString(value).toLowerCase();
+  if (!normalizedValue) {
+    return "";
+  }
+  if (
+    normalizedValue === "course" ||
+    normalizedValue === "courses" ||
+    normalizedValue === "savedcourse" ||
+    normalizedValue === "inlinecourse"
+  ) {
+    return "course";
+  }
+  if (
+    normalizedValue === "component" ||
+    normalizedValue === "components" ||
+    normalizedValue === "inlinecomponent"
+  ) {
+    return "components";
+  }
+  if (normalizedValue === "exam" || normalizedValue === "exams") {
+    return "exams";
+  }
+  if (normalizedValue === "lecture" || normalizedValue === "lectures") {
+    return "lectures";
+  }
+  return normalizedValue;
+};
+
+const inferPlannerFieldDefaultCardFromFieldKey = (fieldKey = "") => {
+  const normalizedFieldKey = trimString(fieldKey).toLowerCase();
+  if (!normalizedFieldKey) {
+    return "";
+  }
+  if (
+    normalizedFieldKey.startsWith("exam") ||
+    normalizedFieldKey.includes("exam_")
+  ) {
+    return "exams";
+  }
+  if (
+    normalizedFieldKey.startsWith("lecture") ||
+    normalizedFieldKey.includes("lecture_")
+  ) {
+    return "lectures";
+  }
+  if (
+    normalizedFieldKey.startsWith("component") ||
+    normalizedFieldKey.includes("component") ||
+    normalizedFieldKey.includes("subinterval")
+  ) {
+    return "components";
+  }
+  return "course";
+};
+
+const normalizePlannerFieldDefaultEntry = (entry = {}) => {
+  const nextEntry =
+    entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
+  return {
+    card: normalizePlannerFieldDefaultCard(
+      nextEntry?.card || nextEntry?.programMode,
+    ),
+    field: trimString(nextEntry?.field),
+    value: trimString(nextEntry?.value),
+  };
+};
+
+const normalizePlannerFieldDefaultsToMap = (value = []) => {
+  const nextDefaults = buildEmptyPlannerFieldDefaults();
+  const upsertEntry = (card, field, fieldValue) => {
+    const normalizedCard =
+      normalizePlannerFieldDefaultCard(card) ||
+      inferPlannerFieldDefaultCardFromFieldKey(field);
+    const normalizedField = trimString(field);
+    const normalizedValue = trimString(fieldValue);
+    if (!normalizedCard || !normalizedField) {
+      return;
+    }
+    if (!nextDefaults[normalizedCard] || typeof nextDefaults[normalizedCard] !== "object") {
+      nextDefaults[normalizedCard] = {};
+    }
+    nextDefaults[normalizedCard][normalizedField] = normalizedValue;
+  };
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      const normalizedEntry = normalizePlannerFieldDefaultEntry(entry);
+      upsertEntry(
+        normalizedEntry.card,
+        normalizedEntry.field,
+        normalizedEntry.value,
+      );
+    });
+    return nextDefaults;
+  }
+  if (value && typeof value === "object") {
+    Object.entries(toPlainObject(value) || {}).forEach(
+      ([cardOrField, fieldValue]) => {
+        const nestedCard = normalizePlannerFieldDefaultCard(cardOrField);
+        if (
+          nestedCard &&
+          fieldValue &&
+          typeof fieldValue === "object" &&
+          !Array.isArray(fieldValue)
+        ) {
+          Object.entries(fieldValue).forEach(([field, nestedValue]) => {
+            upsertEntry(nestedCard, field, nestedValue);
+          });
+          return;
+        }
+        const compositeMatch = String(cardOrField || "").match(/^([^._]+)[._](.+)$/);
+        if (compositeMatch) {
+          upsertEntry(compositeMatch[1], compositeMatch[2], fieldValue);
+          return;
+        }
+        upsertEntry("", cardOrField, fieldValue);
+      },
+    );
+  }
+  return nextDefaults;
+};
+
 const HARD_CODED_OPTIONS_BY_SELECT_KEY = {
   componentClassOptions: [
     "Class",
@@ -301,26 +425,7 @@ const removeHardcodedPlannerSelectOptions = (selectKey = "", options = []) => {
 };
 
 const normalizePlannerSettingsFieldDefaults = (value) =>
-  Array.isArray(value)
-    ? Object.fromEntries(
-        value
-          .map((entry) => toPlainObject(entry) || {})
-          .map((entry) => [
-            trimString(entry?.fieldKey),
-            trimString(entry?.value),
-          ])
-          .filter(([fieldKey]) => Boolean(fieldKey)),
-      )
-    : value && typeof value === "object"
-      ? Object.fromEntries(
-          Object.entries(toPlainObject(value) || {})
-            .map(([fieldKey, fieldValue]) => [
-              trimString(fieldKey),
-              trimString(fieldValue),
-            ])
-            .filter(([fieldKey]) => Boolean(fieldKey)),
-        )
-      : {};
+  normalizePlannerFieldDefaultsToMap(value);
 
 const normalizeMessageFriendEntry = (entry = {}) => {
   const nextEntry =
@@ -545,11 +650,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     }
     return removeHardcodedPlannerSelectOptions(key, normalizedSettings?.[key]);
   };
-  const fieldDefaultsSource =
-    normalizedSettings?.fieldDefaults &&
-    typeof normalizedSettings.fieldDefaults === "object"
-      ? normalizedSettings.fieldDefaults
-      : {};
+  const fieldDefaultsSource = normalizedSettings?.fieldDefaults || {};
   const relationshipsSource = Array.isArray(normalizedSettings?.relationships)
     ? normalizedSettings.relationships
     : [];
@@ -678,7 +779,7 @@ const getDefaultStudyOrganizerSettings = () => ({
   voiceControlEnabled: false,
   voiceDictationEnabled: false,
   logoFixedClock: "9",
-  fieldDefaults: {},
+  fieldDefaults: buildEmptyPlannerFieldDefaults(),
   messageFriend: {
     from: {
       friendID: undefined,
@@ -831,18 +932,22 @@ const serializeStudyOrganizerSettingsForStorage = (settings = {}) => {
       effectValue: trimString(entry?.effectValue),
       active: Boolean(entry?.active),
     })),
-    fieldDefaults: Object.entries(normalizedSettings.fieldDefaults || {}).map(
-      ([fieldKey, value]) => ({
-        fieldKey,
+    fieldDefaults: Object.entries(
+      normalizePlannerSettingsFieldDefaults(normalizedSettings.fieldDefaults),
+    ).flatMap(([card, fields]) =>
+      Object.entries(fields || {}).map(([field, value]) => ({
+        card,
+        field,
         value,
-      }),
+      })),
     ),
   };
 };
 
 const PlannerFieldDefaultSchema = new Schema(
   {
-    fieldKey: { type: String, trim: true, default: "" },
+    card: { type: String, trim: true, default: "" },
+    field: { type: String, trim: true, default: "" },
     value: { type: String, trim: true, default: "" },
   },
   { _id: false, strict: "throw" },
@@ -950,11 +1055,6 @@ const locationRoomOptionsByBuilding = new Schema(
 
 const PlannerSettingsSchema = new Schema(
   {
-    optionsSelects: {
-      type: PlannerOptionsSelectsSchema,
-      default: () => ({ independent: [], dependent: [] }),
-    },
-    logoMotionEnabled: { type: Boolean, default: true },
     voiceControlEnabled: { type: Boolean, default: false },
     voiceDictationEnabled: { type: Boolean, default: false },
     logoFixedClock: { type: String, trim: true, default: "9" },

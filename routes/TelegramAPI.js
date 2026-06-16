@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import "dotenv/config";
 import OpenAI from "openai";
+import cloudinary from "../helpers/cloudinary.js";
 import checkAuth from "../check-auth.js";
 import UserModel from "../compat/UserModel.js";
 import {
@@ -115,6 +116,278 @@ const DEFAULT_KIMI_MODEL =
 const VALID_AI_PROVIDERS = ["openai", "groq", "gemini", "kimi"];
 const DEFAULT_NO_PROVIDER_MESSAGE =
   "Missing GROQ_API_KEY, GEMINI_API_KEY, MOONSHOT_API_KEY, and OPENAI_API_KEY in the backend environment.";
+
+const buildTelegramExtractMaterialMetadataPrompt = (
+  mode = "",
+  messages = [],
+  subIntervalContext = null,
+) => {
+  const normalizedMode = String(mode || "").trim().toLowerCase();
+  const messagesBlock = (Array.isArray(messages) ? messages : [])
+    .map((entry, index) => `[${index + 1}] ${String(entry || "").trim()}`)
+    .filter(Boolean)
+    .join("\n\n");
+  const normalizedContext =
+    subIntervalContext && typeof subIntervalContext === "object"
+      ? {
+          programID: String(subIntervalContext?.programID || "").trim(),
+          intervalSymbol: String(
+            subIntervalContext?.intervalSymbol || "INT",
+          ).trim(),
+          intervalNum: String(subIntervalContext?.intervalNum || "").trim(),
+          intervalID: String(subIntervalContext?.intervalID || "").trim(),
+          subIntervalSymbol: String(
+            subIntervalContext?.subIntervalSymbol || "sINT",
+          ).trim(),
+          subIntervalNum: String(
+            subIntervalContext?.subIntervalNum || "",
+          ).trim(),
+          subIntervalID: String(subIntervalContext?.subIntervalID || "").trim(),
+        }
+      : null;
+  const courseSubIntervalInstructions =
+    normalizedMode === "course" &&
+    normalizedContext?.subIntervalID &&
+    normalizedContext?.intervalID &&
+    normalizedContext?.intervalNum &&
+    normalizedContext?.subIntervalNum
+      ? `
+Selected target sub-interval:
+- subIntervalID = ${normalizedContext.subIntervalID}
+- intervalID = ${normalizedContext.intervalID}
+- programID = ${normalizedContext.programID || "-"}
+- intervalSymbol = ${normalizedContext.intervalSymbol}
+- intervalNum = ${normalizedContext.intervalNum}
+- subIntervalSymbol = ${normalizedContext.subIntervalSymbol}
+- subIntervalNum = ${normalizedContext.subIntervalNum}
+
+Interpretation rules:
+- subIntervalID = intervalID + subIntervalSymbol + subIntervalNum
+- intervalID = programID + ": " + intervalSymbol + intervalNum
+- intervalNum is the academic year of the course.
+- subIntervalNum is the term within that same academic year.
+
+Selection rules:
+- Build ONLY courses that belong to this exact selected sub-interval.
+- Include a course only if the Telegram messages clearly place it in academic year ${normalizedContext.intervalNum} and term ${normalizedContext.subIntervalNum}.
+- Exclude courses that belong to any other year or term.
+- If the year/term is ambiguous or cannot be confidently matched to the selected sub-interval, omit that course.
+`
+      : "";
+
+  const promptByMode = {
+    course: `
+You extract Course Info objects from academic Telegram messages.
+
+Return JSON only in this shape:
+{
+  "entries": [
+    {
+      "courseInfo": {
+        "courseSymbol": "CRS",
+        "courseNum": null,
+        "courseID": "",
+        "courseName": "",
+        "courseCode": "",
+        "courseWeight": null,
+        "courseGrade": null,
+        "courseStatus": ""
+      }
+    }
+  ]
+}
+
+Rules:
+- Return only distinct courses.
+- Merge duplicates for the same course.
+- Keep Arabic script when the source is Arabic.
+- Preserve mixed-language names.
+- courseNum, courseID, courseGrade, courseStatus may be null or empty if unknown.
+- If no courses are found, return {"entries":[]}.
+${courseSubIntervalInstructions}
+`,
+    components: `
+You extract Component Info objects from academic Telegram messages.
+
+Return JSON only in this shape:
+{
+  "entries": [
+    {
+      "courseName": "",
+      "courseCode": "",
+      "componentInfo": {
+        "componentSymbol": "COMP",
+        "componentNum": null,
+        "componentID": "",
+        "componentClass": "",
+        "componentWeight": null,
+        "componentLocation": {
+          "building": "",
+          "rooms": []
+        },
+        "componentDates": {
+          "start": { "day": null, "month": null, "year": null, "date": null },
+          "end": { "day": null, "month": null, "year": null, "date": null }
+        }
+      }
+    }
+  ]
+}
+
+Rules:
+- Each component must include courseName or courseCode so it can be attached to the right course.
+- componentClass is required when a component is returned.
+- If no components are found, return {"entries":[]}.
+`,
+    exams: `
+You extract Exam Info objects from academic Telegram messages.
+
+Return JSON only in this shape:
+{
+  "entries": [
+    {
+      "courseName": "",
+      "courseCode": "",
+      "componentClass": "",
+      "taskInfo": {
+        "taskSymbol": "EXM",
+        "taskNum": null,
+        "taskID": "",
+        "taskLocation": {
+          "building": "",
+          "rooms": []
+        },
+        "taskDate": null,
+        "taskTime": "",
+        "taskWeight": null,
+        "taskGrade": null
+      }
+    }
+  ]
+}
+
+Rules:
+- Each exam must include courseName or courseCode and componentClass so it can be attached.
+- If no exams are found, return {"entries":[]}.
+`,
+    lectures: `
+You extract Lecture Info objects from academic Telegram messages.
+
+Return JSON only in this shape:
+{
+  "entries": [
+    {
+      "courseName": "",
+      "courseCode": "",
+      "componentClass": "",
+      "taskID": "",
+      "lectureInfo": {
+        "lectureSymbol": "LEC",
+        "lectureNum": null,
+        "lectureID": "",
+        "lectureName": "",
+        "lectureInstructors": [],
+        "lectureInstructionDate": null
+      }
+    }
+  ]
+}
+
+Rules:
+- Each lecture must include courseName or courseCode and componentClass so it can be attached.
+- taskID may be empty if unknown.
+- If no lectures are found, return {"entries":[]}.
+`,
+  };
+
+  return `
+${promptByMode[normalizedMode] || promptByMode.course}
+
+Very important:
+- Return valid JSON only.
+- No markdown.
+- No explanation.
+- No comments.
+- No trailing commas.
+
+Telegram messages:
+${messagesBlock}
+`.trim();
+};
+
+const getAllStoredTelegramMessageTexts = async () => {
+  const groupDocs = await TelegramStoredMessageModel.find(
+    {},
+    { groupReference: 1, groupTitle: 1, "messages.text": 1 },
+  ).lean();
+  return groupDocs.flatMap((groupDoc) => {
+    const groupLabel = String(
+      groupDoc?.groupTitle || groupDoc?.groupReference || "",
+    ).trim();
+    return (Array.isArray(groupDoc?.messages) ? groupDoc.messages : [])
+      .map((messageEntry) => {
+        const messageText = String(messageEntry?.text || "").trim();
+        if (!messageText) return "";
+        return groupLabel ? `[${groupLabel}] ${messageText}` : messageText;
+      })
+      .filter(Boolean);
+  });
+};
+
+const trimTelegramMessagesForAiContext = (
+  messages = [],
+  provider = "openai",
+  mode = "course",
+) => {
+  const normalizedMessages = (Array.isArray(messages) ? messages : [])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  if (normalizedMessages.length <= 1) {
+    return normalizedMessages;
+  }
+
+  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const normalizedMode = String(mode || "course").trim().toLowerCase();
+  const charBudgetByProvider = {
+    gemini: 280000,
+    openai: 90000,
+    groq: 70000,
+    kimi: 110000,
+  };
+  const baseBudget = charBudgetByProvider[normalizedProvider] || 90000;
+  const modeBudgetMultiplier =
+    normalizedMode === "course" ? 0.85 : normalizedMode === "lectures" ? 1.0 : 0.92;
+  const maxChars = Math.max(20000, Math.floor(baseBudget * modeBudgetMultiplier));
+  const maxMessages = normalizedProvider === "gemini" ? 700 : 320;
+
+  const selected = [];
+  let totalChars = 0;
+  for (let index = normalizedMessages.length - 1; index >= 0; index -= 1) {
+    const message = normalizedMessages[index];
+    const nextCost = message.length + 4;
+    if (selected.length >= maxMessages || totalChars + nextCost > maxChars) {
+      continue;
+    }
+    selected.push(message);
+    totalChars += nextCost;
+  }
+
+  return (selected.length > 0 ? selected.reverse() : normalizedMessages.slice(-Math.min(normalizedMessages.length, 40)));
+};
+
+const buildTelegramAiDebugInfo = (
+  sourceMessages = [],
+  usedMessages = [],
+  provider = "",
+) => ({
+  provider: String(provider || "").trim().toLowerCase() || "unknown",
+  sourceMessagesCount: Array.isArray(sourceMessages) ? sourceMessages.length : 0,
+  usedMessagesCount: Array.isArray(usedMessages) ? usedMessages.length : 0,
+  usedCharacters: (Array.isArray(usedMessages) ? usedMessages : []).reduce(
+    (total, entry) => total + String(entry || "").length,
+    0,
+  ),
+});
 
 const pendingTelegramAuthByUser = new Map();
 const telegramSyncPromisesByUser = new Map();
@@ -510,6 +783,42 @@ const getPreferredAiProvider = (
     userPreferredProvider || process.env.APP_AI_PROVIDER || "",
     getDefaultAiProvider(groqClient, openAiClient, kimiClient),
   );
+};
+
+const getTelegramRouteAiProviderSelection = async (
+  req,
+  groqClient = null,
+  openAiClient = null,
+  kimiClient = null,
+) => {
+  const userId = String(
+    req?.authentication?.userId || req?.authentication?.id || "",
+  ).trim();
+  const aiSettingsDoc = userId
+    ? await findAiSettingsLean(userId, "settings.aiProvider")
+    : null;
+  const selectedProvider =
+    req.body?.aiProvider || aiSettingsDoc?.settings?.aiProvider || "";
+  const preferredProvider = getPreferredAiProvider(
+    selectedProvider,
+    groqClient,
+    openAiClient,
+    kimiClient,
+  );
+  const hasExplicitProvider = hasExplicitAiProviderSelection(selectedProvider);
+  const providerAttemptOrder = buildProviderAttemptOrder(
+    preferredProvider,
+    groqClient,
+    openAiClient,
+    kimiClient,
+    { allowFallback: !hasExplicitProvider },
+  );
+
+  return {
+    preferredProvider,
+    hasExplicitProvider,
+    providerAttemptOrder,
+  };
 };
 
 const createGeminiResponse = async ({
@@ -1948,13 +2257,19 @@ const listStoredTelegramMessagesFromCollection = async (userId, groupReference =
     match.groupReference = normalizedReference;
   }
 
+  const DATA_URL_EXCLUSION = {
+    "messages.photoDataUrl": 0,
+    "messages.videoDataUrl": 0,
+    "messages.documentDataUrl": 0,
+  };
+
   // Each document is a group; its messages are in the embedded array.
-  let groupDocs = await TelegramStoredMessageModel.find(match).lean();
+  let groupDocs = await TelegramStoredMessageModel.find(match, DATA_URL_EXCLUSION).lean();
 
   if (groupDocs.length === 0) {
     const flatMigrated = await migrateFlatCollectionToGroupCollection(normalizedUserId);
     if (flatMigrated > 0) {
-      groupDocs = await TelegramStoredMessageModel.find(match).lean();
+      groupDocs = await TelegramStoredMessageModel.find(match, DATA_URL_EXCLUSION).lean();
     }
   }
 
@@ -4960,9 +5275,29 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
   const groqClient = getGroqClient();
   const openAiClient = getOpenAIClient();
   const kimiClient = getKimiClient();
-  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
-  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
-  const input = buildTelegramExtractProgramInstructorNamesPrompt(texts);
+  const {
+    preferredProvider,
+    hasExplicitProvider,
+    providerAttemptOrder: providerOrder,
+  } = await getTelegramRouteAiProviderSelection(
+    req,
+    groqClient,
+    openAiClient,
+    kimiClient,
+  );
+  if (providerOrder.length === 0) {
+    return res.status(500).json({
+      error: hasExplicitProvider
+        ? getMissingProviderConfigurationMessage(preferredProvider)
+        : DEFAULT_NO_PROVIDER_MESSAGE,
+    });
+  }
+  const trimmedTexts = trimTelegramMessagesForAiContext(
+    texts,
+    preferredProvider,
+    "instructors",
+  );
+  const input = buildTelegramExtractProgramInstructorNamesPrompt(trimmedTexts);
   const instructions = "Return valid JSON only.";
 
   const providerErrors = [];
@@ -5041,6 +5376,7 @@ TelegramRouter.post("/ai/extract-instructors", checkAuth, async (req, res) => {
         programInstructorNames,
         persons,
         count: programInstructorNames.length,
+        debug: buildTelegramAiDebugInfo(texts, trimmedTexts, provider),
       });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
@@ -5065,10 +5401,30 @@ TelegramRouter.post("/ai/extract-courses", checkAuth, async (req, res) => {
   const groqClient = getGroqClient();
   const openAiClient = getOpenAIClient();
   const kimiClient = getKimiClient();
-  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
-  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+  const {
+    preferredProvider,
+    hasExplicitProvider,
+    providerAttemptOrder: providerOrder,
+  } = await getTelegramRouteAiProviderSelection(
+    req,
+    groqClient,
+    openAiClient,
+    kimiClient,
+  );
+  if (providerOrder.length === 0) {
+    return res.status(500).json({
+      error: hasExplicitProvider
+        ? getMissingProviderConfigurationMessage(preferredProvider)
+        : DEFAULT_NO_PROVIDER_MESSAGE,
+    });
+  }
 
-  const input = buildTelegramExtractCoursesNameCodePrompt(texts);
+  const trimmedTexts = trimTelegramMessagesForAiContext(
+    texts,
+    preferredProvider,
+    "course",
+  );
+  const input = buildTelegramExtractCoursesNameCodePrompt(trimmedTexts);
   const instructions = "Return valid JSON only.";
 
   const providerErrors = [];
@@ -5097,7 +5453,11 @@ TelegramRouter.post("/ai/extract-courses", checkAuth, async (req, res) => {
           courseCode: String(c?.courseCode || "").trim(),
         }))
         .filter((c) => c.courseName);
-      return res.json({ courses, count: courses.length });
+      return res.json({
+        courses,
+        count: courses.length,
+        debug: buildTelegramAiDebugInfo(texts, trimmedTexts, provider),
+      });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
     }
@@ -5121,10 +5481,30 @@ TelegramRouter.post("/ai/extract-course-info", checkAuth, async (req, res) => {
   const groqClient = getGroqClient();
   const openAiClient = getOpenAIClient();
   const kimiClient = getKimiClient();
-  const preferredProvider = getPreferredAiProvider("", groqClient, openAiClient, kimiClient);
-  const providerOrder = buildProviderAttemptOrder(preferredProvider, groqClient, openAiClient, kimiClient);
+  const {
+    preferredProvider,
+    hasExplicitProvider,
+    providerAttemptOrder: providerOrder,
+  } = await getTelegramRouteAiProviderSelection(
+    req,
+    groqClient,
+    openAiClient,
+    kimiClient,
+  );
+  if (providerOrder.length === 0) {
+    return res.status(500).json({
+      error: hasExplicitProvider
+        ? getMissingProviderConfigurationMessage(preferredProvider)
+        : DEFAULT_NO_PROVIDER_MESSAGE,
+    });
+  }
 
-  const input = buildTelegramExtractSubIntervalCoursesPrompt(texts);
+  const trimmedTexts = trimTelegramMessagesForAiContext(
+    texts,
+    preferredProvider,
+    "course",
+  );
+  const input = buildTelegramExtractSubIntervalCoursesPrompt(trimmedTexts);
   const instructions = "Return valid JSON only.";
 
   const providerErrors = [];
@@ -5162,13 +5542,184 @@ TelegramRouter.post("/ai/extract-course-info", checkAuth, async (req, res) => {
             : [],
         }))
         .filter((c) => c.courseName);
-      return res.json({ courses, count: courses.length });
+      return res.json({
+        courses,
+        count: courses.length,
+        debug: buildTelegramAiDebugInfo(texts, trimmedTexts, provider),
+      });
     } catch (err) {
       providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
     }
   }
   return res.status(503).json({
     error: buildAiProviderFailureMessage(providerErrors, "AI course info extraction failed."),
+  });
+});
+
+TelegramRouter.post("/ai/extract-material-metadata", checkAuth, async (req, res) => {
+  const mode = String(req.body?.mode || "").trim().toLowerCase();
+  const subIntervalContext =
+    req.body?.subIntervalContext && typeof req.body.subIntervalContext === "object"
+      ? req.body.subIntervalContext
+      : null;
+  if (!["course", "components", "exams", "lectures"].includes(mode)) {
+    return res.status(400).json({ error: "Field 'mode' must be one of: course, components, exams, lectures." });
+  }
+
+  const texts = await getAllStoredTelegramMessageTexts();
+  if (texts.length === 0) {
+    return res.status(400).json({ error: "No stored Telegram messages were found." });
+  }
+
+  const groqClient = getGroqClient();
+  const openAiClient = getOpenAIClient();
+  const kimiClient = getKimiClient();
+  const {
+    preferredProvider,
+    hasExplicitProvider,
+    providerAttemptOrder: providerOrder,
+  } = await getTelegramRouteAiProviderSelection(
+    req,
+    groqClient,
+    openAiClient,
+    kimiClient,
+  );
+  if (providerOrder.length === 0) {
+    return res.status(500).json({
+      error: hasExplicitProvider
+        ? getMissingProviderConfigurationMessage(preferredProvider)
+        : DEFAULT_NO_PROVIDER_MESSAGE,
+    });
+  }
+
+  const trimmedTexts = trimTelegramMessagesForAiContext(
+    texts,
+    preferredProvider,
+    mode,
+  );
+  const input = buildTelegramExtractMaterialMetadataPrompt(
+    mode,
+    trimmedTexts,
+    subIntervalContext,
+  );
+  const instructions = "Return valid JSON only.";
+
+  const providerErrors = [];
+  for (const provider of providerOrder) {
+    try {
+      let rawOutput;
+      if (provider === "gemini") {
+        rawOutput = await createGeminiResponse({ instructions, input });
+      } else {
+        const client = getOpenAiCompatibleClient(provider, groqClient, openAiClient, kimiClient);
+        const model = getOpenAiCompatibleModel(provider);
+        rawOutput = await createOpenAiResponse({ client, model, provider, instructions, input });
+      }
+      const jsonMatch = rawOutput.match(/\{[\s\S]*\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const rawEntries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+
+      const entries = rawEntries.map((entry) => {
+        const base = entry && typeof entry === "object" ? entry : {};
+        if (mode === "course") {
+          const courseInfo = base?.courseInfo && typeof base.courseInfo === "object" ? base.courseInfo : {};
+          return {
+            courseInfo: {
+              courseSymbol: String(courseInfo?.courseSymbol || "CRS").trim() || "CRS",
+              courseNum: Number.isFinite(Number(courseInfo?.courseNum)) ? Number(courseInfo.courseNum) : null,
+              courseID: String(courseInfo?.courseID || "").trim(),
+              courseName: String(courseInfo?.courseName || "").trim(),
+              courseCode: String(courseInfo?.courseCode || "").trim(),
+              courseWeight: Number.isFinite(Number(courseInfo?.courseWeight)) ? Number(courseInfo.courseWeight) : null,
+              courseGrade: Number.isFinite(Number(courseInfo?.courseGrade)) ? Number(courseInfo.courseGrade) : null,
+              courseStatus: String(courseInfo?.courseStatus || "").trim(),
+            },
+          };
+        }
+        if (mode === "components") {
+          const componentInfo = base?.componentInfo && typeof base.componentInfo === "object" ? base.componentInfo : {};
+          return {
+            courseName: String(base?.courseName || "").trim(),
+            courseCode: String(base?.courseCode || "").trim(),
+            componentInfo: {
+              componentSymbol: String(componentInfo?.componentSymbol || "COMP").trim() || "COMP",
+              componentNum: Number.isFinite(Number(componentInfo?.componentNum)) ? Number(componentInfo.componentNum) : null,
+              componentID: String(componentInfo?.componentID || "").trim(),
+              componentClass: String(componentInfo?.componentClass || "").trim(),
+              componentWeight: Number.isFinite(Number(componentInfo?.componentWeight)) ? Number(componentInfo.componentWeight) : null,
+              componentLocation: {
+                building: String(componentInfo?.componentLocation?.building || "").trim(),
+                rooms: Array.isArray(componentInfo?.componentLocation?.rooms)
+                  ? componentInfo.componentLocation.rooms.map((room) => String(room || "").trim()).filter(Boolean)
+                  : [],
+              },
+              componentDates: componentInfo?.componentDates && typeof componentInfo.componentDates === "object"
+                ? componentInfo.componentDates
+                : { start: { day: null, month: null, year: null, date: null }, end: { day: null, month: null, year: null, date: null } },
+            },
+          };
+        }
+        if (mode === "exams") {
+          const taskInfo = base?.taskInfo && typeof base.taskInfo === "object" ? base.taskInfo : {};
+          return {
+            courseName: String(base?.courseName || "").trim(),
+            courseCode: String(base?.courseCode || "").trim(),
+            componentClass: String(base?.componentClass || "").trim(),
+            taskInfo: {
+              taskSymbol: String(taskInfo?.taskSymbol || "EXM").trim() || "EXM",
+              taskNum: Number.isFinite(Number(taskInfo?.taskNum)) ? Number(taskInfo.taskNum) : null,
+              taskID: String(taskInfo?.taskID || "").trim(),
+              taskLocation: {
+                building: String(taskInfo?.taskLocation?.building || "").trim(),
+                rooms: Array.isArray(taskInfo?.taskLocation?.rooms)
+                  ? taskInfo.taskLocation.rooms.map((room) => String(room || "").trim()).filter(Boolean)
+                  : [],
+              },
+              taskDate: taskInfo?.taskDate || null,
+              taskTime: String(taskInfo?.taskTime || "").trim(),
+              taskWeight: Number.isFinite(Number(taskInfo?.taskWeight)) ? Number(taskInfo.taskWeight) : null,
+              taskGrade: Number.isFinite(Number(taskInfo?.taskGrade)) ? Number(taskInfo.taskGrade) : null,
+            },
+          };
+        }
+        const lectureInfo = base?.lectureInfo && typeof base.lectureInfo === "object" ? base.lectureInfo : {};
+        return {
+          courseName: String(base?.courseName || "").trim(),
+          courseCode: String(base?.courseCode || "").trim(),
+          componentClass: String(base?.componentClass || "").trim(),
+          taskID: String(base?.taskID || "").trim(),
+          lectureInfo: {
+            lectureSymbol: String(lectureInfo?.lectureSymbol || "LEC").trim() || "LEC",
+            lectureNum: Number.isFinite(Number(lectureInfo?.lectureNum)) ? Number(lectureInfo.lectureNum) : null,
+            lectureID: String(lectureInfo?.lectureID || "").trim(),
+            lectureName: String(lectureInfo?.lectureName || "").trim(),
+            lectureInstructors: Array.isArray(lectureInfo?.lectureInstructors)
+              ? lectureInfo.lectureInstructors.map((name) => String(name || "").trim()).filter(Boolean)
+              : [],
+            lectureInstructionDate: lectureInfo?.lectureInstructionDate || null,
+          },
+        };
+      }).filter((entry) => {
+        if (mode === "course") return Boolean(entry?.courseInfo?.courseName);
+        if (mode === "components") return Boolean(entry?.componentInfo?.componentClass) && Boolean(entry?.courseName || entry?.courseCode);
+        if (mode === "exams") return Boolean(entry?.componentClass) && Boolean(entry?.courseName || entry?.courseCode);
+        return Boolean(entry?.lectureInfo?.lectureName) && Boolean(entry?.componentClass) && Boolean(entry?.courseName || entry?.courseCode);
+      });
+
+      return res.json({
+        mode,
+        entries,
+        count: entries.length,
+        groupCount: texts.length,
+        debug: buildTelegramAiDebugInfo(texts, trimmedTexts, provider),
+      });
+    } catch (err) {
+      providerErrors.push({ provider, message: String(err?.message || "Unknown error") });
+    }
+  }
+
+  return res.status(503).json({
+    error: buildAiProviderFailureMessage(providerErrors, `AI ${mode} extraction failed.`),
   });
 });
 
@@ -7201,6 +7752,111 @@ TelegramRouter.post(
         message: `Pinned sync complete. ${pinnedIds.length} pinned message(s) found.`,
         pinnedCount: pinnedIds.length,
         updatedCount: Number(updateResult?.modifiedCount || 0),
+      });
+    } catch (error) {
+      next(error);
+    } finally {
+      if (client) {
+        try { await client.disconnect(); } catch {}
+      }
+    }
+  },
+);
+
+TelegramRouter.post(
+  "/document-to-cloudinary",
+  checkAuth,
+  async (req, res, next) => {
+    let client = null;
+    try {
+      const userId = req.authentication.userId;
+      const groupReference = normalizeGroupReference(req.body?.groupReference);
+      const messageId = Number(req.body?.messageId || 0);
+      const fileName = String(req.body?.fileName || "document.pdf").trim();
+
+      if (!groupReference || !messageId) {
+        return res.status(400).json({ message: "groupReference and messageId are required." });
+      }
+
+      const [user, telegramSettings] = await Promise.all([
+        UserModel.findById(userId).select("settings.telegram.status memory").lean(),
+        findTelegramSettings(userId),
+      ]);
+      if (!user) return res.status(404).json({ message: "User not found." });
+
+      const memoryDoc = await findUserMemoryLean(userId);
+      const storedMessage = await findStoredTelegramMessage(userId, memoryDoc, groupReference, messageId);
+
+      // Try inline data URL first (already stored in DB)
+      const documentDataUrl = normalizeString(storedMessage?.documentDataUrl);
+      let buffer = null;
+      let mimeType = "application/pdf";
+
+      if (documentDataUrl.startsWith("data:")) {
+        const separatorIndex = documentDataUrl.indexOf(",");
+        if (separatorIndex > -1) {
+          const header = documentDataUrl.slice(0, separatorIndex);
+          const base64Payload = documentDataUrl.slice(separatorIndex + 1);
+          const headerMatch = header.match(/^data:([^;]+);base64$/i);
+          if (headerMatch && base64Payload) {
+            buffer = Buffer.from(base64Payload, "base64");
+            mimeType = headerMatch[1] || "application/pdf";
+          }
+        }
+      }
+
+      // Fall back to live Telegram download
+      if (!buffer || buffer.length === 0) {
+        const config = getUserTelegramConfig(telegramSettings);
+        if (!config.apiId || !config.apiHash || !config.stringSession) {
+          return res.status(400).json({ message: "Telegram credentials are required to fetch the file." });
+        }
+        client = await withFastTimeout(
+          ensureTelegramClient(config),
+          25000,
+          "Telegram connection timed out.",
+        );
+        const media = await withFastTimeout(
+          downloadTelegramMessageMedia({
+            client,
+            groupReference,
+            messageId,
+            groupUsername: normalizeString(storedMessage?.groupUsername),
+          }),
+          45000,
+          "Telegram media fetch timed out.",
+        );
+        if (!media?.buffer) {
+          return res.status(404).json({ message: "Media not found in Telegram." });
+        }
+        buffer = media.buffer;
+        mimeType = media.mimeType || "application/pdf";
+      }
+
+      // Upload buffer to Cloudinary as raw resource
+      const uploadResult = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: "raw",
+            folder: `planner/documents/${userId}`,
+            public_id: fileName.replace(/\.[^.]+$/, ""),
+            use_filename: true,
+            unique_filename: true,
+            format: "pdf",
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result);
+          },
+        );
+        stream.end(buffer);
+      });
+
+      return res.status(200).json({
+        url: uploadResult.secure_url,
+        publicId: uploadResult.public_id,
+        bytes: uploadResult.bytes || buffer.length,
+        format: uploadResult.format || "pdf",
       });
     } catch (error) {
       next(error);

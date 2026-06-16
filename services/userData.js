@@ -132,9 +132,9 @@ const normalizeStudyOrganizerStatuses = (studyOrganizer) => {
   }
 
   const normalizedStudyOrganizer = cloneValue(studyOrganizer);
-  normalizedStudyOrganizer.settings = serializeStudyOrganizerSettingsForStorage(
-    normalizeStudyOrganizerSettings(normalizedStudyOrganizer?.settings),
-  );
+  if (Object.prototype.hasOwnProperty.call(normalizedStudyOrganizer, "settings")) {
+    delete normalizedStudyOrganizer.settings;
+  }
   const rawCourses = Array.isArray(normalizedStudyOrganizer.courses)
     ? normalizedStudyOrganizer.courses
     : normalizedStudyOrganizer.courses &&
