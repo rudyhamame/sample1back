@@ -139,7 +139,9 @@ const getStudyPlannerRoot = (memoryDoc) => {
   const currentProgramFailingRules =
     normalizeProgramFailingRulesForPlanner(currentPlanner);
 
-  const { _id: plannerId, ...plannerWithoutId } = currentPlanner || {};
+  // Strip _id plus any stale/virtual keys not in StudyPlannerSchema (strict: "throw")
+  const { _id: plannerId, programComponents, programExamClasses, programId, ...plannerWithoutId } = currentPlanner || {};
+  void programComponents; void programExamClasses; void programId;
   void plannerId;
   memoryDoc.studyPlanner = {
     ...plannerWithoutId,
