@@ -1886,9 +1886,10 @@ const flattenProgramIntervalEntry = (entry) => {
           subIntervalSymbol,
           subIntervalCurrent: Boolean(sub?.subIntervalCurrent),
           intervalStatus,
-          intervalCourses: normalizePlannerIntervalCourseEntries(
-            subEntry?.subIntervalCourses,
-          ),
+          intervalCourses: (Array.isArray(subEntry?.subIntervalCourses)
+            ? subEntry.subIntervalCourses
+            : []
+          ).map((e) => String(e || "").trim()).filter(Boolean),
         };
       })
       .filter(Boolean);
@@ -1918,7 +1919,10 @@ const flattenProgramIntervalEntry = (entry) => {
     subIntervalSymbol,
     subIntervalCurrent: Boolean(base?.subIntervalCurrent),
     intervalStatus,
-    intervalCourses: normalizePlannerIntervalCourseEntries(base?.intervalCourses || base?.subIntervalCourses),
+    intervalCourses: (Array.isArray(base?.intervalCourses || base?.subIntervalCourses)
+      ? (base?.intervalCourses || base?.subIntervalCourses)
+      : []
+    ).map((e) => String(e || "").trim()).filter(Boolean),
   }];
 };
 
@@ -1954,7 +1958,8 @@ const assembleProgramIntervals = (flatEntries, programID = "") => {
         subIntervalSymbol: entry.subIntervalSymbol || "sINT",
         subIntervalCurrent: Boolean(entry.subIntervalCurrent),
       },
-      subIntervalCourses: normalizePlannerIntervalCourseEntries(entry.intervalCourses),
+      subIntervalCourses: (Array.isArray(entry.intervalCourses) ? entry.intervalCourses : [])
+        .map((e) => String(e || "").trim()).filter(Boolean),
     });
   }
   return Array.from(intervalMap.values()).map((iEntry) => ({
@@ -2005,6 +2010,20 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     memoryDoc.markModified("studyPlanner.programIntervals");
+  }
+  return studyPlanner;
+};
+
+export const updateStudyPlannerCoursesInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  studyPlanner.programCourses = Array.isArray(normalizedPayload?.programCourses)
+    ? normalizedPayload.programCourses
+    : studyPlanner.programCourses || [];
+  if (typeof memoryDoc?.markModified === "function") {
+    memoryDoc.markModified("studyPlanner");
+    memoryDoc.markModified("studyPlanner.programCourses");
   }
   return studyPlanner;
 };
@@ -2066,7 +2085,8 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
                 ? false
                 : Boolean(subInfo?.subIntervalCurrent),
         },
-        subIntervalCourses: normalizePlannerIntervalCourseEntries(subBase?.subIntervalCourses),
+        subIntervalCourses: (Array.isArray(subBase?.subIntervalCourses) ? subBase.subIntervalCourses : [])
+          .map((e) => String(e || "").trim()).filter(Boolean),
       };
     });
 
@@ -2186,6 +2206,13 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
           : [],
       })
     : [];
+  const hasProgramDocumentTypes = "programDocumentTypes" in normalizedPayload;
+  const nextProgramDocumentTypes = hasProgramDocumentTypes
+    ? (Array.isArray(normalizedPayload?.programDocumentTypes)
+        ? normalizedPayload.programDocumentTypes
+        : []
+      ).map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
   const hasProgramInstructors = "programInstructors" in normalizedPayload;
   const hasProgramEditors = "programEditors" in normalizedPayload;
   const hasProgramLocations = "programLocations" in normalizedPayload;
@@ -2280,6 +2307,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramTermsPerYear &&
     !hasProgramPassingThresholdPerInterval &&
     !hasProgramFailingRules &&
+    !hasProgramDocumentTypes &&
     !hasProgramInstructors &&
     !hasProgramEditors &&
     !hasProgramLocations &&
@@ -2310,6 +2338,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if (hasProgramExams) {
     studyPlanner.programExams = nextProgramExams;
+  }
+  if (hasProgramDocumentTypes) {
+    studyPlanner.programDocumentTypes = nextProgramDocumentTypes;
   }
   if (hasProgramInstructors) {
     studyPlanner.programInstructors = nextProgramInstructors;
@@ -2447,6 +2478,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
         }
         if (Array.isArray(obj?.subIntervalCourses)) {
           result.subIntervalCourses = obj.subIntervalCourses
+            .map((c) => String(c || "").trim())
+            .filter(Boolean);
+          /* legacy block preserved but no longer executed — schema is now [String]
             .map((c) => {
               const co = c && typeof c === "object" ? toPlainObject(c) || {} : {};
               return {
@@ -2471,6 +2505,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
               };
             })
             .filter((c) => c.courseName || c.courseCode);
+          */
         }
         return Object.keys(result).length > 0 ? result : null;
       })

@@ -994,10 +994,13 @@ const PlannerDependentOptionsSelectsSchema = new Schema(
   },
   { _id: false, strict: "throw" },
 );
-const PlannerOptionsSelectsSchema = new Schema({
-  independent: { type: [PlannerIndependentOptionsSelectsSchema] },
-  dependent: { type: [PlannerDependentOptionsSelectsSchema] },
-});
+const PlannerOptionsSelectsSchema = new Schema(
+  {
+    independent: { type: [PlannerIndependentOptionsSelectsSchema] },
+    dependent: { type: [PlannerDependentOptionsSelectsSchema] },
+  },
+  { _id: false, strict: "throw" },
+);
 const PlannerRelationshipSchema = new Schema({
   mode: { type: String },
   causeField: { type: String },
@@ -1026,11 +1029,14 @@ const MessageFriend = new Schema(
   { _id: false },
 );
 
-const PlannerVoiceCommandSchema = new Schema({
-  idTree: { type: [String], default: [] },
-  elementID: { type: String, trim: true, default: "" },
-  voiceCommand: { type: String, trim: true, default: "" },
-});
+const PlannerVoiceCommandSchema = new Schema(
+  {
+    idTree: { type: [String], default: [] },
+    elementID: { type: String, trim: true, default: "" },
+    voiceCommand: { type: String, trim: true, default: "" },
+  },
+  { _id: false },
+);
 
 const PlannerVoiceDictationNormalizationSchema = new Schema(
   {
@@ -1053,8 +1059,18 @@ const locationRoomOptionsByBuilding = new Schema(
   { _id: false },
 );
 
+const PlannerPredictionToolEntrySchema = new Schema(
+  {
+    inputFieldID: { type: String, trim: true, default: "" },
+    list: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
 const PlannerSettingsSchema = new Schema(
   {
+    optionsSelects: { type: PlannerOptionsSelectsSchema, default: () => ({ independent: [], dependent: [] }) },
+    logoMotionEnabled: { type: Boolean, default: true },
     voiceControlEnabled: { type: Boolean, default: false },
     voiceDictationEnabled: { type: Boolean, default: false },
     logoFixedClock: { type: String, trim: true, default: "9" },
@@ -1066,13 +1082,7 @@ const PlannerSettingsSchema = new Schema(
       type: [PlannerVoiceDictationNormalizationSchema],
       default: [],
     },
-    predictionTool: [
-      {
-        tab: { type: String },
-        inputFieldID: { type: String },
-        list: [],
-      },
-    ],
+    predictionTool: { type: [PlannerPredictionToolEntrySchema], default: [] },
   },
   { _id: false, strict: "throw" },
 );

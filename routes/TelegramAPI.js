@@ -7561,6 +7561,92 @@ TelegramRouter.get(
   handleStoredMessagesRequest,
 );
 
+// Live fetch: reads up to 20 messages directly from Telegram — nothing is stored in DB.
+// Query params:
+//   groupReference  – group username / invite hash (falls back to configured group)
+//   offsetId        – message ID to paginate from (older than this ID); omit for latest
+TelegramRouter.get("/live-group-messages", checkAuth, async (req, res, next) => {
+  let client = null;
+  try {
+    const telegramSettings = await findTelegramSettings(req.authentication.userId);
+    const config = getUserTelegramConfig(telegramSettings);
+
+    if (!config.apiId || !config.apiHash || !config.stringSession) {
+      return res.status(400).json({
+        message: "Telegram credentials are not configured.",
+      });
+    }
+
+    const groupReference = normalizeGroupReference(
+      req.query.group || req.query.groupReference || config.groupReference,
+    );
+
+    if (!groupReference) {
+      return res.status(400).json({
+        message: "groupReference is required.",
+      });
+    }
+
+    const offsetId = Math.max(
+      0,
+      Number.parseInt(String(req.query.offsetId || "0").trim(), 10) || 0,
+    );
+
+    client = await runWithTimeout(
+      ensureTelegramClient(config),
+      TELEGRAM_CONNECT_TIMEOUT_MS,
+      "Timed out connecting to Telegram.",
+    );
+
+    const entity = await runWithTimeout(
+      resolveTelegramGroupEntity(client, groupReference),
+      TELEGRAM_CONNECT_TIMEOUT_MS,
+      "Timed out resolving Telegram group.",
+    );
+
+    const fetchOptions = { limit: 20 };
+    if (offsetId > 0) {
+      fetchOptions.offsetId = offsetId;
+    }
+
+    const rawMessages = await runWithTimeout(
+      client.getMessages(entity, fetchOptions),
+      TELEGRAM_CONNECT_TIMEOUT_MS,
+      "Timed out fetching messages from Telegram.",
+    );
+
+    const messages = (Array.isArray(rawMessages) ? rawMessages : [])
+      .filter(Boolean)
+      .map((msg) => buildMessagePayload(msg));
+
+    const oldestId = messages.reduce(
+      (min, m) => (m.id > 0 && (min === 0 || m.id < min) ? m.id : min),
+      0,
+    );
+
+    return res.status(200).json({
+      group: {
+        title: normalizeString(entity?.title) || groupReference,
+        username: normalizeString(entity?.username),
+        groupReference,
+      },
+      count: messages.length,
+      offsetId: offsetId || null,
+      nextOffsetId: messages.length === 20 && oldestId > 0 ? oldestId : null,
+      hasMore: messages.length === 20,
+      messages,
+    });
+  } catch (error) {
+    next(error);
+  } finally {
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch {}
+    }
+  }
+});
+
 TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
   let client = null;
   try {
