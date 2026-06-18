@@ -137,6 +137,7 @@ const LectureContentSchema = new Schema(
 const StudyLectureSchema = new Schema(
   {
     title: { type: String, default: "" },
+    lectureOrder: { type: Number, default: null },
     instructor: { type: String, default: "" },
     writer: { type: String, default: "" },
     publishDate: { type: Date, default: null },

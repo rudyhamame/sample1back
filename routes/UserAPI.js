@@ -48,6 +48,8 @@ import {
   updateStudyPlannerIntervalsInPlanner,
   updateStudyPlannerIntervalStatusInPlanner,
   updateStudyPlannerCoursesInPlanner,
+  updateStudyPlannerDocumentsInPlanner,
+  updateStudyPlannerLecturesInPlanner,
   updateStudyPlanAidInPlanner,
   updateLectureInPlanner,
   normalizeProgramComponentsForPlanner,
@@ -3585,6 +3587,52 @@ UserRouter.post(
       return res.status(201).json({
         studyPlanner: updatedStudyPlanner,
       });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerDocuments/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res.status(500).json({ message: "Failed to access user memory." });
+      }
+      const updatedStudyPlanner = updateStudyPlannerDocumentsInPlanner(memoryDoc, req.body);
+      await memoryDoc.save();
+      return res.status(201).json({ studyPlanner: updatedStudyPlanner });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/editStudyPlannerLectures/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const memoryDoc = await ensureUserMemoryDoc(user);
+      if (!memoryDoc) {
+        return res.status(500).json({ message: "Failed to access user memory." });
+      }
+      const updatedStudyPlanner = updateStudyPlannerLecturesInPlanner(memoryDoc, req.body);
+      await memoryDoc.save();
+      return res.status(201).json({ studyPlanner: updatedStudyPlanner });
     } catch (error) {
       return next(error);
     }

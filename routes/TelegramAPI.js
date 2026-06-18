@@ -50,13 +50,21 @@ const ensureTelegramAdmin = async (req, res, next) => {
       });
     }
 
-    const authenticatedUser = await UserModel.findById(authenticatedUserId)
-      .select("username auth.username identity.atSignup.username identity.personal.username")
+    const ownerUser = await UserModel.findOne({
+      $or: [
+        { username: TELEGRAM_ADMIN_USERNAME },
+        { "auth.username": TELEGRAM_ADMIN_USERNAME },
+        { "identity.atSignup.username": TELEGRAM_ADMIN_USERNAME },
+        { "identity.personal.username": TELEGRAM_ADMIN_USERNAME },
+      ],
+    })
+      .select("_id")
       .lean();
-    const normalizedUsername =
-      getNormalizedTelegramAdminUsername(authenticatedUser);
 
-    if (normalizedUsername !== TELEGRAM_ADMIN_USERNAME) {
+    if (
+      !ownerUser ||
+      String(ownerUser?._id || "").trim() !== authenticatedUserId
+    ) {
       return res.status(403).json({
         message: "Telegram control is restricted.",
         reason: "telegram_admin_only",
@@ -92,13 +100,6 @@ const TELEGRAM_DIALOG_LIMIT = Math.max(
   ) || 200,
 );
 const TELEGRAM_FETCH_BATCH_SIZE = 100;
-const TELEGRAM_MAX_SYNC_MESSAGES = Math.max(
-  100,
-  Number.parseInt(
-    String(process.env.TELEGRAM_MAX_SYNC_MESSAGES || "2000").trim(),
-    10,
-  ) || 2000,
-);
 const STORAGE_ONLY_MESSAGE =
   "Telegram API is storage-only now. It stores Telegram group info in user memory and message bodies in dedicated Telegram storage.";
 const DEFAULT_GROQ_MODEL =
@@ -2971,7 +2972,9 @@ const queryStoredTelegramMessages = async ({
       return true;
     }
 
-    return buildSearchableMessageText(message).includes(normalizedSearch);
+    const searchableText = buildSearchableMessageText(message);
+    const searchWords = normalizedSearch.split(/\s+/).filter(Boolean);
+    return searchWords.every((word) => searchableText.includes(word));
   });
 
   const safeOffset = Math.max(0, Number(offset || 0) || 0);
@@ -4107,15 +4110,9 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
       let offsetId = 0;
       let shouldStopByInterval = false;
 
-      while (
-        scannedCount < TELEGRAM_MAX_SYNC_MESSAGES &&
-        importedMessages.length < TELEGRAM_MAX_SYNC_MESSAGES
-      ) {
+      while (true) {
         setTelegramSyncControl(userKey, "play");
-        const nextLimit = Math.min(
-          TELEGRAM_FETCH_BATCH_SIZE,
-          TELEGRAM_MAX_SYNC_MESSAGES - scannedCount,
-        );
+        const nextLimit = TELEGRAM_FETCH_BATCH_SIZE;
         const fetchOptions = {
           limit: nextLimit,
           offsetId,
@@ -4190,9 +4187,6 @@ const syncTelegramMessagesForUser = async (userId, options = {}) => {
             groupReference: normalizedSyncGroupReference,
           });
 
-          if (importedMessages.length >= TELEGRAM_MAX_SYNC_MESSAGES) {
-            break;
-          }
         }
 
         if (importedMessages.length > 0) {
@@ -7270,6 +7264,179 @@ TelegramRouter.get("/stored-groups", checkAuth, async (req, res, next) => {
   }
 });
 
+TelegramRouter.post(
+  "/allowed-groups/push",
+  checkAuth,
+  ensureTelegramAdmin,
+  async (req, res, next) => {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "memory settings.telegram.status",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const normalizedReference = normalizeGroupReference(
+        req.body?.groupReference,
+      );
+      if (!normalizedReference) {
+        return res.status(400).json({
+          message: "Telegram group reference is required.",
+        });
+      }
+
+      const storedGroupDoc = await TelegramStoredMessageModel.findOne(
+        { groupReference: normalizedReference },
+      ).lean();
+      const memorySource =
+        user?.memory && typeof user.memory === "object" ? user.memory : {};
+      const currentGroups =
+        memorySource?.MOA?.telegram && Array.isArray(memorySource.MOA.telegram.groups)
+          ? memorySource.MOA.telegram.groups
+          : [];
+      const existingGroupIndex = currentGroups.findIndex((groupEntry) =>
+        normalizeGroupReference(groupEntry?.info?.groupReference) ===
+        normalizedReference,
+      );
+      const existingGroup =
+        existingGroupIndex >= 0 ? currentGroups[existingGroupIndex] : null;
+      const nextGroupEntry = {
+        info: {
+          name:
+            normalizeString(req.body?.title) ||
+            normalizeString(storedGroupDoc?.groupTitle) ||
+            normalizeString(existingGroup?.info?.name) ||
+            normalizedReference,
+          groupReference: normalizedReference,
+          memberCount: Number.isFinite(Number(req.body?.memberCount))
+            ? Number(req.body.memberCount)
+            : Number(storedGroupDoc?.memberCount || existingGroup?.info?.memberCount || 0),
+          description:
+            normalizeString(req.body?.description) ||
+            normalizeString(storedGroupDoc?.description) ||
+            normalizeString(existingGroup?.info?.description),
+          messageCount: Number(
+            existingGroup?.info?.messageCount ??
+              storedGroupDoc?.messages?.length ??
+              0,
+          ),
+          latestMessageDateMs: Number(
+            existingGroup?.info?.latestMessageDateMs || 0,
+          ),
+          pageUrl:
+            normalizePageUrl(req.body?.pageUrl) ||
+            normalizePageUrl(storedGroupDoc?.pageUrl) ||
+            normalizePageUrl(existingGroup?.info?.pageUrl),
+        },
+        messages: Array.isArray(existingGroup?.messages)
+          ? existingGroup.messages
+          : [],
+      };
+
+      const nextGroups =
+        existingGroupIndex >= 0
+          ? currentGroups.map((groupEntry, index) =>
+              index === existingGroupIndex ? nextGroupEntry : groupEntry,
+            )
+          : [...currentGroups, nextGroupEntry];
+
+      await UserModel.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            "memory.MOA.telegram.groups": nextGroups,
+          },
+        },
+      );
+
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
+
+      return res.status(200).json({
+        message: "Telegram group added to allowed list.",
+        groups: buildStoredTelegramGroupsFromSchema(
+          { ...user.toObject?.(), memory: { ...memorySource, MOA: { ...(memorySource?.MOA || {}), telegram: { groups: nextGroups } } } },
+          { ...memorySource, MOA: { ...(memorySource?.MOA || {}), telegram: { groups: nextGroups } } },
+          null,
+        ),
+        processLoaders: getTelegramProcessLoaders(req.authentication.userId),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+TelegramRouter.delete(
+  "/allowed-groups/:groupReference",
+  checkAuth,
+  ensureTelegramAdmin,
+  async (req, res, next) => {
+    try {
+      const user = await UserModel.findById(req.authentication.userId).select(
+        "memory settings.telegram.status",
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
+      const normalizedReference = normalizeGroupReference(
+        req.params.groupReference,
+      );
+      if (!normalizedReference) {
+        return res.status(400).json({
+          message: "Telegram group reference is required.",
+        });
+      }
+
+      const memorySource =
+        user?.memory && typeof user.memory === "object" ? user.memory : {};
+      const currentGroups =
+        memorySource?.MOA?.telegram && Array.isArray(memorySource.MOA.telegram.groups)
+          ? memorySource.MOA.telegram.groups
+          : [];
+      const nextGroups = currentGroups.filter((groupEntry) => {
+        return (
+          normalizeGroupReference(groupEntry?.info?.groupReference) !==
+          normalizedReference
+        );
+      });
+      const deleted = nextGroups.length !== currentGroups.length;
+
+      await UserModel.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            "memory.MOA.telegram.groups": nextGroups,
+          },
+        },
+      );
+
+      clearTelegramFastCachedResponsesForUser(req.authentication.userId);
+
+      return res.status(200).json({
+        message: deleted
+          ? "Telegram group removed from allowed list."
+          : "Telegram group not found in allowed list.",
+        groups: buildStoredTelegramGroupsFromSchema(
+          { ...user.toObject?.(), memory: { ...memorySource, MOA: { ...(memorySource?.MOA || {}), telegram: { groups: nextGroups } } } },
+          { ...memorySource, MOA: { ...(memorySource?.MOA || {}), telegram: { groups: nextGroups } } },
+          null,
+        ),
+        processLoaders: getTelegramProcessLoaders(req.authentication.userId),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 TelegramRouter.delete(
   "/stored-groups/:groupReference",
   checkAuth,
@@ -7681,37 +7848,31 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       memoryDoc,
       groupReference,
       messageId,
-    );
-    if (!storedMessage) {
-      return res.status(404).json({
-        message: "Media not found.",
-        reason: "stored-message-mismatch",
-        groupReference,
-        messageId,
-      });
-    }
+    ).catch(() => null);
 
-    const attachmentKind = normalizeString(storedMessage?.attachmentKind).toLowerCase();
-    const inlineMediaDataUrl =
-      attachmentKind === "photo"
-        ? normalizeString(storedMessage?.photoDataUrl)
-        : attachmentKind === "video"
-          ? normalizeString(storedMessage?.videoDataUrl)
-          : attachmentKind === "document" || attachmentKind === "pdf"
-            ? normalizeString(storedMessage?.documentDataUrl)
-            : "";
-    if (inlineMediaDataUrl.startsWith("data:")) {
-      const separatorIndex = inlineMediaDataUrl.indexOf(",");
-      if (separatorIndex > -1) {
-        const header = inlineMediaDataUrl.slice(0, separatorIndex);
-        const base64Payload = inlineMediaDataUrl.slice(separatorIndex + 1);
-        const headerMatch = header.match(/^data:([^;]+);base64$/i);
-        if (headerMatch && base64Payload) {
-          const inlineBuffer = Buffer.from(base64Payload, "base64");
-          if (inlineBuffer.length > 0) {
-            res.setHeader("Content-Type", headerMatch[1] || "application/octet-stream");
-            res.setHeader("Cache-Control", "private, max-age=120");
-            return res.status(200).send(inlineBuffer);
+    if (storedMessage) {
+      const attachmentKind = normalizeString(storedMessage?.attachmentKind).toLowerCase();
+      const inlineMediaDataUrl =
+        attachmentKind === "photo"
+          ? normalizeString(storedMessage?.photoDataUrl)
+          : attachmentKind === "video"
+            ? normalizeString(storedMessage?.videoDataUrl)
+            : attachmentKind === "document" || attachmentKind === "pdf"
+              ? normalizeString(storedMessage?.documentDataUrl)
+              : "";
+      if (inlineMediaDataUrl.startsWith("data:")) {
+        const separatorIndex = inlineMediaDataUrl.indexOf(",");
+        if (separatorIndex > -1) {
+          const header = inlineMediaDataUrl.slice(0, separatorIndex);
+          const base64Payload = inlineMediaDataUrl.slice(separatorIndex + 1);
+          const headerMatch = header.match(/^data:([^;]+);base64$/i);
+          if (headerMatch && base64Payload) {
+            const inlineBuffer = Buffer.from(base64Payload, "base64");
+            if (inlineBuffer.length > 0) {
+              res.setHeader("Content-Type", headerMatch[1] || "application/octet-stream");
+              res.setHeader("Cache-Control", "private, max-age=120");
+              return res.status(200).send(inlineBuffer);
+            }
           }
         }
       }
@@ -7733,13 +7894,14 @@ TelegramRouter.get("/stored-media", checkAuth, async (req, res, next) => {
       25000,
       "Telegram connection timed out.",
     );
+    const attachmentKind = normalizeString(storedMessage?.attachmentKind).toLowerCase();
     const mediaTimeoutMs = attachmentKind === "photo" ? 30000 : 45000;
     const media = await withFastTimeout(
       downloadTelegramMessageMedia({
         client,
         groupReference,
         messageId,
-        groupUsername: normalizeString(storedMessage?.groupUsername),
+        groupUsername: normalizeString(storedMessage?.groupUsername || ""),
       }),
       mediaTimeoutMs,
       "Telegram media fetch timed out.",

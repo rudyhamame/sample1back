@@ -1073,6 +1073,7 @@ const PlannerSettingsSchema = new Schema(
     logoMotionEnabled: { type: Boolean, default: true },
     voiceControlEnabled: { type: Boolean, default: false },
     voiceDictationEnabled: { type: Boolean, default: false },
+    aiHelpersEnabled: { type: Boolean, default: false },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },

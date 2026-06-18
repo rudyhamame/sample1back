@@ -135,7 +135,9 @@ const componentInfoSchema = new Schema ({
   componentNum: { type: Number },
   componentID: { type: String, default: "" }, // = courseID + COMP{n}
   componentWeight: { type: Number, default: null },
+  componentStatus: { type: String, default: "" },
   componentDates: { type: componentDatesSchema, default: () => ({}) },
+  componentLocation: { type: locationSchema, default: null },
   componentSchedule: { type: componentScheduleSchema, default: () => ({}) },
   componentInstructors: [{
     firstName: {type: String},
@@ -184,6 +186,7 @@ const lectureInfoSchema = new Schema ({
   lectureNum: { type: Number },
   lectureID: { type: String, default: "" }, // = taskID:LEC:lectureNum
   lectureName: { type: String, default: "" },
+  lectureOrder: { type: Number, default: "" },
   lectureCourseName: { type: String, default: "" },
   lectureComponentName: { type: String, default: "" },
   lectureInstructors: { type: [String], default: [] },
@@ -198,9 +201,11 @@ const documentInfoSchema = new Schema ({
   documentName: { type: String, default: "" }, 
   documentType: { type: String, default: "" }, // PDF, IMAGE, Video, Youtube Video ...
   documentVolumeUnit: { type: String, default: "" }, // page, image, words, letters
-  documentVolume: { type: Number, default: null }, // number of pages, number of images ...
+  documentVolume: {  // number of pages, number of images ...
+    total:  { type: Number, default: null },
+    done:  { type: Number, default: null },
+   },
   documentEditors: { type: [String], default: [] }, // a subset of programEditors
-  documentByteSize: { type: Number, default: 0, min: 0 },
 },{_id: false, strict: 'throw'},
 );
 
@@ -313,6 +318,7 @@ const StudyPlannerSchema = new Schema(
     // Helper
     programComponentNames: { type: [String], default: [] },
     programDocumentTypes: { type: [String], default: [] },
+    programDocumentVolumeUnit : { type: [String], default: [] },
     programEditors: { type: [String], default: [] },
     programLocations: { type: [locationSchema], default: [] },
     programTaskNames: { type: [String], default: [] },

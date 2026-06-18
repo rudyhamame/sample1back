@@ -140,8 +140,15 @@ const getStudyPlannerRoot = (memoryDoc) => {
     normalizeProgramFailingRulesForPlanner(currentPlanner);
 
   // Strip _id plus any stale/virtual keys not in StudyPlannerSchema (strict: "throw")
-  const { _id: plannerId, programComponents, programExamClasses, programId, ...plannerWithoutId } = currentPlanner || {};
-  void programComponents; void programExamClasses; void programId;
+  const {
+    _id: plannerId,
+    programComponents,
+    programExamClasses,
+    programId,
+    programInstructors,
+    ...plannerWithoutId
+  } = currentPlanner || {};
+  void programComponents; void programExamClasses; void programId; void programInstructors;
   void plannerId;
   memoryDoc.studyPlanner = {
     ...plannerWithoutId,
@@ -2058,6 +2065,18 @@ const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
             componentWeight: Number.isFinite(Number(plainComponentInfo.componentWeight))
               ? Number(plainComponentInfo.componentWeight)
               : null,
+            componentStatus: trimString(plainComponentInfo.componentStatus),
+            componentDates: {
+              start: parseDateToComponents(
+                plainComponentInfo?.componentDates?.start || null,
+              ),
+              end: parseDateToComponents(
+                plainComponentInfo?.componentDates?.end || null,
+              ),
+            },
+            componentLocation: sanitizeStudyLocation(
+              plainComponentInfo?.componentLocation || {},
+            ),
             componentInstructors: componentInstructors
               .map((entry) => {
                 const source = toPlainObject(entry) || {};
@@ -2275,6 +2294,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   );
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  if (Object.prototype.hasOwnProperty.call(normalizedPayload, "programInstructors")) {
+    delete normalizedPayload.programInstructors;
+  }
   const nextProgramName = trimString(normalizedPayload?.programName);
   const nextProgramLanguage = trimString(normalizedPayload?.programLanguage);
   const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
@@ -2327,6 +2349,14 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const nextProgramDocumentTypes = hasProgramDocumentTypes
     ? (Array.isArray(normalizedPayload?.programDocumentTypes)
         ? normalizedPayload.programDocumentTypes
+        : []
+      ).map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const hasProgramDocumentVolumeUnit =
+    "programDocumentVolumeUnit" in normalizedPayload;
+  const nextProgramDocumentVolumeUnit = hasProgramDocumentVolumeUnit
+    ? (Array.isArray(normalizedPayload?.programDocumentVolumeUnit)
+        ? normalizedPayload.programDocumentVolumeUnit
         : []
       ).map((entry) => String(entry || "").trim()).filter(Boolean)
     : [];
@@ -2383,6 +2413,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramPassingThresholdPerInterval &&
     !hasProgramFailingRules &&
     !hasProgramDocumentTypes &&
+    !hasProgramDocumentVolumeUnit &&
     !hasProgramEditors &&
     !hasProgramLocations &&
     !hasProgramIntervals &&
@@ -2415,6 +2446,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if (hasProgramDocumentTypes) {
     studyPlanner.programDocumentTypes = nextProgramDocumentTypes;
+  }
+  if (hasProgramDocumentVolumeUnit) {
+    studyPlanner.programDocumentVolumeUnit = nextProgramDocumentVolumeUnit;
   }
   if (hasProgramEditors) {
     studyPlanner.programEditors = nextProgramEditors;
@@ -3358,6 +3392,10 @@ export const buildManualLecturePayload = (payload = {}, previousLecture = {}) =>
 
   return {
     ...(normalizedPreviousLecture?._id ? { _id: normalizedPreviousLecture._id } : {}),
+    lectureOrder: toPositiveInteger(
+      payload?.lecture_order ?? payload?.lectureOrder,
+      normalizedPreviousLecture?.lectureOrder || 0,
+    ) || null,
     title:
       trimString(payload?.lecture_name) ||
       trimString(normalizedPreviousLecture?.title) ||
@@ -3856,6 +3894,7 @@ export const flattenMemoryLecturesForPlanner = (entries = []) =>
 
         return {
           _id: normalizedLecture?._id || null,
+          lecture_order: toPositiveInteger(normalizedLecture?.lectureOrder, null),
           lecture_name: trimString(normalizedLecture?.title) || "-",
           lecture_course:
             lectureCourseLabel || trimString(normalizedCourse?.name) || "-",
@@ -4253,4 +4292,92 @@ export const updateCoursePagesInPlanner = (
   });
 
   setPlannerCourses(memoryDoc, nextCourses);
+};
+
+export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const rawDocuments = Array.isArray(normalizedPayload?.programDocuments)
+    ? normalizedPayload.programDocuments
+    : studyPlanner.programDocuments || [];
+
+  studyPlanner.programDocuments = rawDocuments
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => {
+      const info = entry?.documentInfo && typeof entry.documentInfo === "object"
+        ? entry.documentInfo
+        : {};
+      return {
+        documentInfo: {
+          documentSymbol: trimString(info?.documentSymbol) || "DOC",
+          documentNum: typeof info?.documentNum === "number" ? info.documentNum : null,
+          documentID: trimString(info?.documentID),
+          documentName: trimString(info?.documentName),
+          documentType: trimString(info?.documentType),
+          documentVolumeUnit: trimString(info?.documentVolumeUnit),
+          documentVolume: {
+            total: typeof info?.documentVolume?.total === "number" ? info.documentVolume.total : null,
+            done: typeof info?.documentVolume?.done === "number" ? info.documentVolume.done : null,
+          },
+          documentEditors: Array.isArray(info?.documentEditors)
+            ? info.documentEditors.map((e) => trimString(e)).filter(Boolean)
+            : [],
+        },
+        documentURL: trimString(entry?.documentURL),
+      };
+    });
+
+  if (typeof memoryDoc?.markModified === "function") {
+    memoryDoc.markModified("studyPlanner");
+    memoryDoc.markModified("studyPlanner.programDocuments");
+  }
+  return studyPlanner;
+};
+
+export const updateStudyPlannerLecturesInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const rawLectures = Array.isArray(normalizedPayload?.programLectures)
+    ? normalizedPayload.programLectures
+    : studyPlanner.programLectures || [];
+
+  studyPlanner.programLectures = rawLectures
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => {
+      const info = entry?.lectureInfo && typeof entry.lectureInfo === "object"
+        ? entry.lectureInfo
+        : {};
+      return {
+        lectureInfo: {
+          lectureSymbol: trimString(info?.lectureSymbol) || "LEC",
+          lectureNum:
+            typeof info?.lectureNum === "number" && Number.isFinite(info.lectureNum)
+              ? info.lectureNum
+              : null,
+          lectureID: trimString(info?.lectureID),
+          lectureName: trimString(info?.lectureName),
+          lectureOrder:
+            typeof info?.lectureOrder === "number" && Number.isFinite(info.lectureOrder)
+              ? info.lectureOrder
+              : null,
+          lectureCourseName: trimString(info?.lectureCourseName),
+          lectureComponentName: trimString(info?.lectureComponentName),
+          lectureInstructors: Array.isArray(info?.lectureInstructors)
+            ? info.lectureInstructors.map((value) => trimString(value)).filter(Boolean)
+            : [],
+          lectureInstructionDate: parseOptionalDate(info?.lectureInstructionDate || null),
+        },
+        lectureDocuments: Array.isArray(entry?.lectureDocuments)
+          ? entry.lectureDocuments.map((value) => trimString(value)).filter(Boolean)
+          : [],
+      };
+    });
+
+  if (typeof memoryDoc?.markModified === "function") {
+    memoryDoc.markModified("studyPlanner");
+    memoryDoc.markModified("studyPlanner.programLectures");
+  }
+  return studyPlanner;
 };
