@@ -358,7 +358,12 @@ const trimTelegramMessagesForAiContext = (
   const modeBudgetMultiplier =
     normalizedMode === "course" ? 0.85 : normalizedMode === "lectures" ? 1.0 : 0.92;
   const maxChars = Math.max(20000, Math.floor(baseBudget * modeBudgetMultiplier));
-  const maxMessages = normalizedProvider === "gemini" ? 700 : 320;
+  const maxMessages =
+    normalizedProvider === "gemini"
+      ? 1200
+      : normalizedMode === "course"
+        ? 900
+        : 320;
 
   const selected = [];
   let totalChars = 0;

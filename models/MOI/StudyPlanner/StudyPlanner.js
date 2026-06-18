@@ -122,14 +122,25 @@ const courseInfoSchema = new Schema ({
 },{_id: false, strict: 'throw'},
 );
 
+const componentScheduleSchema= new Schema ({
+      day:{ type: String, default: "" },
+      time: { type: String, default: "" },
+      location: { type: locationSchema, default: null },
+},{_id: false, strict: 'throw'},
+);
+
 const componentInfoSchema = new Schema ({
   componentSymbol: { type: String, default: "COMP" },
   componentName: { type: String, default: "" },
   componentNum: { type: Number },
   componentID: { type: String, default: "" }, // = courseID + COMP{n}
   componentWeight: { type: Number, default: null },
-  componentLocation: { type: locationSchema, default: null },
   componentDates: { type: componentDatesSchema, default: () => ({}) },
+  componentSchedule: { type: componentScheduleSchema, default: () => ({}) },
+  componentInstructors: [{
+    firstName: {type: String},
+    lastName: {type: String},
+  }]
 },{_id: false, strict: 'throw'},
 );
 
@@ -173,9 +184,10 @@ const lectureInfoSchema = new Schema ({
   lectureNum: { type: Number },
   lectureID: { type: String, default: "" }, // = taskID:LEC:lectureNum
   lectureName: { type: String, default: "" },
+  lectureCourseName: { type: String, default: "" },
+  lectureComponentName: { type: String, default: "" },
   lectureInstructors: { type: [String], default: [] },
   lectureInstructionDate: { type: Date, default: null },
-  lectureConcepts: { type: [lectureConceptsSchema], default: [] },
 },{_id: false, strict: 'throw'},
 );
 
@@ -205,18 +217,6 @@ const programIntervalsSchema = new Schema(
   { _id: false, strict: "throw" },
 );
 
-// Instructor entries now track lecture IDs alongside names and personality.
-const programInstructorsSchema = new Schema (
-  {
-    firstName: {type: String},
-    lastName: {type: String},
-    fullName: {type: String},
-    personality: {type: String},
-    lectureIDs:{type: [String]}
-  },
-    { _id: false, strict: "throw" }
-);
-
 const programCoursesInfoSchema = new Schema (
   {
     subIntervalID: {type: String},
@@ -239,6 +239,7 @@ const programCurrentIntervalSelectionSchema = new Schema(
 const programLecturesSchema = new Schema ({
   lectureInfo: {type: lectureInfoSchema, default: ''},
   lectureDocuments: { type: [String], default: [] },
+  // lectureConcepts: { type: [lectureConceptsSchema], default: [] },
 },{ _id: false, strict: "throw" });
 
 const programDocumentsSchema = new Schema ({
@@ -310,7 +311,6 @@ const StudyPlannerSchema = new Schema(
     }],
     settings: { type: PlannerSettingsSchema, default: createEmptyObject },
     // Helper
-    programInstructors: { type: [programInstructorsSchema], default: [] },
     programComponentNames: { type: [String], default: [] },
     programDocumentTypes: { type: [String], default: [] },
     programEditors: { type: [String], default: [] },

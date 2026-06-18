@@ -7,7 +7,7 @@ Input:
 A batch of Telegram messages that may contain Arabic, English, or mixed text, abbreviations, course posters, schedules, and informal names.
 
 Goal:
-Extract the distinct course names that appear in the messages and the short codes students actually use in chat.
+Extract EVERY distinct course name that appears anywhere in the messages, including courses mentioned only once, in passing, or informally. Be exhaustive — do not stop at the most prominent courses. The messages may span an entire academic semester or year so scan all of them carefully.
 
 Do not extract:
 - generic words like course, subject, subject title, or lecture unless they are part of the official course name
@@ -28,7 +28,7 @@ Required schema key: `coursesNameCode`
 }
 
 Rules:
-1. Return only distinct courses.
+1. Return ALL distinct courses found — completeness is the priority.
 2. Merge duplicates that refer to the same course.
 3. courseName should be the most official/formal name you can infer.
 4. courseCode should be the shorthand code or abbreviation used by students.
@@ -38,6 +38,7 @@ Rules:
 8. Keep Arabic script when the source is Arabic.
 9. Preserve mixed-language names as they appear.
 10. Use "high" when the course name and code are both clear, "medium" when the course name is clear but the code is uncertain, and "low" when the course is likely present but the message is incomplete.
+11. Include low-confidence courses — do not omit courses just because they appear rarely or the evidence is partial.
 
 Very important:
 Return JSON only.

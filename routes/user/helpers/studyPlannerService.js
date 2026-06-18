@@ -1060,6 +1060,16 @@ const sanitizeStudyComponent = (value = {}) => ({
   exams: Array.isArray(value?.exams)
     ? value.exams.map((entry) => sanitizeStudyExam(toPlainObject(entry) || {}))
     : [],
+  componentInstructors: Array.isArray(value?.componentInstructors)
+    ? value.componentInstructors
+        .map((entry) => {
+          const source = toPlainObject(entry) || {};
+          const firstName = trimString(source?.firstName);
+          const lastName = trimString(source?.lastName);
+          return firstName || lastName ? { firstName, lastName } : null;
+        })
+        .filter(Boolean)
+    : [],
 });
 
 const sanitizeStudyCourse = (value = {}) => ({
@@ -2016,16 +2026,118 @@ export const updateStudyPlannerIntervalsInPlanner = (memoryDoc, payload = {}) =>
   return studyPlanner;
 };
 
+const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
+  (Array.isArray(rawCourses) ? rawCourses : []).map((courseEntry) => {
+    if (!courseEntry || typeof courseEntry !== "object") return courseEntry;
+    const plainCourse = toPlainObject(courseEntry) || {};
+    const plainCourseInfo =
+      plainCourse.courseInfo && typeof plainCourse.courseInfo === "object"
+        ? toPlainObject(plainCourse.courseInfo) || {}
+        : {};
+    const plainCourseComponents = Array.isArray(plainCourse.courseComponents)
+      ? plainCourse.courseComponents.map((compEntry) => {
+          if (!compEntry || typeof compEntry !== "object") return compEntry;
+          const plainComponent = toPlainObject(compEntry) || {};
+          const plainComponentInfo =
+            plainComponent.componentInfo &&
+            typeof plainComponent.componentInfo === "object"
+              ? toPlainObject(plainComponent.componentInfo) || {}
+              : {};
+          const componentInstructors = Array.isArray(plainComponentInfo.componentInstructors)
+            ? plainComponentInfo.componentInstructors
+            : Array.isArray(plainComponent.componentInstructors)
+              ? plainComponent.componentInstructors
+              : [];
+          const cleanComponentInfo = {
+            componentSymbol: trimString(plainComponentInfo.componentSymbol) || "COMP",
+            componentName: trimString(plainComponentInfo.componentName),
+            componentNum: Number.isFinite(Number.parseInt(plainComponentInfo.componentNum, 10))
+              ? Number.parseInt(plainComponentInfo.componentNum, 10)
+              : null,
+            componentID: trimString(plainComponentInfo.componentID),
+            componentWeight: Number.isFinite(Number(plainComponentInfo.componentWeight))
+              ? Number(plainComponentInfo.componentWeight)
+              : null,
+            componentInstructors: componentInstructors
+              .map((entry) => {
+                const source = toPlainObject(entry) || {};
+                const firstName = trimString(source?.firstName);
+                const lastName = trimString(source?.lastName);
+                return firstName || lastName ? { firstName, lastName } : null;
+              })
+              .filter(Boolean),
+          };
+          return {
+            ...plainComponent,
+            componentInfo: cleanComponentInfo,
+            componentLectures: Array.isArray(plainComponent.componentLectures)
+              ? plainComponent.componentLectures
+              : [],
+          };
+        })
+      : [];
+    return {
+      ...plainCourse,
+      courseInfo: plainCourseInfo,
+      courseComponents: plainCourseComponents,
+    };
+  });
+
 export const updateStudyPlannerCoursesInPlanner = (memoryDoc, payload = {}) => {
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
-  studyPlanner.programCourses = Array.isArray(normalizedPayload?.programCourses)
+  const rawCourses = Array.isArray(normalizedPayload?.programCourses)
     ? normalizedPayload.programCourses
     : studyPlanner.programCourses || [];
+  studyPlanner.programCourses = sanitizeProgramCoursesForSchemaStorage(rawCourses);
+
+  // Rebuild subIntervalCourses for each subInterval from the current programCourses.
+  // courseID is structured as subIntervalID + courseSymbol + courseNum, so a course
+  // belongs to a subInterval when its ID starts with that subIntervalID followed by a letter.
+  const allCourseIDs = (Array.isArray(studyPlanner.programCourses) ? studyPlanner.programCourses : [])
+    .map((entry) => {
+      const ci = entry?.courseInfo && typeof entry.courseInfo === "object" ? entry.courseInfo : entry;
+      return trimString(ci?.courseID);
+    })
+    .filter(Boolean);
+
+  studyPlanner.programIntervals = (Array.isArray(studyPlanner.programIntervals) ? studyPlanner.programIntervals : [])
+    .map((intervalEntry) => {
+      const base = intervalEntry && typeof intervalEntry === "object" ? toPlainObject(intervalEntry) || {} : {};
+      const intervalInfo = getIntervalInfoSource(base);
+      const nextSubIntervals = (Array.isArray(base.intervalSubIntervals) ? base.intervalSubIntervals : [])
+        .map((subEntry) => {
+          const subBase = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
+          const subInfo = getSubIntervalInfoSource(subBase);
+          const subIntervalID = trimString(subInfo?.subIntervalID || subInfo?.subIntervalId);
+          const matchingCourseIDs = subIntervalID
+            ? allCourseIDs.filter(
+                (courseID) =>
+                  courseID.startsWith(subIntervalID) &&
+                  courseID.length > subIntervalID.length &&
+                  /^[A-Za-z]/.test(courseID.slice(subIntervalID.length)),
+              )
+            : (Array.isArray(subBase.subIntervalCourses) ? subBase.subIntervalCourses : [])
+                .map((e) => String(e || "").trim())
+                .filter(Boolean);
+          return {
+            ...subBase,
+            subIntervalInfo: subInfo,
+            subIntervalCourses: matchingCourseIDs,
+          };
+        });
+      return {
+        ...base,
+        intervalInfo,
+        intervalSubIntervals: nextSubIntervals,
+      };
+    });
+
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     memoryDoc.markModified("studyPlanner.programCourses");
+    memoryDoc.markModified("studyPlanner.programIntervals");
   }
   return studyPlanner;
 };
@@ -2158,6 +2270,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   studyPlanner.settings = sanitizePlannerSettingsForSchemaStorage(
     studyPlanner?.settings || {},
   );
+  studyPlanner.programCourses = sanitizeProgramCoursesForSchemaStorage(
+    studyPlanner?.programCourses || [],
+  );
   const normalizedPayload =
     payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
   const nextProgramName = trimString(normalizedPayload?.programName);
@@ -2215,7 +2330,6 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
         : []
       ).map((entry) => String(entry || "").trim()).filter(Boolean)
     : [];
-  const hasProgramInstructors = "programInstructors" in normalizedPayload;
   const hasProgramEditors = "programEditors" in normalizedPayload;
   const hasProgramLocations = "programLocations" in normalizedPayload;
   const hasProgramIntervals = "programIntervals" in normalizedPayload;
@@ -2227,47 +2341,6 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
         toPlainObject(normalizedPayload?.settings) || {},
       )
     : null;
-  const nextProgramInstructors = hasProgramInstructors
-    ? (Array.isArray(normalizedPayload?.programInstructors)
-        ? normalizedPayload.programInstructors
-        : []
-      )
-        .map((entry) => {
-          if (entry && typeof entry === "object") {
-            const obj = toPlainObject(entry) || {};
-            const rawFirstName = trimString(obj?.firstName) || "";
-            const rawLastName = trimString(obj?.lastName) || "";
-            const fullName = trimString(obj?.fullName) || [rawFirstName, rawLastName].filter(Boolean).join(" ");
-            const [derivedFirstName = "", ...derivedLastNameParts] = fullName.split(/\s+/).filter(Boolean);
-            const firstName = rawFirstName || derivedFirstName || "";
-            const lastName = rawLastName || derivedLastNameParts.join(" ").trim() || "";
-            const personality = trimString(obj?.personality) || "";
-            const lectureIDs = Array.from(
-              new Set(
-                (Array.isArray(obj?.lectureIDs)
-                  ? obj.lectureIDs
-                  : Array.isArray(obj?.componentIDs)
-                    ? obj.componentIDs
-                    : String(obj?.lectureIDs || obj?.componentIDs || "").split(/\||,|\n|;/)
-                )
-                  .map((value) => trimString(value))
-                  .filter(Boolean),
-              ),
-            );
-            return (firstName || lastName || fullName)
-              ? {
-                  firstName,
-                  lastName,
-                  fullName,
-                  personality,
-                  lectureIDs,
-                }
-              : null;
-          }
-          return null;
-        })
-        .filter(Boolean)
-    : [];
   const nextProgramEditors = hasProgramEditors
     ? normalizeStringArray(normalizedPayload?.programEditors)
     : [];
@@ -2310,7 +2383,6 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramPassingThresholdPerInterval &&
     !hasProgramFailingRules &&
     !hasProgramDocumentTypes &&
-    !hasProgramInstructors &&
     !hasProgramEditors &&
     !hasProgramLocations &&
     !hasProgramIntervals &&
@@ -2343,9 +2415,6 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if (hasProgramDocumentTypes) {
     studyPlanner.programDocumentTypes = nextProgramDocumentTypes;
-  }
-  if (hasProgramInstructors) {
-    studyPlanner.programInstructors = nextProgramInstructors;
   }
   if (hasProgramEditors) {
     studyPlanner.programEditors = nextProgramEditors;
