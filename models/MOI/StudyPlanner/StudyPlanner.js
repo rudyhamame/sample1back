@@ -201,10 +201,12 @@ const documentInfoSchema = new Schema ({
   documentName: { type: String, default: "" }, 
   documentType: { type: String, default: "" }, // PDF, IMAGE, Video, Youtube Video ...
   documentVolumeUnit: { type: String, default: "" }, // page, image, words, letters
-  documentVolume: {  // number of pages, number of images ...
-    total:  { type: Number, default: null },
-    done:  { type: Number, default: null },
-   },
+  documentVolume: { type: Number, default: null },
+  documentPages:[{
+    pageOrder: {type: Number, default: null },
+    pageStatus: {type: String, default: null },
+    pageNotes: [{type: String, default: null}],
+  }],
   documentEditors: { type: [String], default: [] }, // a subset of programEditors
 },{_id: false, strict: 'throw'},
 );
@@ -242,7 +244,7 @@ const programCurrentIntervalSelectionSchema = new Schema(
 );
 
 const programLecturesSchema = new Schema ({
-  lectureInfo: {type: lectureInfoSchema, default: ''},
+  lectureInfo: {type: lectureInfoSchema, default: () => ({})},
   lectureDocuments: { type: [String], default: [] },
   // lectureConcepts: { type: [lectureConceptsSchema], default: [] },
 },{ _id: false, strict: "throw" });

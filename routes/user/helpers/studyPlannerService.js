@@ -217,6 +217,37 @@ const normalizeObjectIdValue = (value, { allowNull = false } = {}) => {
 };
 
 const trimString = (value) => String(value || "").trim();
+const sanitizeId = (id) => (typeof id === "string" ? id.replace(/[-_]/g, "") : id);
+const resolveStoredDocumentVolumeNumber = (value) => {
+  if (Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return null;
+};
+const buildStoredDocumentPages = (volumeValue, rawPages = []) => {
+  const normalizedDocumentVolume = resolveStoredDocumentVolumeNumber(volumeValue);
+  const maxPages =
+    Number.isFinite(normalizedDocumentVolume) && normalizedDocumentVolume > 0
+      ? Math.max(0, Math.trunc(normalizedDocumentVolume))
+      : 0;
+  if (maxPages === 0) {
+    return [];
+  }
+  const fallbackPages = Array.isArray(rawPages) ? rawPages : [];
+  return Array.from({ length: maxPages }, (_, index) => {
+    const pageOrder = index + 1;
+    const existingPage = fallbackPages.find(
+      (pageEntry) => Number(pageEntry?.pageOrder) === pageOrder,
+    ) || {};
+    return {
+      pageOrder,
+      pageStatus: trimString(existingPage?.pageStatus) || null,
+      pageNotes: Array.isArray(existingPage?.pageNotes)
+        ? existingPage.pageNotes.map((pageNote) => trimString(pageNote)).filter(Boolean)
+        : [],
+    };
+  });
+};
 const normalizeProgramComponentValue = (entry = null) => {
   if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
     return trimString(entry);
@@ -303,12 +334,12 @@ export const normalizeProgramTaskNamesForPlanner = (planner = {}) => {
 const normalizeExamPart = (partEntry = {}) => {
   const entry =
     partEntry && typeof partEntry === "object" ? toPlainObject(partEntry) || {} : {};
-  const componentID = trimString(
+  const componentID = sanitizeId(trimString(
     entry?.componentID || entry?.componentId || entry?.courseID || entry?.courseId || "",
-  );
+  ));
   const examClass = trimString(entry?.examClass || "");
   if (!componentID || !examClass) return null;
-  const examPartID = trimString(entry?.examPartID) || `${componentID}_exam_${examClass}`;
+  const examPartID = sanitizeId(trimString(entry?.examPartID)) || `${componentID}exam${examClass}`;
   return {
     examPartID,
     componentID,
@@ -332,7 +363,7 @@ export const normalizeProgramExamsForPlanner = (planner = {}) => {
     .map((entry) => {
       const normalizedEntry =
         entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
-      const componentID = trimString(normalizedEntry?.componentID || "");
+      const componentID = sanitizeId(trimString(normalizedEntry?.componentID || ""));
       if (!componentID) return null;
       const parts = Array.isArray(normalizedEntry?.examParts)
         ? normalizedEntry.examParts.map(normalizeExamPart).filter(Boolean)
@@ -1484,17 +1515,17 @@ const inferIntervalYear = (entry = {}) => {
 //   byteArrayID   = lectureID + B{n}
 //   taskID        = componentID + E{n}
 const buildNewSubIntervalID = (intervalID, subIntervalNum, symbol = "sINT") =>
-  intervalID && subIntervalNum != null ? `${intervalID}${symbol}${subIntervalNum}` : "";
+  intervalID && subIntervalNum != null ? sanitizeId(`${intervalID}${symbol}${subIntervalNum}`) : "";
 const buildNewCourseID = (subIntervalID, courseNum, courseSymbol = "CRS") =>
-  subIntervalID && courseNum != null ? `${subIntervalID}${courseSymbol}${courseNum}` : "";
+  subIntervalID && courseNum != null ? sanitizeId(`${subIntervalID}${courseSymbol}${courseNum}`) : "";
 const buildNewComponentID = (courseID, componentNum, componentSymbol = "COMP") =>
-  courseID && componentNum != null ? `${courseID}${componentSymbol}${componentNum}` : "";
+  courseID && componentNum != null ? sanitizeId(`${courseID}${componentSymbol}${componentNum}`) : "";
 const buildNewLectureID = (componentID, lectureNum) =>
-  componentID && lectureNum != null ? `${componentID}L${lectureNum}` : "";
+  componentID && lectureNum != null ? sanitizeId(`${componentID}L${lectureNum}`) : "";
 const buildNewByteArrayID = (lectureID, byteArrayNum) =>
-  lectureID && byteArrayNum != null ? `${lectureID}B${byteArrayNum}` : "";
+  lectureID && byteArrayNum != null ? sanitizeId(`${lectureID}B${byteArrayNum}`) : "";
 const buildNewTaskID = (componentID, taskNum) =>
-  componentID && taskNum != null ? `${componentID}E${taskNum}` : "";
+  componentID && taskNum != null ? sanitizeId(`${componentID}E${taskNum}`) : "";
 
 const parseStructuredIntervalID = (id = "") => {
   const normalizedId = trimString(id);
@@ -1765,7 +1796,7 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
           const componentID =
             trimString(normalizedComponentEntry?.componentID) ||
             buildNewComponentID(normalizedCourseID, componentNum, componentSymbol) ||
-            (normalizedCourseID && componentName ? `${normalizedCourseID}_${componentName}` : "");
+            (normalizedCourseID && componentName ? `${normalizedCourseID}${componentName}` : "");
           return {
             componentInfo: {
               componentID,
@@ -1805,7 +1836,7 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                 ? Number.parseInt(exam.taskNum, 10)
                 : null;
               const taskSymbol = trimString(exam?.taskSymbol) || "EXM";
-              const taskID = trimString(exam?.taskID) ||
+              const taskID = sanitizeId(trimString(exam?.taskID)) ||
                 (componentID && taskNum != null ? buildNewTaskID(componentID, taskNum) : "");
               return {
                 taskInfo: {
@@ -1825,7 +1856,7 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                     lectureInfo: {
                       lectureSymbol: trimString(l?.lectureSymbol) || "LEC",
                       lectureNum: Number.isFinite(Number.parseInt(l?.lectureNum, 10)) ? Number.parseInt(l.lectureNum, 10) : null,
-                      lectureID: trimString(l?.lectureID) || "",
+                      lectureID: sanitizeId(trimString(l?.lectureID)) || "",
                       lectureName: trimString(l?.lectureName) || "",
                       lectureInstructors: normalizeStringArray(l?.lectureInstructors),
                       lectureInstructionDate: parseOptionalDate(l?.lectureInstructionDate || null),
@@ -1833,18 +1864,24 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                     lectureDocuments: (Array.isArray(rawLectureEntry?.lectureDocuments) ? rawLectureEntry.lectureDocuments : []).map((documentEntry) => {
                       const rawDocumentEntry = documentEntry && typeof documentEntry === "object" ? toPlainObject(documentEntry) || {} : {};
                       const documentInfo = getDocumentInfoSource(rawDocumentEntry);
+                      const normalizedDocumentVolume = resolveStoredDocumentVolumeNumber(
+                        documentInfo?.documentVolume,
+                      );
+                      const normalizedDocumentPages = buildStoredDocumentPages(
+                        documentInfo?.documentVolume,
+                        documentInfo?.documentPages,
+                      );
                       return {
                         documentInfo: {
                           documentSymbol: trimString(documentInfo?.documentSymbol) || "DOC",
                           documentNum: Number.isFinite(Number.parseInt(documentInfo?.documentNum, 10))
                             ? Number.parseInt(documentInfo.documentNum, 10)
                             : null,
-                          documentID: trimString(documentInfo?.documentID) || "",
+                          documentID: sanitizeId(trimString(documentInfo?.documentID)) || "",
                           documentName: trimString(documentInfo?.documentName) || "",
                           documentVolumeUnit: trimString(documentInfo?.documentVolumeUnit),
-                          documentVolume: Number.isFinite(Number(documentInfo?.documentVolume))
-                            ? Number(documentInfo.documentVolume)
-                            : null,
+                          documentVolume: normalizedDocumentVolume,
+                          documentPages: normalizedDocumentPages,
                           documentEditors: normalizeStringArray(documentInfo?.documentEditors),
                           documentConcepts: normalizeStringArray(documentInfo?.documentConcepts),
                           documentType: trimString(documentInfo?.documentType),
@@ -1869,7 +1906,7 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
 const flattenProgramIntervalEntry = (entry) => {
   const base = entry && typeof entry === "object" ? toPlainObject(entry) || {} : {};
   const intervalInfo = getIntervalInfoSource(base);
-  const rawIntervalRef = trimString(intervalInfo?.intervalID || intervalInfo?.intervalId || intervalInfo?.intervalNum);
+  const rawIntervalRef = sanitizeId(trimString(intervalInfo?.intervalID || intervalInfo?.intervalId || intervalInfo?.intervalNum));
   const resolvedIntervalID = rawIntervalRef;
   const directNum = Number.parseInt(rawIntervalRef, 10);
   const intervalIDNum = Number.isFinite(directNum)
@@ -1885,7 +1922,7 @@ const flattenProgramIntervalEntry = (entry) => {
     return intervalSubIntervals
       .map((subEntry) => {
         const sub = getSubIntervalInfoSource(subEntry);
-        const subIntervalID = trimString(sub?.subIntervalID || sub?.subIntervalId);
+        const subIntervalID = sanitizeId(trimString(sub?.subIntervalID || sub?.subIntervalId));
         if (!subIntervalID) return null;
         const subIntervalSymbol = trimString(sub?.subIntervalSymbol) || "sINT";
         const subIntervalNum =
@@ -1893,9 +1930,8 @@ const flattenProgramIntervalEntry = (entry) => {
           parseStructuredSubIntervalID(subIntervalID).subIntervalNum ||
           null;
         const resolvedSubIntervalID =
-          (!subIntervalID.includes("_") ? subIntervalID : "") ||
-          buildNewSubIntervalID(resolvedIntervalID, subIntervalNum, subIntervalSymbol) ||
-          subIntervalID;
+          subIntervalID ||
+          buildNewSubIntervalID(resolvedIntervalID, subIntervalNum, subIntervalSymbol);
         const parsed = parseStructuredSubIntervalID(subIntervalID);
         return {
           intervalIDNum,
@@ -1946,11 +1982,11 @@ const flattenProgramIntervalEntry = (entry) => {
 };
 
 const buildIntervalID = (programID, intervalSymbol, intervalIDNum) => {
-  const sym = trimString(intervalSymbol) || "INT";
+  const sym = sanitizeId(trimString(intervalSymbol)) || "INT";
   const num = intervalIDNum != null ? String(intervalIDNum) : "";
   const symNum = `${sym}${num}`;
-  const pid = trimString(programID);
-  return pid ? `${pid}: ${symNum}` : symNum;
+  const pid = sanitizeId(trimString(programID));
+  return sanitizeId(pid ? `${pid}: ${symNum}` : symNum);
 };
 
 // Reassemble flat sub-interval records → programIntervals[].intervalSubIntervals[]
@@ -2061,7 +2097,7 @@ const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
             componentNum: Number.isFinite(Number.parseInt(plainComponentInfo.componentNum, 10))
               ? Number.parseInt(plainComponentInfo.componentNum, 10)
               : null,
-            componentID: trimString(plainComponentInfo.componentID),
+            componentID: sanitizeId(trimString(plainComponentInfo.componentID)),
             componentWeight: Number.isFinite(Number(plainComponentInfo.componentWeight))
               ? Number(plainComponentInfo.componentWeight)
               : null,
@@ -2117,7 +2153,7 @@ export const updateStudyPlannerCoursesInPlanner = (memoryDoc, payload = {}) => {
   const allCourseIDs = (Array.isArray(studyPlanner.programCourses) ? studyPlanner.programCourses : [])
     .map((entry) => {
       const ci = entry?.courseInfo && typeof entry.courseInfo === "object" ? entry.courseInfo : entry;
-      return trimString(ci?.courseID);
+      return sanitizeId(trimString(ci?.courseID));
     })
     .filter(Boolean);
 
@@ -2129,7 +2165,7 @@ export const updateStudyPlannerCoursesInPlanner = (memoryDoc, payload = {}) => {
         .map((subEntry) => {
           const subBase = subEntry && typeof subEntry === "object" ? toPlainObject(subEntry) || {} : {};
           const subInfo = getSubIntervalInfoSource(subBase);
-          const subIntervalID = trimString(subInfo?.subIntervalID || subInfo?.subIntervalId);
+          const subIntervalID = sanitizeId(trimString(subInfo?.subIntervalID || subInfo?.subIntervalId));
           const matchingCourseIDs = subIntervalID
             ? allCourseIDs.filter(
                 (courseID) =>
@@ -2205,7 +2241,7 @@ export const updateStudyPlannerIntervalStatusInPlanner = (
         ? toPlainObject(subEntry) || {}
         : {};
       const subInfo = getSubIntervalInfoSource(subBase);
-      const subId = trimString(subInfo?.subIntervalID || subInfo?.subIntervalId);
+      const subId = sanitizeId(trimString(subInfo?.subIntervalID || subInfo?.subIntervalId));
       const isTarget = subId === targetSubIntervalId;
       return {
         ...subBase,
@@ -2527,7 +2563,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
             : []
           ).map((subEntry) => {
             const subInfo = getSubIntervalInfoSource(subEntry);
-            const subId = trimString(subInfo?.subIntervalID || subInfo?.subIntervalId);
+            const subId = sanitizeId(trimString(subInfo?.subIntervalID || subInfo?.subIntervalId));
             const subNum = toFiniteNumber(subInfo?.subIntervalNum, null);
             const isTarget =
               Boolean(targetSubIntervalId && subId === targetSubIntervalId) ||
@@ -2591,7 +2627,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
               return {
                 courseSymbol: trimString(co?.courseSymbol) || "CRS",
                 courseNum: Number.isFinite(co?.courseNum) ? co.courseNum : undefined,
-                courseID: trimString(co?.courseID) || "",
+                courseID: sanitizeId(trimString(co?.courseID)) || "",
                 courseName: trimString(co?.courseName) || "",
                 courseCode: trimString(co?.courseCode) || "",
                 courseWeight: Number.isFinite(co?.courseWeight) ? co.courseWeight : 100,
@@ -2601,7 +2637,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
                       return {
                         componentSymbol: trimString(cp?.componentSymbol) || "COMP",
                         componentNum: Number.isFinite(cp?.componentNum) ? cp.componentNum : undefined,
-                        componentID: trimString(cp?.componentID) || "",
+                        componentID: sanitizeId(trimString(cp?.componentID)) || "",
                         componentClass: trimString(cp?.componentClass) || "",
                         componentWeight: Number.isFinite(cp?.componentWeight) ? cp.componentWeight : null,
                       };
@@ -4308,18 +4344,23 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
       const info = entry?.documentInfo && typeof entry.documentInfo === "object"
         ? entry.documentInfo
         : {};
+      const normalizedDocumentVolume = resolveStoredDocumentVolumeNumber(
+        info?.documentVolume,
+      );
+      const normalizedDocumentPages = buildStoredDocumentPages(
+        info?.documentVolume,
+        info?.documentPages,
+      );
       return {
         documentInfo: {
           documentSymbol: trimString(info?.documentSymbol) || "DOC",
           documentNum: typeof info?.documentNum === "number" ? info.documentNum : null,
-          documentID: trimString(info?.documentID),
+          documentID: sanitizeId(trimString(info?.documentID)),
           documentName: trimString(info?.documentName),
           documentType: trimString(info?.documentType),
           documentVolumeUnit: trimString(info?.documentVolumeUnit),
-          documentVolume: {
-            total: typeof info?.documentVolume?.total === "number" ? info.documentVolume.total : null,
-            done: typeof info?.documentVolume?.done === "number" ? info.documentVolume.done : null,
-          },
+          documentVolume: normalizedDocumentVolume,
+          documentPages: normalizedDocumentPages,
           documentEditors: Array.isArray(info?.documentEditors)
             ? info.documentEditors.map((e) => trimString(e)).filter(Boolean)
             : [],
@@ -4356,7 +4397,7 @@ export const updateStudyPlannerLecturesInPlanner = (memoryDoc, payload = {}) => 
             typeof info?.lectureNum === "number" && Number.isFinite(info.lectureNum)
               ? info.lectureNum
               : null,
-          lectureID: trimString(info?.lectureID),
+          lectureID: sanitizeId(trimString(info?.lectureID)),
           lectureName: trimString(info?.lectureName),
           lectureOrder:
             typeof info?.lectureOrder === "number" && Number.isFinite(info.lectureOrder)
