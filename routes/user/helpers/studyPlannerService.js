@@ -123,7 +123,23 @@ const getStudyPlannerRoot = (memoryDoc) => {
         ? toPlainObject(memoryDoc.studyPlanAid)
         : {};
   const currentProgramComponents = Array.isArray(currentPlanner?.programComponentNames)
-    ? normalizeProgramComponentsForPlanner(currentPlanner)
+    ? currentPlanner.programComponentNames
+        .map((entry, index) => {
+          if (entry && typeof entry === "object") {
+            const componentName = String(entry.componentName || "").trim();
+            if (!componentName) return null;
+            return {
+              componentName,
+              componentNum:
+                Number.isFinite(Number(entry.componentNum))
+                  ? Number(entry.componentNum)
+                  : index + 1,
+            };
+          }
+          const componentName = String(entry || "").trim();
+          return componentName ? { componentName, componentNum: index + 1 } : null;
+        })
+        .filter(Boolean)
     : [];
   const currentProgramTaskNames =
     normalizeProgramTaskNamesForPlanner(currentPlanner);
@@ -329,6 +345,33 @@ export const normalizeProgramTaskNamesForPlanner = (planner = {}) => {
   return taskNames
     .map((entry) => String(entry || "").trim())
     .filter(Boolean);
+};
+
+const normalizeProgramTask = (taskEntry = {}) => {
+  const entry = taskEntry && typeof taskEntry === "object" ? toPlainObject(taskEntry) || {} : {};
+  const taskInfo = entry?.taskInfo && typeof entry.taskInfo === "object" ? toPlainObject(entry.taskInfo) || {} : entry;
+  const taskID = sanitizeId(trimString(taskInfo?.taskID || entry?.taskID || ""));
+  if (!taskID) return null;
+  return {
+    taskInfo: {
+      taskSymbol: trimString(taskInfo?.taskSymbol) || "TSK",
+      taskNum: Number.isFinite(Number.parseInt(taskInfo?.taskNum, 10)) ? Number.parseInt(taskInfo.taskNum, 10) : null,
+      taskID,
+      taskName: trimString(taskInfo?.taskName || taskInfo?.examClass || entry?.examClass || ""),
+      taskLocation: sanitizeStudyLocation(taskInfo?.taskLocation || taskInfo?.location || {}),
+      taskDate: parseOptionalDate(taskInfo?.taskDate || null),
+      taskTime: trimString(taskInfo?.taskTime || ""),
+      taskWeight: Number.isFinite(Number(taskInfo?.taskWeight)) ? Number(taskInfo.taskWeight) : null,
+      taskGrade: Number.isFinite(Number(taskInfo?.taskGrade)) ? Number(taskInfo.taskGrade) : null,
+    },
+    tasksLectures: normalizeReferenceIds(entry?.tasksLectures || []),
+  };
+};
+
+export const normalizeProgramTasksForPlanner = (planner = {}) => {
+  const normalizedPlanner = planner && typeof planner === "object" ? toPlainObject(planner) || {} : {};
+  const tasks = Array.isArray(normalizedPlanner?.programTasks) ? normalizedPlanner.programTasks : [];
+  return tasks.map(normalizeProgramTask).filter(Boolean);
 };
 
 const normalizeExamPart = (partEntry = {}) => {
@@ -2338,6 +2381,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const nextProgramUniversity = trimString(normalizedPayload?.programUniversity);
   const nextProgramFaculty = trimString(normalizedPayload?.programFaculty);
   const hasProgramTaskNames = "programTaskNames" in normalizedPayload;
+  const hasProgramTasks = "programTasks" in normalizedPayload;
   const hasProgramExams = "programExams" in normalizedPayload;
   const hasProgramStartYear = "programStartYear" in normalizedPayload;
   const hasProgramTotalYears = "programTotalYears" in normalizedPayload;
@@ -2378,6 +2422,13 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     ? normalizeProgramExamsForPlanner({
         programExams: Array.isArray(normalizedPayload?.programExams)
           ? normalizedPayload.programExams
+          : [],
+      })
+    : [];
+  const nextProgramTasks = hasProgramTasks
+    ? normalizeProgramTasksForPlanner({
+        programTasks: Array.isArray(normalizedPayload?.programTasks)
+          ? normalizedPayload.programTasks
           : [],
       })
     : [];
@@ -2442,6 +2493,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !nextProgramUniversity &&
     !nextProgramFaculty &&
     !hasProgramTaskNames &&
+    !hasProgramTasks &&
     !hasProgramExams &&
     !hasProgramStartYear &&
     !hasProgramTotalYears &&
@@ -2479,6 +2531,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   }
   if (hasProgramExams) {
     studyPlanner.programExams = nextProgramExams;
+  }
+  if (hasProgramTasks) {
+    studyPlanner.programTasks = nextProgramTasks;
   }
   if (hasProgramDocumentTypes) {
     studyPlanner.programDocumentTypes = nextProgramDocumentTypes;
@@ -2722,6 +2777,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     if (hasSettings) {
       memoryDoc.markModified("studyPlanner.settings");
     }
+    if (hasProgramTasks) {
+      memoryDoc.markModified("studyPlanner.programTasks");
+    }
   }
 
   return studyPlanner;
@@ -2734,18 +2792,23 @@ export const updateStudyPlannerComponentsInPlanner = (memoryDoc, payload = {}) =
   const rawProgramComponents = Array.isArray(normalizedPayload?.programComponentNames)
     ? normalizedPayload.programComponentNames
     : [];
-  const rawComponentIds = Array.isArray(normalizedPayload?.componentIds)
-    ? normalizedPayload.componentIds
-    : [];
-  const componentSourceEntries =
-    rawProgramComponents.length > 0 ? rawProgramComponents : rawComponentIds;
-  const componentEntries = Array.from(
-    new Set(
-      componentSourceEntries
-        .map((entry) => normalizeProgramComponentValue(entry))
-        .filter(Boolean),
-    ),
-  );
+  const seenNames = new Set();
+  const componentEntries = rawProgramComponents
+    .map((entry, index) => {
+      const componentName = normalizeProgramComponentValue(entry);
+      if (!componentName) return null;
+      const componentNum =
+        entry && typeof entry === "object" && Number.isFinite(Number(entry.componentNum))
+          ? Number(entry.componentNum)
+          : index + 1;
+      return { componentName, componentNum };
+    })
+    .filter((entry) => {
+      if (!entry) return false;
+      if (seenNames.has(entry.componentName)) return false;
+      seenNames.add(entry.componentName);
+      return true;
+    });
 
   studyPlanner.programComponentNames = componentEntries;
   if (!Array.isArray(studyPlanner.programIntervals)) {

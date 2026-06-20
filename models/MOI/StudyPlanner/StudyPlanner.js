@@ -318,7 +318,10 @@ const StudyPlannerSchema = new Schema(
     }],
     settings: { type: PlannerSettingsSchema, default: createEmptyObject },
     // Helper
-    programComponentNames: { type: [String], default: [] },
+    programComponentNames: [{
+      componentName:{ type: String, default: "" },
+      componentNum: { type: Number, default: "" },
+    }],
     programDocumentTypes: { type: [String], default: [] },
     programDocumentVolumeUnit : { type: [String], default: [] },
     programEditors: { type: [String], default: [] },

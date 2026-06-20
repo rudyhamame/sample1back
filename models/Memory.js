@@ -77,6 +77,16 @@ MemorySchema.pre("validate", function () {
   } else if (!this.MOI || typeof this.MOI !== "object") {
     this.MOI = {};
   }
+  const programComponentNames = this.MOI?.studyPlanner?.programComponentNames;
+  if (Array.isArray(programComponentNames)) {
+    this.MOI.studyPlanner.programComponentNames = programComponentNames.map(
+      (entry, index) => {
+        if (entry && typeof entry === "object") return entry;
+        const componentName = String(entry || "").trim();
+        return { componentName, componentNum: index + 1 };
+      },
+    );
+  }
 });
 
 // Sub-schema only. Memory is embedded inside `subjects.memory`, not a standalone collection.
