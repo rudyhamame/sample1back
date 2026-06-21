@@ -40,6 +40,7 @@ import {
   removeCourseOrComponentFromPlanner,
   replaceCourseBundleInPlanner,
   removeLectureFromPlanner,
+  repairStudyPlannerCourseIdsInPlanner,
   updateCourseInPlanner,
   updateCoursePagesInPlanner,
   updateStudyPlannerComponentsInPlanner,
@@ -3433,6 +3434,11 @@ UserRouter.get(
         return res
           .status(500)
           .json({ message: "Failed to access user memory." });
+      }
+
+      const courseIdRepair = repairStudyPlannerCourseIdsInPlanner(memoryDoc);
+      if (courseIdRepair.changed) {
+        await memoryDoc.save();
       }
 
       const studyPlanner =

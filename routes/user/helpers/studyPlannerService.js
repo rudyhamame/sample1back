@@ -500,6 +500,18 @@ const parseOptionalDate = (value) => {
   return Number.isNaN(nextDate.getTime()) ? null : nextDate;
 };
 
+const parseOptionalInteger = (value) => {
+  const normalizedValue = trimString(value);
+  if (!normalizedValue) {
+    return null;
+  }
+  if (!/^-?\d+$/.test(normalizedValue)) {
+    return null;
+  }
+  const parsed = Number(normalizedValue);
+  return Number.isInteger(parsed) ? parsed : null;
+};
+
 const parseDateToComponents = (value) => {
   const buildDateField = (year, month, day) => {
     if (
@@ -531,9 +543,9 @@ const parseDateToComponents = (value) => {
             date: value,
           };
     }
-    const day = Number.isFinite(Number(value?.day)) ? Number(value.day) : null;
-    const month = Number.isFinite(Number(value?.month)) ? Number(value.month) : null;
-    const year = Number.isFinite(Number(value?.year)) ? Number(value.year) : null;
+    const day = parseOptionalInteger(value?.day);
+    const month = parseOptionalInteger(value?.month);
+    const year = parseOptionalInteger(value?.year);
     const rawDate = value?.date;
     const normalizedDate = rawDate instanceof Date
       ? (Number.isNaN(rawDate.getTime()) ? null : rawDate)
@@ -559,6 +571,24 @@ const parseDateToComponents = (value) => {
       year,
       date: buildDateField(year, month, day),
     };
+  }
+  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const day = Number(slashMatch[1]);
+    const month = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    return {
+      day,
+      month,
+      year,
+      date: buildDateField(year, month, day),
+    };
+  }
+  const slashWithoutYearMatch = s.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (slashWithoutYearMatch) {
+    const day = Number(slashWithoutYearMatch[1]);
+    const month = Number(slashWithoutYearMatch[2]);
+    return { day, month, year: null, date: null };
   }
   // Year only: "2025"
   const yearMatch = s.match(/^(\d{4})$/);
@@ -1570,6 +1600,11 @@ const buildNewByteArrayID = (lectureID, byteArrayNum) =>
 const buildNewTaskID = (componentID, taskNum) =>
   componentID && taskNum != null ? sanitizeId(`${componentID}E${taskNum}`) : "";
 
+const toOneBasedInteger = (value, fallback = null) => {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const parseStructuredIntervalID = (id = "") => {
   const normalizedId = trimString(id);
   if (!normalizedId) {
@@ -1946,7 +1981,7 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
         : Array.isArray(source?.courseComponents)
           ? source.courseComponents
           : []
-      ).map((componentEntry) => {
+      ).map((componentEntry, componentIndex) => {
           const rawComponentEntry =
             componentEntry && typeof componentEntry === "object"
               ? toPlainObject(componentEntry) || {}
@@ -1994,15 +2029,14 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
               normalizedComponentEntry?.componentClass ||
               normalizedComponentEntry?.componentId,
           );
-          const componentNum = Number.isFinite(
-            Number.parseInt(normalizedComponentEntry?.componentNum, 10),
-          )
-            ? Number.parseInt(normalizedComponentEntry.componentNum, 10)
-            : null;
+          const componentNum = toOneBasedInteger(
+            normalizedComponentEntry?.componentNum,
+            componentIndex + 1,
+          );
           const componentSymbol = trimString(normalizedComponentEntry?.componentSymbol) || "COMP";
           const componentID =
-            trimString(normalizedComponentEntry?.componentID) ||
             buildNewComponentID(normalizedCourseID, componentNum, componentSymbol) ||
+            trimString(normalizedComponentEntry?.componentID) ||
             (normalizedCourseID && componentName ? `${normalizedCourseID}${componentName}` : "");
           return {
             componentInfo: {
@@ -2292,8 +2326,9 @@ const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
       plainCourse.courseInfo && typeof plainCourse.courseInfo === "object"
         ? toPlainObject(plainCourse.courseInfo) || {}
         : {};
+    const courseIDForComponents = sanitizeId(trimString(plainCourseInfo.courseID));
     const plainCourseComponents = Array.isArray(plainCourse.courseComponents)
-      ? plainCourse.courseComponents.map((compEntry) => {
+      ? plainCourse.courseComponents.map((compEntry, componentIndex) => {
           if (!compEntry || typeof compEntry !== "object") return compEntry;
           const plainComponent = toPlainObject(compEntry) || {};
           const plainComponentInfo =
@@ -2306,13 +2341,19 @@ const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
             : Array.isArray(plainComponent.componentInstructors)
               ? plainComponent.componentInstructors
               : [];
+          const componentSymbol = trimString(plainComponentInfo.componentSymbol) || "COMP";
+          const componentNum = toOneBasedInteger(
+            plainComponentInfo.componentNum,
+            componentIndex + 1,
+          );
+          const componentID =
+            buildNewComponentID(courseIDForComponents, componentNum, componentSymbol) ||
+            sanitizeId(trimString(plainComponentInfo.componentID));
           const cleanComponentInfo = {
-            componentSymbol: trimString(plainComponentInfo.componentSymbol) || "COMP",
+            componentSymbol,
             componentName: trimString(plainComponentInfo.componentName),
-            componentNum: Number.isFinite(Number.parseInt(plainComponentInfo.componentNum, 10))
-              ? Number.parseInt(plainComponentInfo.componentNum, 10)
-              : null,
-            componentID: sanitizeId(trimString(plainComponentInfo.componentID)),
+            componentNum,
+            componentID,
             componentWeight: Number.isFinite(Number(plainComponentInfo.componentWeight))
               ? Number(plainComponentInfo.componentWeight)
               : null,
@@ -2352,6 +2393,26 @@ const sanitizeProgramCoursesForSchemaStorage = (rawCourses = []) =>
       courseComponents: plainCourseComponents,
     };
   });
+
+export const repairStudyPlannerCourseIdsInPlanner = (memoryDoc) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const currentCourses = Array.isArray(studyPlanner.programCourses)
+    ? studyPlanner.programCourses
+    : [];
+  const repairedCourses = sanitizeProgramCoursesForSchemaStorage(currentCourses);
+  const changed =
+    JSON.stringify(currentCourses) !== JSON.stringify(repairedCourses);
+
+  if (changed) {
+    studyPlanner.programCourses = repairedCourses;
+    if (typeof memoryDoc?.markModified === "function") {
+      memoryDoc.markModified("studyPlanner");
+      memoryDoc.markModified("studyPlanner.programCourses");
+    }
+  }
+
+  return { studyPlanner, changed };
+};
 
 export const updateStudyPlannerCoursesInPlanner = (memoryDoc, payload = {}) => {
   const studyPlanner = getStudyPlannerRoot(memoryDoc);
