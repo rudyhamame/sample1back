@@ -1708,6 +1708,170 @@ const getDocumentInfoSource = (entry = {}) => {
     : base;
 };
 
+const normalizePlannerLectureId = (value) => sanitizeId(trimString(value)) || "";
+
+const isLegacyDocumentLectureMatch = (documentId = "", lectureId = "") =>
+  Boolean(
+    documentId &&
+      lectureId &&
+      documentId.startsWith(lectureId) &&
+      !/^\d/.test(documentId.slice(lectureId.length)),
+  );
+
+const getPlannerDocumentId = (entry = {}) =>
+  normalizePlannerLectureId(
+    getDocumentInfoSource(entry)?.documentID ||
+      entry?.documentID ||
+      entry?.documentId ||
+      "",
+  );
+
+const syncPlannerDocumentLectureLinks = (studyPlanner = {}) => {
+  if (!studyPlanner || typeof studyPlanner !== "object") {
+    return studyPlanner;
+  }
+
+  const rawLectures = Array.isArray(studyPlanner.programLectures)
+    ? studyPlanner.programLectures.filter((entry) => entry && typeof entry === "object")
+    : [];
+  const lectureLookup = new Map();
+  rawLectures.forEach((lectureEntry) => {
+    const lectureInfo = getLectureInfoSource(lectureEntry);
+    const lectureId = normalizePlannerLectureId(lectureInfo?.lectureID);
+    if (!lectureId) {
+      return;
+    }
+    lectureLookup.set(lectureId, {
+      lectureId,
+      lectureName: trimString(lectureInfo?.lectureName),
+    });
+  });
+
+  const rawDocuments = Array.isArray(studyPlanner.programDocuments)
+    ? studyPlanner.programDocuments.filter((entry) => entry && typeof entry === "object")
+    : [];
+  const legacyDocumentLectureLookup = new Map();
+  rawLectures.forEach((lectureEntry) => {
+    const lectureInfo = getLectureInfoSource(lectureEntry);
+    const lectureId = normalizePlannerLectureId(lectureInfo?.lectureID);
+    if (!lectureId) {
+      return;
+    }
+    const lectureDocuments = Array.isArray(lectureEntry?.lectureDocuments)
+      ? lectureEntry.lectureDocuments
+      : [];
+    lectureDocuments.forEach((documentEntry) => {
+      const documentId = getPlannerDocumentId(
+        documentEntry && typeof documentEntry === "object"
+          ? documentEntry
+          : { documentID: documentEntry },
+      );
+      if (documentId && !legacyDocumentLectureLookup.has(documentId)) {
+        legacyDocumentLectureLookup.set(documentId, lectureId);
+      }
+    });
+  });
+
+  const normalizedDocuments = rawDocuments.map((entry) => {
+    const info = getDocumentInfoSource(entry);
+    const documentId = normalizePlannerLectureId(info?.documentID);
+    const explicitLectureId = normalizePlannerLectureId(info?.documentLectureID);
+    let resolvedLectureId = "";
+
+    if (explicitLectureId && lectureLookup.has(explicitLectureId)) {
+      resolvedLectureId = explicitLectureId;
+    } else if (documentId && legacyDocumentLectureLookup.has(documentId)) {
+      resolvedLectureId = legacyDocumentLectureLookup.get(documentId) || "";
+    } else if (documentId) {
+      for (const lectureId of lectureLookup.keys()) {
+        if (isLegacyDocumentLectureMatch(documentId, lectureId)) {
+          resolvedLectureId = lectureId;
+          break;
+        }
+      }
+    }
+
+    const resolvedLecture = resolvedLectureId
+      ? lectureLookup.get(resolvedLectureId) || null
+      : null;
+
+    const normalizedDocumentVolume = resolveStoredDocumentVolumeNumber(
+      info?.documentVolume,
+    );
+    const normalizedDocumentPages = buildStoredDocumentPages(
+      info?.documentVolume,
+      info?.documentPages,
+    );
+
+    return {
+      documentInfo: {
+        documentSymbol: trimString(info?.documentSymbol) || "DOC",
+        documentNum: Number.isFinite(Number.parseInt(info?.documentNum, 10))
+          ? Number.parseInt(info.documentNum, 10)
+          : null,
+        documentID: documentId,
+        documentLectureID: resolvedLectureId,
+        documentLectureName: resolvedLecture?.lectureName || "",
+        documentName: trimString(info?.documentName) || "",
+        documentType: trimString(info?.documentType),
+        documentVolumeUnit: trimString(info?.documentVolumeUnit),
+        documentVolume: normalizedDocumentVolume,
+        documentPages: normalizedDocumentPages,
+        documentEditors: Array.isArray(info?.documentEditors)
+          ? info.documentEditors.map((value) => trimString(value)).filter(Boolean)
+          : [],
+        documentConcepts: Array.isArray(info?.documentConcepts)
+          ? info.documentConcepts.map((value) => trimString(value)).filter(Boolean)
+          : [],
+        documentByteSize: Number.isFinite(Number(info?.documentByteSize))
+          ? Number(info.documentByteSize)
+          : 0,
+      },
+      documentURL: trimString(entry?.documentURL),
+    };
+  });
+
+  const documentsByLectureId = new Map();
+  normalizedDocuments.forEach((documentEntry) => {
+    const documentInfo = getDocumentInfoSource(documentEntry);
+    const lectureId = normalizePlannerLectureId(documentInfo?.documentLectureID);
+    const documentId = normalizePlannerLectureId(documentInfo?.documentID);
+    if (!lectureId || !documentId) {
+      return;
+    }
+    if (!documentsByLectureId.has(lectureId)) {
+      documentsByLectureId.set(lectureId, []);
+    }
+    documentsByLectureId.get(lectureId).push(documentId);
+  });
+
+  studyPlanner.programDocuments = normalizedDocuments;
+  studyPlanner.programLectures = rawLectures.map((lectureEntry) => {
+    const lectureInfo = getLectureInfoSource(lectureEntry);
+    const lectureId = normalizePlannerLectureId(lectureInfo?.lectureID);
+    const resolvedLecture = lectureId ? lectureLookup.get(lectureId) || null : null;
+    const nextLectureDocuments = lectureId
+      ? Array.from(
+          new Set(
+            documentsByLectureId.get(lectureId) || [],
+          ),
+        ).filter(Boolean)
+      : [];
+
+    return {
+      ...lectureEntry,
+      lectureInfo: {
+        ...lectureInfo,
+        lectureID: lectureId,
+        lectureName: resolvedLecture?.lectureName || trimString(lectureInfo?.lectureName),
+      },
+      lectureDocuments: nextLectureDocuments,
+    };
+  });
+
+  return studyPlanner;
+};
+
 const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
   (Array.isArray(intervalCourses) ? intervalCourses : [])
     .map((courseEntry) => {
@@ -1895,12 +2059,14 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                 tasksLectures: (Array.isArray(rawExamEntry?.tasksLectures) ? rawExamEntry.tasksLectures : []).map((lec) => {
                   const rawLectureEntry = lec && typeof lec === "object" ? toPlainObject(lec) || {} : {};
                   const l = getLectureInfoSource(rawLectureEntry);
+                  const lectureID = sanitizeId(trimString(l?.lectureID)) || "";
+                  const lectureName = trimString(l?.lectureName) || "";
                   return {
                     lectureInfo: {
                       lectureSymbol: trimString(l?.lectureSymbol) || "LEC",
                       lectureNum: Number.isFinite(Number.parseInt(l?.lectureNum, 10)) ? Number.parseInt(l.lectureNum, 10) : null,
-                      lectureID: sanitizeId(trimString(l?.lectureID)) || "",
-                      lectureName: trimString(l?.lectureName) || "",
+                      lectureID,
+                      lectureName,
                       lectureInstructors: normalizeStringArray(l?.lectureInstructors),
                       lectureInstructionDate: parseOptionalDate(l?.lectureInstructionDate || null),
                     },
@@ -1921,6 +2087,12 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                             ? Number.parseInt(documentInfo.documentNum, 10)
                             : null,
                           documentID: sanitizeId(trimString(documentInfo?.documentID)) || "",
+                          documentLectureID: trimString(
+                            documentInfo?.documentLectureID || lectureID,
+                          ),
+                          documentLectureName: trimString(
+                            documentInfo?.documentLectureName || lectureName,
+                          ),
                           documentName: trimString(documentInfo?.documentName) || "",
                           documentVolumeUnit: trimString(documentInfo?.documentVolumeUnit),
                           documentVolume: normalizedDocumentVolume,
@@ -4419,6 +4591,8 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
           documentSymbol: trimString(info?.documentSymbol) || "DOC",
           documentNum: typeof info?.documentNum === "number" ? info.documentNum : null,
           documentID: sanitizeId(trimString(info?.documentID)),
+          documentLectureID: trimString(info?.documentLectureID),
+          documentLectureName: trimString(info?.documentLectureName),
           documentName: trimString(info?.documentName),
           documentType: trimString(info?.documentType),
           documentVolumeUnit: trimString(info?.documentVolumeUnit),
@@ -4432,9 +4606,12 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
       };
     });
 
+  syncPlannerDocumentLectureLinks(studyPlanner);
+
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     memoryDoc.markModified("studyPlanner.programDocuments");
+    memoryDoc.markModified("studyPlanner.programLectures");
   }
   return studyPlanner;
 };
@@ -4479,9 +4656,12 @@ export const updateStudyPlannerLecturesInPlanner = (memoryDoc, payload = {}) => 
       };
     });
 
+  syncPlannerDocumentLectureLinks(studyPlanner);
+
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     memoryDoc.markModified("studyPlanner.programLectures");
+    memoryDoc.markModified("studyPlanner.programDocuments");
   }
   return studyPlanner;
 };

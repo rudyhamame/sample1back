@@ -198,6 +198,8 @@ const documentInfoSchema = new Schema ({
   documentSymbol: { type: String, default: "DOC" },
   documentNum: { type: Number, default: null }, // documentNum++ starts from 1
   documentID: { type: String, default: "" }, //documentID = documentSymbol + documentNum
+  documentLectureID: { type: String, default: "" },
+  documentLectureName: { type: String, default: "" },
   documentName: { type: String, default: "" }, 
   documentType: { type: String, default: "" }, // PDF, IMAGE, Video, Youtube Video ...
   documentVolumeUnit: { type: String, default: "" }, // page, image, words, letters
@@ -208,6 +210,8 @@ const documentInfoSchema = new Schema ({
     pageNotes: [{type: String, default: null}],
   }],
   documentEditors: { type: [String], default: [] }, // a subset of programEditors
+  documentConcepts: { type: [String], default: [] },
+  documentByteSize: { type: Number, default: 0 },
 },{_id: false, strict: 'throw'},
 );
 
