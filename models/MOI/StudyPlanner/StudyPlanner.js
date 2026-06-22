@@ -315,6 +315,47 @@ const programStudySessionsSchema = new Schema ({
   }]
 },{ _id: false, strict: 'throw' });
 
+const normalizeStudySessionAchievementForStorage = (entry = {}) => {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const pagesDone = Array.isArray(source?.pagesDone) ? source.pagesDone : [];
+  return {
+    documentID: String(source?.documentID || source?.documentId || "").trim(),
+    pagesDone: Array.from(
+      new Set(
+        pagesDone
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value) && value > 0),
+      ),
+    ).sort((left, right) => left - right),
+  };
+};
+
+const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const rawSessionID = String(source?.studySessionID || source?.studySessionId || "").trim();
+  const rawSessionSymbol = String(source?.studySessionSymbol || source?.sessionSymbol || "SS").trim() || "SS";
+  const rawSessionNum = Number(source?.studySessionNum);
+  const rawStartDate = source?.studySessionStartDate || source?.startDate || source?.start_date || null;
+  const rawEndDate = source?.studySessionEndDate || source?.endDate || source?.end_date || null;
+  const rawAchievements = Array.isArray(source?.studySessionAchievements)
+    ? source.studySessionAchievements
+    : Array.isArray(source?.achievements)
+      ? source.achievements
+      : Array.isArray(source?.sessionAchievements)
+        ? source.sessionAchievements
+        : [];
+  return {
+    studySessionID: rawSessionID,
+    studySessionSymbol: rawSessionSymbol,
+    studySessionNum: Number.isFinite(rawSessionNum) ? rawSessionNum : index + 1,
+    studySessionStartDate: rawStartDate ? new Date(rawStartDate) : null,
+    studySessionEndDate: rawEndDate ? new Date(rawEndDate) : null,
+    studySessionAchievements: rawAchievements
+      .map((achievementEntry) => normalizeStudySessionAchievementForStorage(achievementEntry))
+      .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
+  };
+};
+
 const StudyPlannerSchema = new Schema(
   {
     programID: { type: String, default: "" }, // root of the XID chain
@@ -357,6 +398,19 @@ const StudyPlannerSchema = new Schema(
   },
   { _id: true, strict: "throw" },
 );
+
+StudyPlannerSchema.pre("validate", function (next) {
+  try {
+    if (Array.isArray(this.programStudySessions)) {
+      this.programStudySessions = this.programStudySessions.map(
+        (entry, index) => normalizeStudySessionForStorage(entry, index),
+      );
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 export { StudyPlannerSchema };
 export default StudyPlannerSchema;
