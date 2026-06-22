@@ -4739,8 +4739,10 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
   studyPlanner.programStudySessions = rawSessions
     .filter((entry) => entry && typeof entry === "object")
     .map((entry, index) => {
-      const achievements = Array.isArray(entry?.achievements)
-        ? entry.achievements
+      const achievements = Array.isArray(entry?.studySessionAchievements)
+        ? entry.studySessionAchievements
+        : Array.isArray(entry?.achievements)
+          ? entry.achievements
         : [];
       const studySessionSymbol = trimString(entry?.studySessionSymbol) || "SS";
       const studySessionNum = toFiniteNumber(entry?.studySessionNum, null);
@@ -4754,13 +4756,19 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
         (programID && Number.isFinite(studySessionNum)
           ? `${programID}: ${studySessionSymbol}${studySessionNum}`
           : `studySession_${index + 1}`);
+      const studySessionStartDate = parseOptionalDate(
+        entry?.studySessionStartDate || entry?.startDate || entry?.start_date || null,
+      );
+      const studySessionEndDate = parseOptionalDate(
+        entry?.studySessionEndDate || entry?.endDate || entry?.end_date || null,
+      );
       return {
         studySessionID,
         studySessionSymbol,
         studySessionNum,
-        startDate: parseOptionalDate(entry?.startDate || entry?.start_date || null),
-        endDate: parseOptionalDate(entry?.endDate || entry?.end_date || null),
-        achievements: achievements
+        studySessionStartDate,
+        studySessionEndDate,
+        studySessionAchievements: achievements
           .filter((achievementEntry) => achievementEntry && typeof achievementEntry === "object")
           .map((achievementEntry) => ({
             documentID: trimString(

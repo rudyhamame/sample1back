@@ -3425,39 +3425,21 @@ UserRouter.get(
   requireSelfParam("my_id"),
   async function (req, res, next) {
     try {
-      const user = await UserModel.findById(req.params.my_id);
-      if (!user) {
-        return res.status(404).json({ message: "User not found." });
-      }
-
-      const memoryDoc = await ensureUserMemoryDoc(user);
+      const memoryDoc = await findUserMemoryLean(req.params.my_id, {
+        includeCourses: true,
+        includeLectures: true,
+      });
       if (!memoryDoc) {
-        return res
-          .status(500)
-          .json({ message: "Failed to access user memory." });
-      }
-
-      const courseIdRepair = repairStudyPlannerCourseIdsInPlanner(memoryDoc);
-      if (courseIdRepair.changed) {
-        await memoryDoc.save();
+        return res.status(404).json({ message: "User not found." });
       }
 
       const studyPlanner =
         memoryDoc?.studyPlanner && typeof memoryDoc.studyPlanner === "object"
           ? {
-              ...memoryDoc.studyPlanner.toObject?.(),
-              ...(memoryDoc.studyPlanner?.toObject
-                ? {}
-                : memoryDoc.studyPlanner),
-              programExams: normalizeProgramExamsForPlanner(
-                memoryDoc.studyPlanner,
-              ),
-              programComponents: normalizeProgramComponentsForPlanner(
-                memoryDoc.studyPlanner,
-              ),
-              programFailingRules: normalizeProgramFailingRulesForPlanner(
-                memoryDoc.studyPlanner,
-              ),
+              ...memoryDoc.studyPlanner,
+              programExams: normalizeProgramExamsForPlanner(memoryDoc.studyPlanner),
+              programComponents: normalizeProgramComponentsForPlanner(memoryDoc.studyPlanner),
+              programFailingRules: normalizeProgramFailingRulesForPlanner(memoryDoc.studyPlanner),
             }
           : {};
 
