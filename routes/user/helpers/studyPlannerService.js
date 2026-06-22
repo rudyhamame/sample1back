@@ -1594,7 +1594,7 @@ const buildNewCourseID = (subIntervalID, courseNum, courseSymbol = "CRS") =>
 const buildNewComponentID = (courseID, componentNum, componentSymbol = "COMP") =>
   courseID && componentNum != null ? sanitizeId(`${courseID}${componentSymbol}${componentNum}`) : "";
 const buildNewLectureID = (componentID, lectureNum) =>
-  componentID && lectureNum != null ? sanitizeId(`${componentID}L${lectureNum}`) : "";
+  componentID && lectureNum != null ? sanitizeId(`${componentID}LEC${lectureNum}`) : "";
 const buildNewByteArrayID = (lectureID, byteArrayNum) =>
   lectureID && byteArrayNum != null ? sanitizeId(`${lectureID}B${byteArrayNum}`) : "";
 const buildNewTaskID = (componentID, taskNum) =>
