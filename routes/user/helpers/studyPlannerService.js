@@ -4726,3 +4726,58 @@ export const updateStudyPlannerLecturesInPlanner = (memoryDoc, payload = {}) => 
   }
   return studyPlanner;
 };
+
+export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}) => {
+  const studyPlanner = getStudyPlannerRoot(memoryDoc);
+  const normalizedPayload =
+    payload && typeof payload === "object" ? toPlainObject(payload) || {} : {};
+  const rawSessions = Array.isArray(normalizedPayload?.programStudySessions)
+    ? normalizedPayload.programStudySessions
+    : studyPlanner.programStudySessions || [];
+  const programID = trimString(studyPlanner?.programID);
+
+  studyPlanner.programStudySessions = rawSessions
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry, index) => {
+      const achievements = Array.isArray(entry?.achievements)
+        ? entry.achievements
+        : [];
+      const studySessionSymbol = trimString(entry?.studySessionSymbol) || "SS";
+      const studySessionNum = toFiniteNumber(entry?.studySessionNum, null);
+      const studySessionID =
+        trimString(entry?.studySessionID) ||
+        (programID && Number.isFinite(studySessionNum)
+          ? `${programID}: ${studySessionSymbol}${studySessionNum}`
+          : `studySession_${index + 1}`);
+      return {
+        studySessionID,
+        studySessionSymbol,
+        studySessionNum,
+        startDate: parseOptionalDate(entry?.startDate || entry?.start_date || null),
+        endDate: parseOptionalDate(entry?.endDate || entry?.end_date || null),
+        achievements: achievements
+          .filter((achievementEntry) => achievementEntry && typeof achievementEntry === "object")
+          .map((achievementEntry) => ({
+            documentID: trimString(
+              achievementEntry?.documentID || achievementEntry?.documentId || "",
+            ),
+            pagesDone: Array.from(
+              new Set(
+                (Array.isArray(achievementEntry?.pagesDone)
+                  ? achievementEntry.pagesDone
+                  : [])
+                  .map((value) => Number(value))
+                  .filter((value) => Number.isFinite(value) && value > 0),
+              ),
+            ).sort((left, right) => left - right),
+          }))
+          .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
+      };
+    });
+
+  if (typeof memoryDoc?.markModified === "function") {
+    memoryDoc.markModified("studyPlanner");
+    memoryDoc.markModified("studyPlanner.programStudySessions");
+  }
+  return studyPlanner;
+};

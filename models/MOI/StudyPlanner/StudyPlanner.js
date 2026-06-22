@@ -303,6 +303,18 @@ const studyOrganizerSchema = new Schema(
   { _id: false },
 );
 
+const programStudySessionsSchema = new Schema ({
+  studySessionID:{ type: String, default: "" },
+  studySessionSymbol: { type: String, default: "SS" },
+  studySessionNum: { type: Number, default: "" },
+  studySessionStartDate:{ type: Date, default: "" },
+  studySessionEndDate: { type: Date, default: "" },
+  studySessionAchievements: [{
+    documentID:  { type: String, default: "" }, // what I studied
+    pagesDone: [{ type: Number }],
+  }]
+},{ _id: false, strict: 'throw' });
+
 const StudyPlannerSchema = new Schema(
   {
     programID: { type: String, default: "" }, // root of the XID chain
@@ -338,6 +350,7 @@ const StudyPlannerSchema = new Schema(
     programDocuments: { type: [programDocumentsSchema], default: [] },
     programTasks: { type: [programTasksSchema], default: [] },
     programExams: { type: [programExamGroupSchema], default: [] },
+    programStudySessions: { type: [programStudySessionsSchema], default: [] },
     exams: { type: [Schema.Types.Mixed], default: [] },
     studyOrganizer: { type: studyOrganizerSchema, default: () => ({ courses: [] }) },
     studyPlanAid: { type: StudyLecturePlanAidSchema, default: () => ({}) },
