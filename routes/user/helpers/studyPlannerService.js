@@ -4745,7 +4745,12 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
       const studySessionSymbol = trimString(entry?.studySessionSymbol) || "SS";
       const studySessionNum = toFiniteNumber(entry?.studySessionNum, null);
       const studySessionID =
-        trimString(entry?.studySessionID) ||
+        (() => {
+          const explicitStudySessionID = trimString(entry?.studySessionID);
+          return explicitStudySessionID && explicitStudySessionID !== "studySessionID"
+            ? explicitStudySessionID
+            : "";
+        })() ||
         (programID && Number.isFinite(studySessionNum)
           ? `${programID}: ${studySessionSymbol}${studySessionNum}`
           : `studySession_${index + 1}`);
