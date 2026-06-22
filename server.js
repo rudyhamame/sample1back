@@ -82,14 +82,15 @@ const isAllowedOrigin = (origin) => {
     const hostname = parsedOrigin.hostname;
     const protocol = String(parsedOrigin.protocol || "").toLowerCase();
 
-    if (
-      isPrivateDevelopmentHost(hostname) &&
-      (protocol === "http:" || protocol === "https:")
-    ) {
-      return true;
-    }
+  if (
+    isPrivateDevelopmentHost(hostname) &&
+    (protocol === "http:" || protocol === "https:")
+  ) {
+    return true;
+  }
 
-    return (
+  return (
+      hostname.endsWith(".onrender.com") ||
       hostname.endsWith(".vercel.app") ||
       hostname.endsWith(".trycloudflare.com")
     );
