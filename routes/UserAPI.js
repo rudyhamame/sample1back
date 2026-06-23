@@ -6973,6 +6973,76 @@ UserRouter.get(
   },
 );
 
+UserRouter.get(
+  "/feedEvents/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id).select(
+        "profile.events connections friends",
+      );
+      if (!user) return res.status(404).json({ message: "User not found." });
+
+      const relationshipEntries = Array.isArray(user.connections)
+        ? user.connections
+        : Array.isArray(user.friends)
+          ? user.friends
+          : [];
+      const friendIds = relationshipEntries
+        .map((f) => {
+          if (!f) return "";
+          const candidate =
+            typeof f === "object" && f !== null
+              ? f.id || f.userID || f._id || f
+              : f;
+          const normalized =
+            typeof candidate === "object" && candidate !== null
+              ? candidate._id || candidate
+              : candidate;
+          return String(normalized || "").trim();
+        })
+        .filter(Boolean);
+
+      const ownEvents = Array.isArray(user.profile?.events)
+        ? user.profile.events.map((e) => ({
+            ...(e.toObject ? e.toObject() : e),
+            _isOwn: true,
+          }))
+        : [];
+
+      let friendEvents = [];
+      if (friendIds.length > 0) {
+        const friends = await UserModel.find({ _id: { $in: friendIds } }).select(
+          "profile.events profile.firstname profile.lastname",
+        );
+        friendEvents = friends.flatMap((friend) =>
+          Array.isArray(friend.profile?.events)
+            ? friend.profile.events.map((e) => ({
+                ...(e.toObject ? e.toObject() : e),
+                _isOwn: false,
+                _ownerName: {
+                  firstName: String(friend.profile?.firstname || "").trim(),
+                  lastName: String(friend.profile?.lastname || "").trim(),
+                },
+              }))
+            : [],
+        );
+      }
+
+      const allEvents = [...ownEvents, ...friendEvents].sort((a, b) => {
+        const dateA = new Date(a?.eventFooter?.eventDatePosted || 0).getTime();
+        const dateB = new Date(b?.eventFooter?.eventDatePosted || 0).getTime();
+        return dateB - dateA;
+      });
+
+      return res.status(200).json({ events: allEvents });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 //....................
 //Attach all the routes to router\
 export default UserRouter;
