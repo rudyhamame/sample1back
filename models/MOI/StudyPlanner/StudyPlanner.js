@@ -313,6 +313,8 @@ const programStudySessionsSchema = new Schema ({
     documentID:  { type: String, default: "" }, // what I studied
     pagesDone: [{ type: Number }],
   }]
+  targetPagesDone:{ type: Number, default:"" },
+  rewardImages: {type: [String], default: []},
 },{ _id: false, strict: 'throw' });
 
 const normalizeStudySessionAchievementForStorage = (entry = {}) => {
