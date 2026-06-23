@@ -2686,6 +2686,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const hasProgramCurrentIntervalSelection = "programCurrentIntervalSelection" in normalizedPayload;
   const hasProgramAIExtractions = "programAIExtractions" in normalizedPayload;
   const hasSettings = "settings" in normalizedPayload;
+  const hasStudySessionReward = "studySessionReward" in normalizedPayload;
   const nextSettings = hasSettings
     ? normalizeStudyOrganizerSettings(
         toPlainObject(normalizedPayload?.settings) || {},
@@ -2740,7 +2741,8 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramIntervals &&
     !hasProgramCurrentIntervalSelection &&
     !hasProgramAIExtractions &&
-    !hasSettings
+    !hasSettings &&
+    !hasStudySessionReward
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
