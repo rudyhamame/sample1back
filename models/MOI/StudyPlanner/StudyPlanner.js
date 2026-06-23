@@ -312,7 +312,7 @@ const programStudySessionsSchema = new Schema ({
   studySessionAchievements: [{
     documentID:  { type: String, default: "" }, // what I studied
     pagesDone: [{ type: Number }],
-  }]
+  }],
   targetPagesDone:{ type: Number, default:"" },
   rewardImages: {type: [String], default: []},
 },{ _id: false, strict: 'throw' });
@@ -394,6 +394,11 @@ const StudyPlannerSchema = new Schema(
     programTasks: { type: [programTasksSchema], default: [] },
     programExams: { type: [programExamGroupSchema], default: [] },
     programStudySessions: { type: [programStudySessionsSchema], default: [] },
+    studySessionReward: {
+      targetPagesDone: { type: Number, default: null },
+      rewardImages: { type: [String], default: [] },
+      rewardFriendId: { type: String, default: "" },
+    },
     exams: { type: [Schema.Types.Mixed], default: [] },
     studyOrganizer: { type: studyOrganizerSchema, default: () => ({ courses: [] }) },
     studyPlanAid: { type: StudyLecturePlanAidSchema, default: () => ({}) },
