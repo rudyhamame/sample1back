@@ -6,6 +6,7 @@ import { emitCompressionProgress } from "../helpers/progressSocket.js";
 // ...existing code...
 const upload = multer({ dest: "uploads/" });
 //For user data
+import OpenAI from "openai";
 import express from "express";
 import { execFileSync } from "child_process";
 import crypto from "crypto";
@@ -122,6 +123,71 @@ const resolveDefaultAiProvider = () => {
   }
 
   return "openai";
+};
+
+const getAiClientForProvider = (provider) => {
+  if (provider === "groq") {
+    const apiKey = String(process.env.GROQ_API_KEY || "").trim();
+    if (!apiKey) return null;
+    return new OpenAI({
+      apiKey,
+      baseURL: String(process.env.GROQ_BASE_URL || "").trim() || undefined,
+    });
+  }
+  if (provider === "kimi") {
+    const apiKey = String(process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY || "").trim();
+    if (!apiKey) return null;
+    return new OpenAI({
+      apiKey,
+      baseURL:
+        String(process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "").trim() ||
+        "https://api.moonshot.ai/v1",
+    });
+  }
+  const apiKey = String(process.env.OPENAI_API_KEY || process.env.OPENAI_OFFICIAL_API_KEY || "").trim();
+  if (!apiKey) return null;
+  return new OpenAI({
+    apiKey,
+    baseURL: String(process.env.OPENAI_BASE_URL || "").trim() || undefined,
+  });
+};
+
+const getAiModelForProvider = (provider) => {
+  if (provider === "groq") return process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  if (provider === "kimi") return process.env.KIMI_MODEL || "kimi-k2.5";
+  return process.env.OPENAI_OFFICIAL_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+};
+
+const callAiCompletion = async (prompt, provider = resolveDefaultAiProvider()) => {
+  const orderedProviders =
+    provider !== resolveDefaultAiProvider()
+      ? [provider, resolveDefaultAiProvider(), "groq", "openai"]
+      : [provider, "groq", "openai"];
+  const uniqueProviders = [...new Set(orderedProviders)];
+
+  for (const p of uniqueProviders) {
+    const client = getAiClientForProvider(p);
+    if (!client) continue;
+    const model = getAiModelForProvider(p);
+    try {
+      if (p === "kimi" || p === "groq") {
+        const completion = await client.chat.completions.create({
+          model,
+          messages: [{ role: "user", content: prompt }],
+        });
+        return String(completion?.choices?.[0]?.message?.content || "").trim();
+      }
+      const response = await client.responses.create({
+        model,
+        instructions: "",
+        input: prompt,
+      });
+      return String(response?.output_text || "").trim();
+    } catch (_err) {
+      continue;
+    }
+  }
+  throw new Error("No AI provider available.");
 };
 
 const requireSelfParam = (paramName) => (req, res, next) => {
@@ -2236,6 +2302,7 @@ const LOGIN_USER_SELECT = [
   "profile.bio",
   "profile.picture.profilePic.index",
   "profile.picture.profilePic.viewport",
+  "profile.events",
   "connections",
   "friends",
   "status",
@@ -6708,6 +6775,204 @@ UserRouter.post(
     }
   },
 );
+UserRouter.post(
+  "/postProfileEvent/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id).select(
+        "profile.firstname profile.lastname profile.events ai.aiProvider",
+      );
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const firstName = String(user.profile?.firstname || "").trim();
+      const lastName = String(user.profile?.lastname || "").trim();
+      const datePostedISO = new Date().toISOString();
+      const studySessionID = String(req.body?.studySessionID || "").trim();
+      const preferredProvider = String(
+        user.ai?.aiProvider || req.body?.aiProvider || resolveDefaultAiProvider(),
+      ).trim();
+
+      const imageURLs = Array.isArray(req.body?.images)
+        ? req.body.images.map((u) => String(u || "").trim()).filter(Boolean)
+        : [];
+      const videoURLs = Array.isArray(req.body?.videos)
+        ? req.body.videos.map((u) => String(u || "").trim()).filter(Boolean)
+        : [];
+
+      const achievementData = String(req.body?.achievementData || "").trim();
+
+      const prompt = `Generate exactly one valid JSON object matching this structure:
+
+{
+  "eventClass": "String",
+  "eventTitle": "String",
+  "eventBody": {
+    "eventText": "String",
+    "eventImagesURLs": [],
+    "eventVideosURLs": []
+  },
+  "eventFooter": {
+    "eventDatePosted": "String",
+    "eventUserName": {
+      "firstName": "String",
+      "lastName": "String"
+    }
+  },
+  "eventReplies": []
+}
+
+Rules:
+* Return JSON only.
+* Do not return Markdown, code fences, explanations, or comments.
+* Create a friendly social-media achievement post for friends.
+* Use only information provided in the achievement data.
+* Do not invent achievements, dates, people, media, or replies.
+* Make eventTitle short and engaging.
+* Set eventClass based on the achievement type, such as "study_achievement", "work_achievement", "fitness_achievement", "personal_achievement", or "milestone".
+* Write the main post in eventBody.eventText. Start with one opening sentence (e.g. "Finished Study Session 3 (01:27:57)."), then list each detail on its own line as a bullet starting with "- " (e.g. "- Document: ...", "- Lecture: ...", "- Course: ...", "- Component: ...", "- Pages: ..."). Do not put all details on one line.
+* Use empty arrays for eventImagesURLs and eventVideosURLs.
+* Use an empty eventReplies array.
+* Use ISO 8601 date format for eventDatePosted.
+* Preserve Arabic text exactly when it appears in the input.
+
+Achievement data:
+${achievementData}
+
+Post author:
+{
+  "firstName": "${firstName}",
+  "lastName": "${lastName}"
+}
+
+Date posted:
+"${datePostedISO}"
+
+Optional media:
+{
+  "images": ${JSON.stringify(imageURLs)},
+  "videos": ${JSON.stringify(videoURLs)}
+}`;
+
+      let aiParsed = null;
+      try {
+        const aiRaw = await callAiCompletion(prompt, preferredProvider);
+        const cleaned = aiRaw.replace(/^```[a-z]*\n?/i, "").replace(/```$/m, "").trim();
+        aiParsed = JSON.parse(cleaned);
+      } catch (_aiErr) {
+        aiParsed = null;
+      }
+
+      const newEvent = {
+        eventClass: String(aiParsed?.eventClass || "study_achievement").trim(),
+        eventTitle: String(aiParsed?.eventTitle || "").trim(),
+        studySessionID,
+        eventBody: {
+          eventText: String(aiParsed?.eventBody?.eventText || achievementData).trim(),
+          eventImagesURLs: Array.isArray(aiParsed?.eventBody?.eventImagesURLs)
+            ? aiParsed.eventBody.eventImagesURLs.map((u) => String(u || "").trim()).filter(Boolean)
+            : imageURLs,
+          eventVideosURLs: Array.isArray(aiParsed?.eventBody?.eventVideosURLs)
+            ? aiParsed.eventBody.eventVideosURLs.map((u) => String(u || "").trim()).filter(Boolean)
+            : videoURLs,
+        },
+        eventFooter: {
+          eventDatePosted: new Date(datePostedISO),
+          eventUserName: { firstName, lastName },
+        },
+        eventReplies: [],
+      };
+
+      user.profile.events.push(newEvent);
+      await user.save();
+      const savedEvent = user.profile.events[user.profile.events.length - 1];
+      return res.status(201).json({
+        event: savedEvent.toObject ? savedEvent.toObject() : savedEvent,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.delete(
+  "/profileEvents/:my_id/:event_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const eventId = String(req.params.event_id || "").trim();
+      if (!eventId) return res.status(400).json({ message: "Missing event_id." });
+      const user = await UserModel.findById(req.params.my_id).select("profile.events");
+      if (!user) return res.status(404).json({ message: "User not found." });
+      const before = user.profile.events.length;
+      const deletedEvent = user.profile.events.find((e) => String(e._id) === eventId);
+      user.profile.events = user.profile.events.filter(
+        (e) => String(e._id) !== eventId,
+      );
+      if (user.profile.events.length === before) {
+        return res.status(404).json({ message: "Event not found." });
+      }
+      await user.save();
+      const linkedSessionID = String(deletedEvent?.studySessionID || "").trim();
+      if (linkedSessionID) {
+        try {
+          const fullUser = await UserModel.findById(req.params.my_id);
+          if (fullUser) {
+            const memoryDoc = await ensureUserMemoryDoc(fullUser);
+            if (memoryDoc) {
+              const sessions = Array.isArray(memoryDoc.studyPlanner?.programStudySessions)
+                ? memoryDoc.studyPlanner.programStudySessions
+                : [];
+              let changed = false;
+              sessions.forEach((s) => {
+                if (String(s?.studySessionID || "") === linkedSessionID && s.studySessionPosted) {
+                  s.studySessionPosted = false;
+                  changed = true;
+                }
+              });
+              if (changed) {
+                memoryDoc.markModified("studyPlanner");
+                await memoryDoc.save();
+              }
+            }
+          }
+        } catch (_sessionErr) {
+          // non-fatal: event is deleted, session reset failed silently
+        }
+      }
+      return res.status(200).json({ deletedId: eventId, resetSessionID: linkedSessionID || null });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.get(
+  "/profileEvents/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const user = await UserModel.findById(req.params.my_id).select(
+        "profile.events",
+      );
+      if (!user) {
+        return res.status(404).json({ message: "User not found." });
+      }
+      const events = Array.isArray(user.profile?.events)
+        ? user.profile.events.map((e) => (e.toObject ? e.toObject() : e))
+        : [];
+      return res.status(200).json({ events });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 //....................
 //Attach all the routes to router\
 export default UserRouter;

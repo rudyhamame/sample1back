@@ -4807,6 +4807,7 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
           ? entry.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
           : [],
         pausedTotalMs: Math.max(0, Number(entry?.pausedTotalMs) || 0),
+        studySessionPosted: Boolean(entry?.studySessionPosted),
       };
     });
 

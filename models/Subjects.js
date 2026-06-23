@@ -127,6 +127,38 @@ const ProgramModeSchema = new Schema(
   { _id: false },
 );
 
+const profileEventsSchema = new Schema ({
+  eventClass: {type: String, default: ""},
+  eventTitle: {type: String, default: ""},
+  studySessionID: {type: String, default: ""},
+  eventBody: {
+    eventText: {type: String, default: ""},
+    eventImagesURLs: {type: [String], default: []},
+    eventVideosURLs: {type: [String], default: []},
+  },
+  eventFooter: {
+    eventDatePosted: {type: Date, default: ''},
+    eventUserName: {
+      firstName:{type: String, default: ""},
+      lastName: {type: String, default: ""},
+    },
+  },
+  eventReplies: [{
+    eventReplyBody: {
+    eventReplyText: {type: String, default: ""},
+    eventReplyImagesURLs: {type: [String], default: []},
+    eventReplyVideosURLs: {type: [String], default: []},
+  },
+  eventReplyFooter: {
+    eventReplyDatePosted: {type: Date, default: ''},
+    eventReplyUserName: {
+      firstName:{type: String, default: ""},
+      lastName: {type: String, default: ""},
+    },
+  },
+  }],
+});
+
 // Profile Sub-Schema
 const ProfileSchema = new Schema(
   {
@@ -178,6 +210,7 @@ const ProfileSchema = new Schema(
         },
       },
     },
+    events: {type: [profileEventsSchema], default: []}
   },
   { _id: false },
 ); // _id: false prevents creating sub-document IDs

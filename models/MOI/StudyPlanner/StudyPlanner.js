@@ -313,6 +313,7 @@ const programStudySessionsSchema = new Schema ({
     documentID:  { type: String, default: "" }, // what I studied
     pagesDone: [{ type: Number }],
   }],
+  studySessionPosted:{ type: Boolean, default:false },
   targetPagesDone:{ type: Number, default:"" },
   rewardImages: {type: [String], default: []},
   pausedTotalMs: { type: Number, default: 0 },
@@ -362,6 +363,7 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
       ? source.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
       : [],
     pausedTotalMs: Math.max(0, Number(source?.pausedTotalMs) || 0),
+    studySessionPosted: Boolean(source?.studySessionPosted),
   };
 };
 
