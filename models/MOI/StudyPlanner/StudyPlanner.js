@@ -315,6 +315,7 @@ const programStudySessionsSchema = new Schema ({
   }],
   targetPagesDone:{ type: Number, default:"" },
   rewardImages: {type: [String], default: []},
+  pausedTotalMs: { type: Number, default: 0 },
 },{ _id: false, strict: 'throw' });
 
 const normalizeStudySessionAchievementForStorage = (entry = {}) => {
@@ -360,6 +361,7 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
     rewardImages: Array.isArray(source?.rewardImages)
       ? source.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
       : [],
+    pausedTotalMs: Math.max(0, Number(source?.pausedTotalMs) || 0),
   };
 };
 
