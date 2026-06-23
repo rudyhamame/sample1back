@@ -162,12 +162,30 @@ const getStudyPlannerRoot = (memoryDoc) => {
     programExamClasses,
     programId,
     programInstructors,
+    studySessionReward,
+    programRewardImagesURLs: _legacyRewardURLs,
+    programStudySessions: rawSessions,
     ...plannerWithoutId
   } = currentPlanner || {};
   void programComponents; void programExamClasses; void programId; void programInstructors;
-  void plannerId;
+  void plannerId; void studySessionReward; void _legacyRewardURLs;
+
+  const cleanedSessions = Array.isArray(rawSessions)
+    ? rawSessions.map((entry) => {
+        const s = toPlainObject(entry) || {};
+        const {
+          targetPagesDone: _tpd,
+          rewardImages: _ri,
+          ...sessionClean
+        } = s;
+        void _tpd; void _ri;
+        return sessionClean;
+      })
+    : [];
+
   memoryDoc.studyPlanner = {
     ...plannerWithoutId,
+    programStudySessions: cleanedSessions,
     programTaskNames: currentProgramTaskNames,
     programExams: currentProgramExams,
     programFailingRules: currentProgramFailingRules,
@@ -2686,7 +2704,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const hasProgramCurrentIntervalSelection = "programCurrentIntervalSelection" in normalizedPayload;
   const hasProgramAIExtractions = "programAIExtractions" in normalizedPayload;
   const hasSettings = "settings" in normalizedPayload;
-  const hasStudySessionReward = "studySessionReward" in normalizedPayload;
+  const hasProgramRewards = "programRewards" in normalizedPayload;
   const nextSettings = hasSettings
     ? normalizeStudyOrganizerSettings(
         toPlainObject(normalizedPayload?.settings) || {},
@@ -2742,7 +2760,7 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramCurrentIntervalSelection &&
     !hasProgramAIExtractions &&
     !hasSettings &&
-    !hasStudySessionReward
+    !hasProgramRewards
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
@@ -3007,19 +3025,19 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   ensureStudyOrganizer(memoryDoc);
   ensureStudyPlanAid(memoryDoc);
 
-  if ("studySessionReward" in normalizedPayload) {
-    const raw = normalizedPayload.studySessionReward;
-    const rawReward = raw && typeof raw === "object" ? toPlainObject(raw) || {} : {};
-    const rawTargetPagesDone = Number(rawReward?.targetPagesDone);
-    studyPlanner.studySessionReward = {
-      targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
-      rewardImages: Array.isArray(rawReward?.rewardImages)
-        ? rawReward.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
+  if ("programRewards" in normalizedPayload) {
+    const raw = normalizedPayload.programRewards;
+    const rawObj = raw && typeof raw === "object" ? toPlainObject(raw) || {} : {};
+    const rawTargetPagesDone = Number(rawObj?.targetPagesDone);
+    studyPlanner.programRewards = {
+      targetPagesDone:
+        Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
+      programRewardImagesURLs: Array.isArray(rawObj?.programRewardImagesURLs)
+        ? rawObj.programRewardImagesURLs.map((u) => String(u || "").trim()).filter(Boolean)
         : [],
-      rewardFriendId: trimString(rawReward?.rewardFriendId) || "",
     };
     if (typeof memoryDoc?.markModified === "function") {
-      memoryDoc.markModified("studyPlanner.studySessionReward");
+      memoryDoc.markModified("studyPlanner.programRewards");
     }
   }
 
@@ -4780,7 +4798,6 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
       const studySessionEndDate = parseOptionalDate(
         entry?.studySessionEndDate || entry?.endDate || entry?.end_date || null,
       );
-      const rawTargetPagesDone = Number(entry?.targetPagesDone);
       return {
         studySessionID,
         studySessionSymbol,
@@ -4804,10 +4821,6 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
             ).sort((left, right) => left - right),
           }))
           .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
-        targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
-        rewardImages: Array.isArray(entry?.rewardImages)
-          ? entry.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
-          : [],
         pausedTotalMs: Math.max(0, Number(entry?.pausedTotalMs) || 0),
         studySessionPosted: Boolean(entry?.studySessionPosted),
       };

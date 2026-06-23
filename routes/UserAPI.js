@@ -7096,6 +7096,49 @@ UserRouter.get(
   },
 );
 
+// Update a friend's programRewards — only rudyhamame is authorized
+UserRouter.post(
+  "/programRewards/:my_id/:friend_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const { my_id, friend_id } = req.params;
+
+      const me = await UserModel.findById(my_id).select("auth.username");
+      if (!me || me.auth?.username !== "rudyhamame") {
+        return res.status(403).json({ message: "Not authorized." });
+      }
+
+      const rawTargetPagesDone = Number(req.body?.targetPagesDone);
+      const targetPagesDone =
+        Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0
+          ? rawTargetPagesDone
+          : null;
+      const programRewardImagesURLs = Array.isArray(req.body?.programRewardImagesURLs)
+        ? req.body.programRewardImagesURLs.map((u) => String(u || "").trim()).filter(Boolean)
+        : [];
+
+      const friendExists = await UserModel.exists({ _id: friend_id });
+      if (!friendExists) return res.status(404).json({ message: "Friend not found." });
+
+      await UserModel.updateOne(
+        { _id: friend_id },
+        {
+          $set: {
+            "memory.MOI.studyPlanner.programRewards.targetPagesDone": targetPagesDone,
+            "memory.MOI.studyPlanner.programRewards.programRewardImagesURLs": programRewardImagesURLs,
+          },
+        },
+      );
+
+      return res.status(200).json({ programRewards: { targetPagesDone, programRewardImagesURLs } });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 //....................
 //Attach all the routes to router\
 export default UserRouter;

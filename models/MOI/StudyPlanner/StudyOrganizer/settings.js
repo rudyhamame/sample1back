@@ -1084,6 +1084,10 @@ const PlannerSettingsSchema = new Schema(
       default: [],
     },
     predictionTool: { type: [PlannerPredictionToolEntrySchema], default: [] },
+    rewardSystem: {
+      friendID: { type: String, default: "" },
+      targetPagesDone: { type: Number, default: null },
+    },
   },
   { _id: false, strict: "throw" },
 );

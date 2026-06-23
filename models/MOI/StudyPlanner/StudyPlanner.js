@@ -314,8 +314,6 @@ const programStudySessionsSchema = new Schema ({
     pagesDone: [{ type: Number }],
   }],
   studySessionPosted:{ type: Boolean, default:false },
-  targetPagesDone:{ type: Number, default:"" },
-  rewardImages: {type: [String], default: []},
   pausedTotalMs: { type: Number, default: 0 },
 },{ _id: false, strict: 'throw' });
 
@@ -348,7 +346,6 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
       : Array.isArray(source?.sessionAchievements)
         ? source.sessionAchievements
         : [];
-  const rawTargetPagesDone = Number(source?.targetPagesDone);
   return {
     studySessionID: rawSessionID,
     studySessionSymbol: rawSessionSymbol,
@@ -358,10 +355,6 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
     studySessionAchievements: rawAchievements
       .map((achievementEntry) => normalizeStudySessionAchievementForStorage(achievementEntry))
       .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
-    targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
-    rewardImages: Array.isArray(source?.rewardImages)
-      ? source.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
-      : [],
     pausedTotalMs: Math.max(0, Number(source?.pausedTotalMs) || 0),
     studySessionPosted: Boolean(source?.studySessionPosted),
   };
@@ -403,10 +396,9 @@ const StudyPlannerSchema = new Schema(
     programTasks: { type: [programTasksSchema], default: [] },
     programExams: { type: [programExamGroupSchema], default: [] },
     programStudySessions: { type: [programStudySessionsSchema], default: [] },
-    studySessionReward: {
+    programRewards:{
       targetPagesDone: { type: Number, default: null },
-      rewardImages: { type: [String], default: [] },
-      rewardFriendId: { type: String, default: "" },
+      programRewardImagesURLs: { type: [String], default: [] },
     },
     exams: { type: [Schema.Types.Mixed], default: [] },
     studyOrganizer: { type: studyOrganizerSchema, default: () => ({ courses: [] }) },
