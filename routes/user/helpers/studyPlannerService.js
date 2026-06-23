@@ -3005,6 +3005,22 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   ensureStudyOrganizer(memoryDoc);
   ensureStudyPlanAid(memoryDoc);
 
+  if ("studySessionReward" in normalizedPayload) {
+    const raw = normalizedPayload.studySessionReward;
+    const rawReward = raw && typeof raw === "object" ? toPlainObject(raw) || {} : {};
+    const rawTargetPagesDone = Number(rawReward?.targetPagesDone);
+    studyPlanner.studySessionReward = {
+      targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
+      rewardImages: Array.isArray(rawReward?.rewardImages)
+        ? rawReward.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
+        : [],
+      rewardFriendId: trimString(rawReward?.rewardFriendId) || "",
+    };
+    if (typeof memoryDoc?.markModified === "function") {
+      memoryDoc.markModified("studyPlanner.studySessionReward");
+    }
+  }
+
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     if (hasSettings) {
@@ -4762,6 +4778,7 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
       const studySessionEndDate = parseOptionalDate(
         entry?.studySessionEndDate || entry?.endDate || entry?.end_date || null,
       );
+      const rawTargetPagesDone = Number(entry?.targetPagesDone);
       return {
         studySessionID,
         studySessionSymbol,
@@ -4785,6 +4802,10 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
             ).sort((left, right) => left - right),
           }))
           .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
+        targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
+        rewardImages: Array.isArray(entry?.rewardImages)
+          ? entry.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
+          : [],
       };
     });
 
