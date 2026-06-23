@@ -346,6 +346,7 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
       : Array.isArray(source?.sessionAchievements)
         ? source.sessionAchievements
         : [];
+  const rawTargetPagesDone = Number(source?.targetPagesDone);
   return {
     studySessionID: rawSessionID,
     studySessionSymbol: rawSessionSymbol,
@@ -355,6 +356,10 @@ const normalizeStudySessionForStorage = (entry = {}, index = 0) => {
     studySessionAchievements: rawAchievements
       .map((achievementEntry) => normalizeStudySessionAchievementForStorage(achievementEntry))
       .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
+    targetPagesDone: Number.isFinite(rawTargetPagesDone) && rawTargetPagesDone > 0 ? rawTargetPagesDone : null,
+    rewardImages: Array.isArray(source?.rewardImages)
+      ? source.rewardImages.map((u) => String(u || "").trim()).filter(Boolean)
+      : [],
   };
 };
 
