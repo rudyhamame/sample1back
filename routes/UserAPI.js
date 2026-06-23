@@ -6973,6 +6973,57 @@ UserRouter.get(
   },
 );
 
+UserRouter.post(
+  "/profileEvents/:owner_id/:event_id/reply",
+  checkAuth,
+  async function (req, res, next) {
+    try {
+      const ownerId = String(req.params.owner_id || "").trim();
+      const eventId = String(req.params.event_id || "").trim();
+      const replierId = String(req.authentication?.userId || "").trim();
+      if (!ownerId || !eventId || !replierId) {
+        return res.status(400).json({ message: "Missing required parameters." });
+      }
+      const replyText = String(req.body?.eventReplyText || "").trim();
+      if (!replyText) {
+        return res.status(400).json({ message: "Reply text is required." });
+      }
+      const [ownerUser, replierUser] = await Promise.all([
+        UserModel.findById(ownerId).select("profile.events"),
+        UserModel.findById(replierId).select("profile.firstname profile.lastname"),
+      ]);
+      if (!ownerUser) return res.status(404).json({ message: "User not found." });
+      if (!replierUser) return res.status(404).json({ message: "Replier not found." });
+      const event = ownerUser.profile.events.id
+        ? ownerUser.profile.events.id(eventId)
+        : ownerUser.profile.events.find((e) => String(e._id) === eventId);
+      if (!event) return res.status(404).json({ message: "Event not found." });
+      const newReply = {
+        eventReplyBody: {
+          eventReplyText: replyText,
+          eventReplyImagesURLs: [],
+          eventReplyVideosURLs: [],
+        },
+        eventReplyFooter: {
+          eventReplyDatePosted: new Date(),
+          eventReplyUserName: {
+            firstName: String(replierUser.profile?.firstname || "").trim(),
+            lastName: String(replierUser.profile?.lastname || "").trim(),
+          },
+        },
+      };
+      event.eventReplies.push(newReply);
+      await ownerUser.save();
+      const savedReply = event.eventReplies[event.eventReplies.length - 1];
+      return res.status(201).json({
+        reply: savedReply.toObject ? savedReply.toObject() : savedReply,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 UserRouter.get(
   "/feedEvents/:my_id",
   checkAuth,
@@ -7008,6 +7059,7 @@ UserRouter.get(
         ? user.profile.events.map((e) => ({
             ...(e.toObject ? e.toObject() : e),
             _isOwn: true,
+            _ownerId: String(user._id),
           }))
         : [];
 
@@ -7021,6 +7073,7 @@ UserRouter.get(
             ? friend.profile.events.map((e) => ({
                 ...(e.toObject ? e.toObject() : e),
                 _isOwn: false,
+                _ownerId: String(friend._id),
                 _ownerName: {
                   firstName: String(friend.profile?.firstname || "").trim(),
                   lastName: String(friend.profile?.lastname || "").trim(),
