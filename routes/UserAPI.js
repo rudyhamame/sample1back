@@ -23,6 +23,7 @@ import { AccessToken } from "livekit-server-sdk";
 import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
 import { setUserConnectionState } from "../helpers/connectionStatus.js";
+import { queueStudyStatusNotifications } from "../helpers/studyStatusEmail.js";
 import {
   findAiSettingsLean,
   buildUserMemoryLean,
@@ -5665,6 +5666,7 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
     req.body?.statusValue,
     "offline",
   );
+  let previousStatusValue = "offline";
   UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
@@ -5674,6 +5676,10 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
         return null;
       }
 
+      previousStatusValue = normalizePresenceStatusValue(
+        user?.status?.value,
+        "offline",
+      );
       setUserConnectionState(user, {
         statusValue: requestedStatusValue,
         at: new Date(),
@@ -5690,6 +5696,20 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
         statusValue: requestedStatusValue,
         targetUserId: String(req.params.id),
       });
+
+      if (requestedStatusValue === "studying") {
+        void queueStudyStatusNotifications({
+          subjectUser: user,
+          previousStatusValue,
+          nextStatusValue: requestedStatusValue,
+          at: new Date(),
+        }).catch((error) => {
+          console.error(
+            "[presence] failed to send studying email notifications:",
+            error?.message || error,
+          );
+        });
+      }
       res.status(201).json(user);
     })
     .catch(next);
@@ -5701,6 +5721,7 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
     req.body?.statusValue,
     "online",
   );
+  let previousStatusValue = "offline";
   UserModel.findById(req.params.id)
     .then((user) => {
       if (!user) {
@@ -5710,6 +5731,10 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
         return null;
       }
 
+      previousStatusValue = normalizePresenceStatusValue(
+        user?.status?.value,
+        "offline",
+      );
       setUserConnectionState(user, {
         statusValue: requestedStatusValue,
         at: new Date(),
@@ -5726,6 +5751,20 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
         statusValue: requestedStatusValue,
         targetUserId: String(user._id),
       });
+
+      if (requestedStatusValue === "studying") {
+        void queueStudyStatusNotifications({
+          subjectUser: user,
+          previousStatusValue,
+          nextStatusValue: requestedStatusValue,
+          at: new Date(),
+        }).catch((error) => {
+          console.error(
+            "[presence] failed to send studying email notifications:",
+            error?.message || error,
+          );
+        });
+      }
       return res.status(200).json({
         ok: true,
         userId: String(user._id),
@@ -5733,6 +5772,7 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
     })
     .catch(next);
 });
+
 UserRouter.post(
   "/studyOrganizer/settings/:my_id",
   checkAuth,
