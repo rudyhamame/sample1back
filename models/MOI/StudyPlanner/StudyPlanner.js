@@ -199,7 +199,8 @@ const documentInfoSchema = new Schema ({
   documentNum: { type: Number, default: null }, // documentNum++ starts from 1
   documentID: { type: String, default: "" }, //documentID = documentSymbol + documentNum
   documentLectureID: { type: String, default: "" },
-  documentName: { type: String, default: "" }, 
+  documentLectureName: { type: String, default: "" },
+  documentName: { type: String, default: "" },
   documentType: { type: String, default: "" }, // PDF, IMAGE, Video, Youtube Video ...
   documentVolumeUnit: { type: String, default: "" }, // page, image, words, letters
   documentVolume: { type: Number, default: null },

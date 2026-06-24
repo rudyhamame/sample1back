@@ -4685,6 +4685,7 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
           documentNum: typeof info?.documentNum === "number" ? info.documentNum : null,
           documentID: sanitizeId(trimString(info?.documentID)),
           documentLectureID: trimString(info?.documentLectureID),
+          documentLectureName: trimString(info?.documentLectureName),
           documentName: trimString(info?.documentName),
           documentType: trimString(info?.documentType),
           documentVolumeUnit: trimString(info?.documentVolumeUnit),
@@ -4693,6 +4694,12 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
           documentEditors: Array.isArray(info?.documentEditors)
             ? info.documentEditors.map((e) => trimString(e)).filter(Boolean)
             : [],
+          documentConcepts: Array.isArray(info?.documentConcepts)
+            ? info.documentConcepts.map((e) => trimString(e)).filter(Boolean)
+            : [],
+          documentByteSize: Number.isFinite(Number(info?.documentByteSize))
+            ? Number(info.documentByteSize)
+            : 0,
         },
         documentURL: trimString(entry?.documentURL),
       };
