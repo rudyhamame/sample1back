@@ -1864,7 +1864,6 @@ const syncPlannerDocumentLectureLinks = (studyPlanner = {}) => {
           : null,
         documentID: documentId,
         documentLectureID: resolvedLectureId,
-        documentLectureName: resolvedLecture?.lectureName || "",
         documentName: trimString(info?.documentName) || "",
         documentType: trimString(info?.documentType),
         documentVolumeUnit: trimString(info?.documentVolumeUnit),
@@ -2141,9 +2140,6 @@ const normalizePlannerIntervalCourseEntries = (intervalCourses = []) =>
                           documentID: sanitizeId(trimString(documentInfo?.documentID)) || "",
                           documentLectureID: trimString(
                             documentInfo?.documentLectureID || lectureID,
-                          ),
-                          documentLectureName: trimString(
-                            documentInfo?.documentLectureName || lectureName,
                           ),
                           documentName: trimString(documentInfo?.documentName) || "",
                           documentVolumeUnit: trimString(documentInfo?.documentVolumeUnit),
@@ -4689,7 +4685,6 @@ export const updateStudyPlannerDocumentsInPlanner = (memoryDoc, payload = {}) =>
           documentNum: typeof info?.documentNum === "number" ? info.documentNum : null,
           documentID: sanitizeId(trimString(info?.documentID)),
           documentLectureID: trimString(info?.documentLectureID),
-          documentLectureName: trimString(info?.documentLectureName),
           documentName: trimString(info?.documentName),
           documentType: trimString(info?.documentType),
           documentVolumeUnit: trimString(info?.documentVolumeUnit),
