@@ -2701,6 +2701,8 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
   const hasProgramAIExtractions = "programAIExtractions" in normalizedPayload;
   const hasSettings = "settings" in normalizedPayload;
   const hasProgramRewards = "programRewards" in normalizedPayload;
+  const hasProgramMissedConnections = "programMissedConnections" in normalizedPayload;
+  const hasStudyGoals = "studyGoals" in normalizedPayload;
   const nextSettings = hasSettings
     ? normalizeStudyOrganizerSettings(
         toPlainObject(normalizedPayload?.settings) || {},
@@ -2756,7 +2758,9 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     !hasProgramCurrentIntervalSelection &&
     !hasProgramAIExtractions &&
     !hasSettings &&
-    !hasProgramRewards
+    !hasProgramRewards &&
+    !hasProgramMissedConnections &&
+    !hasStudyGoals
   ) {
     throw new Error(
       "At least one studyPlanner meta field is required.",
@@ -3037,6 +3041,16 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     }
   }
 
+  if (hasProgramMissedConnections) {
+    studyPlanner.programMissedConnections = Array.isArray(normalizedPayload.programMissedConnections)
+      ? normalizedPayload.programMissedConnections
+      : [];
+  }
+  if (hasStudyGoals) {
+    studyPlanner.studyGoals = Array.isArray(normalizedPayload.studyGoals)
+      ? normalizedPayload.studyGoals
+      : [];
+  }
   if (typeof memoryDoc?.markModified === "function") {
     memoryDoc.markModified("studyPlanner");
     if (hasSettings) {
@@ -3044,6 +3058,12 @@ export const updateStudyPlannerMetaInPlanner = (memoryDoc, payload = {}) => {
     }
     if (hasProgramTasks) {
       memoryDoc.markModified("studyPlanner.programTasks");
+    }
+    if (hasProgramMissedConnections) {
+      memoryDoc.markModified("studyPlanner.programMissedConnections");
+    }
+    if (hasStudyGoals) {
+      memoryDoc.markModified("studyPlanner.studyGoals");
     }
   }
 

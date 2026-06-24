@@ -400,6 +400,8 @@ const StudyPlannerSchema = new Schema(
       targetPagesDone: { type: Number, default: null },
       programRewardImagesURLs: { type: [String], default: [] },
     },
+    programMissedConnections: { type: [Schema.Types.Mixed], default: [] },
+    studyGoals: { type: [Schema.Types.Mixed], default: [] },
     exams: { type: [Schema.Types.Mixed], default: [] },
     studyOrganizer: { type: studyOrganizerSchema, default: () => ({ courses: [] }) },
     studyPlanAid: { type: StudyLecturePlanAidSchema, default: () => ({}) },
