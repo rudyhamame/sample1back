@@ -321,11 +321,23 @@ const programStudySessionsSchema = new Schema ({
 const normalizeStudySessionAchievementForStorage = (entry = {}) => {
   const source = entry && typeof entry === "object" ? entry : {};
   const pagesDone = Array.isArray(source?.pagesDone) ? source.pagesDone : [];
+  const pagesRevised = Array.isArray(source?.pagesRevised)
+    ? source.pagesRevised
+    : Array.isArray(source?.revisedPages)
+      ? source.revisedPages
+      : [];
   return {
     documentID: String(source?.documentID || source?.documentId || "").trim(),
     pagesDone: Array.from(
       new Set(
         pagesDone
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value) && value > 0),
+      ),
+    ).sort((left, right) => left - right),
+    pagesRevised: Array.from(
+      new Set(
+        pagesRevised
           .map((value) => Number(value))
           .filter((value) => Number.isFinite(value) && value > 0),
       ),
