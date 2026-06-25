@@ -4841,6 +4841,15 @@ export const updateStudyPlannerStudySessionsInPlanner = (memoryDoc, payload = {}
                   .filter((value) => Number.isFinite(value) && value > 0),
               ),
             ).sort((left, right) => left - right),
+            pagesRevised: Array.from(
+              new Set(
+                (Array.isArray(achievementEntry?.pagesRevised)
+                  ? achievementEntry.pagesRevised
+                  : [])
+                  .map((value) => Number(value))
+                  .filter((value) => Number.isFinite(value) && value > 0),
+              ),
+            ).sort((left, right) => left - right),
           }))
           .filter((achievementEntry) => Boolean(achievementEntry.documentID)),
         pausedTotalMs: Math.max(0, Number(entry?.pausedTotalMs) || 0),
