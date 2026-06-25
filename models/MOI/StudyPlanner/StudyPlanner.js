@@ -312,6 +312,7 @@ const programStudySessionsSchema = new Schema ({
   studySessionAchievements: [{
     documentID:  { type: String, default: "" }, // what I studied
     pagesDone: [{ type: Number }],
+    pagesRevised: [{ type: Number }],
   }],
   studySessionPosted:{ type: Boolean, default:false },
   pausedTotalMs: { type: Number, default: 0 },
