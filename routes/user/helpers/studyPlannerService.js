@@ -36,6 +36,9 @@ const sanitizePlannerSettingsForSchemaStorage = (settings = {}) => {
   return {
     voiceControlEnabled: Boolean(normalizedSettings?.voiceControlEnabled),
     voiceDictationEnabled: Boolean(normalizedSettings?.voiceDictationEnabled),
+    programCoursesComponentVisibilityToken: String(
+      normalizedSettings?.programCoursesComponentVisibilityToken || "",
+    ).trim(),
     logoFixedClock: String(normalizedSettings?.logoFixedClock || "9").trim() || "9",
     fieldDefaults: Array.isArray(serializedSettings?.fieldDefaults)
       ? serializedSettings.fieldDefaults

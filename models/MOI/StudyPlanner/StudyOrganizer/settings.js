@@ -671,6 +671,9 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     typeof normalizedSettings?.voiceDictationEnabled === "boolean"
       ? normalizedSettings.voiceDictationEnabled
       : false;
+  const programCoursesComponentVisibilityToken = trimString(
+    normalizedSettings?.programCoursesComponentVisibilityToken,
+  );
   const rawMessageFriend =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
@@ -734,6 +737,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
         : true,
     voiceControlEnabled,
     voiceDictationEnabled,
+    programCoursesComponentVisibilityToken,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
@@ -778,6 +782,7 @@ const getDefaultStudyOrganizerSettings = () => ({
   logoMotionEnabled: true,
   voiceControlEnabled: false,
   voiceDictationEnabled: false,
+  programCoursesComponentVisibilityToken: "",
   logoFixedClock: "9",
   fieldDefaults: buildEmptyPlannerFieldDefaults(),
   messageFriend: {
@@ -1074,6 +1079,7 @@ const PlannerSettingsSchema = new Schema(
     voiceControlEnabled: { type: Boolean, default: false },
     voiceDictationEnabled: { type: Boolean, default: false },
     aiHelpersEnabled: { type: Boolean, default: false },
+    programCoursesComponentVisibilityToken: { type: String, trim: true, default: "" },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },
