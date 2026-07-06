@@ -39,6 +39,9 @@ const sanitizePlannerSettingsForSchemaStorage = (settings = {}) => {
     programCoursesComponentVisibilityToken: String(
       normalizedSettings?.programCoursesComponentVisibilityToken || "",
     ).trim(),
+    dailyProgressEmailLastSentDate: String(
+      normalizedSettings?.dailyProgressEmailLastSentDate || "",
+    ).trim(),
     logoFixedClock: String(normalizedSettings?.logoFixedClock || "9").trim() || "9",
     fieldDefaults: Array.isArray(serializedSettings?.fieldDefaults)
       ? serializedSettings.fieldDefaults

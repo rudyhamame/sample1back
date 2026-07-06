@@ -674,6 +674,9 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const programCoursesComponentVisibilityToken = trimString(
     normalizedSettings?.programCoursesComponentVisibilityToken,
   );
+  const dailyProgressEmailLastSentDate = trimString(
+    normalizedSettings?.dailyProgressEmailLastSentDate,
+  );
   const rawMessageFriend =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
@@ -738,6 +741,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     voiceControlEnabled,
     voiceDictationEnabled,
     programCoursesComponentVisibilityToken,
+    dailyProgressEmailLastSentDate,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
@@ -783,6 +787,7 @@ const getDefaultStudyOrganizerSettings = () => ({
   voiceControlEnabled: false,
   voiceDictationEnabled: false,
   programCoursesComponentVisibilityToken: "",
+  dailyProgressEmailLastSentDate: "",
   logoFixedClock: "9",
   fieldDefaults: buildEmptyPlannerFieldDefaults(),
   messageFriend: {
@@ -1080,6 +1085,7 @@ const PlannerSettingsSchema = new Schema(
     voiceDictationEnabled: { type: Boolean, default: false },
     aiHelpersEnabled: { type: Boolean, default: false },
     programCoursesComponentVisibilityToken: { type: String, trim: true, default: "" },
+    dailyProgressEmailLastSentDate: { type: String, trim: true, default: "" },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },

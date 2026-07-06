@@ -24,6 +24,7 @@ import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
 import { setUserConnectionState } from "../helpers/connectionStatus.js";
 import { queueStudyStatusNotifications } from "../helpers/studyStatusEmail.js";
+import { sendDailyStudyProgressEmailForUser } from "../helpers/dailyStudyProgressEmail.js";
 import {
   findAiSettingsLean,
   buildUserMemoryLean,
@@ -7007,6 +7008,28 @@ UserRouter.get(
         ? user.profile.events.map((e) => (e.toObject ? e.toObject() : e))
         : [];
       return res.status(200).json({ events });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+UserRouter.post(
+  "/studyPlanner/daily-progress-email/:my_id",
+  checkAuth,
+  requireSelfParam("my_id"),
+  async function (req, res, next) {
+    try {
+      const userId = String(req.params.my_id || "").trim();
+      const result = await sendDailyStudyProgressEmailForUser({
+        userId,
+        reportDateOffsetDays: 0,
+        markAsSent: false,
+      });
+      return res.status(200).json({
+        message: "Today's study progress report was sent successfully.",
+        reportDateKey: result?.reportDateKey || "",
+      });
     } catch (error) {
       return next(error);
     }
