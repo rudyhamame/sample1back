@@ -7,9 +7,16 @@ import {
 
 const inFlightSweep = { active: false };
 const DEFAULT_RECIPIENT_USERNAME = "rudyhamame";
+const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_SMTP_GREETING_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_SMTP_SOCKET_TIMEOUT_MS = 60 * 1000;
 
 const trimText = (value) => String(value ?? "").trim();
 const normalizeUserId = (value) => trimText(value);
+const getTimeoutMs = (value, fallback) => {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback;
+};
 
 const getRelationshipEntries = (user = {}) => {
   if (!user || typeof user !== "object") {
@@ -104,9 +111,21 @@ const getTransporter = () => {
     port: transportConfig.port,
     secure: transportConfig.secure,
     auth: transportConfig.auth,
-    connectionTimeout: 10 * 1000,
-    greetingTimeout: 10 * 1000,
-    socketTimeout: 20 * 1000,
+    connectionTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_CONNECTION_TIMEOUT_MS ||
+        process.env.SMTP_CONNECTION_TIMEOUT_MS,
+      DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
+    ),
+    greetingTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_GREETING_TIMEOUT_MS ||
+        process.env.SMTP_GREETING_TIMEOUT_MS,
+      DEFAULT_SMTP_GREETING_TIMEOUT_MS,
+    ),
+    socketTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_SOCKET_TIMEOUT_MS ||
+        process.env.SMTP_SOCKET_TIMEOUT_MS,
+      DEFAULT_SMTP_SOCKET_TIMEOUT_MS,
+    ),
   });
   return { transporter: cachedTransport, transportConfig };
 };

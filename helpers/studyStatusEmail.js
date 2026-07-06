@@ -5,8 +5,15 @@ const sentAtByRecipientKey = new Map();
 const inFlightRecipientKeys = new Set();
 const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
 const DEFAULT_RECIPIENT_USERNAME = "rudyhamame";
+const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_SMTP_GREETING_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_SMTP_SOCKET_TIMEOUT_MS = 60 * 1000;
 
 const trimText = (value) => String(value ?? "").trim();
+const getTimeoutMs = (value, fallback) => {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback;
+};
 
 const normalizeUserId = (value) => trimText(value);
 
@@ -151,6 +158,21 @@ const getTransporter = () => {
     port: transportConfig.port,
     secure: transportConfig.secure,
     auth: transportConfig.auth,
+    connectionTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_CONNECTION_TIMEOUT_MS ||
+        process.env.SMTP_CONNECTION_TIMEOUT_MS,
+      DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
+    ),
+    greetingTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_GREETING_TIMEOUT_MS ||
+        process.env.SMTP_GREETING_TIMEOUT_MS,
+      DEFAULT_SMTP_GREETING_TIMEOUT_MS,
+    ),
+    socketTimeout: getTimeoutMs(
+      process.env.EMAIL_SMTP_SOCKET_TIMEOUT_MS ||
+        process.env.SMTP_SOCKET_TIMEOUT_MS,
+      DEFAULT_SMTP_SOCKET_TIMEOUT_MS,
+    ),
   });
 
   return cachedTransport;
