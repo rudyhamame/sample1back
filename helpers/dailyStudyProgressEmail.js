@@ -386,22 +386,26 @@ const buildReportText = ({
   reportRequestedAtLabel = "",
 } = {}) => {
   const header = [
-    `Daily study progress report for ${displayName || "Student"}`,
+    `Daily Study Progress Report`,
+    `Student: ${displayName || "Student"}`,
     `Report date: ${reportDateKey}`,
-    `Last report request time: ${reportRequestedAtLabel || "-"}`,
+    `Report requested at: ${reportRequestedAtLabel || "-"}`,
     "",
   ];
   if (groups.length === 0) {
-    return [...header, "No course components were found in the planner."].join("\n");
+    return [
+      ...header,
+      "No course components were found in the planner for this report.",
+    ].join("\n");
   }
   const body = groups.flatMap((group) => {
     const lines = [
-      `${group.courseName} -> ${group.componentName}`,
-      `  Pages done in general: ${group.generalDonePages}`,
-      `  Pages remaining in general: ${group.generalRemainingPages}`,
+      `${group.courseName} | ${group.componentName}`,
+      `  Total pages completed: ${group.generalDonePages}`,
+      `  Total pages remaining: ${group.generalRemainingPages}`,
     ];
     if (group.documents.length === 0) {
-      lines.push("  Documents: none");
+      lines.push("  Documents: none recorded");
       lines.push("");
       return lines;
     }
@@ -410,21 +414,21 @@ const buildReportText = ({
       .forEach((documentEntry) => {
         lines.push(`  Document: ${documentEntry.documentName}`);
         lines.push(
-          `    Finished during the day: ${
+          `    Pages finished today: ${
             documentEntry.pagesDoneToday.length > 0
               ? documentEntry.pagesDoneToday.join(", ")
               : "-"
           }`,
         );
         lines.push(
-          `    Revised during the day: ${
+          `    Pages revised today: ${
             documentEntry.pagesRevisedToday.length > 0
               ? documentEntry.pagesRevisedToday.join(", ")
               : "-"
           }`,
         );
-        lines.push(`    Pages done in general: ${documentEntry.donePagesCount}`);
-        lines.push(`    Pages remaining in general: ${documentEntry.remainingPagesCount}`);
+        lines.push(`    Total pages completed: ${documentEntry.donePagesCount}`);
+        lines.push(`    Total pages remaining: ${documentEntry.remainingPagesCount}`);
       });
     lines.push("");
     return lines;
