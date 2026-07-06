@@ -142,6 +142,22 @@ const getRelativeDateKeyInTimeZone = (offsetDays, timeZone, now = new Date()) =>
   return getDateKeyInTimeZone(shifted, timeZone);
 };
 
+const formatDateTimeInTimeZone = (value, timeZone) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
 const normalizePageNumberList = (value = []) =>
   Array.from(
     new Set(
@@ -174,6 +190,57 @@ const getRecipientUsername = () =>
     process.env.DAILY_PROGRESS_EMAIL_RECIPIENT_USERNAME ||
       DEFAULT_RECIPIENT_USERNAME,
   ).toLowerCase();
+
+const normalizeManualDailyProgressEmailStatus = (value = {}) => {
+  const nextValue = value && typeof value === "object" ? value : {};
+  const status = trimText(nextValue?.status).toLowerCase();
+  return {
+    status: ["pending", "sent", "failed"].includes(status) ? status : "",
+    requestedAt: trimText(nextValue?.requestedAt),
+    completedAt: trimText(nextValue?.completedAt),
+    reportDateKey: trimText(nextValue?.reportDateKey),
+    lastError: trimText(nextValue?.lastError),
+  };
+};
+
+const persistManualDailyProgressEmailStatusForUser = async ({
+  userId = "",
+  status = "",
+  requestedAt = "",
+  completedAt = "",
+  reportDateKey = "",
+  lastError = "",
+} = {}) => {
+  const normalizedUserId = trimText(userId);
+  if (!normalizedUserId) {
+    throw new Error("User ID is required.");
+  }
+  const user = await UserModel.findById(normalizedUserId).select(
+    "memory.MOI.studyPlanner.settings",
+  );
+  if (!user?._id) {
+    throw new Error("User not found.");
+  }
+  const existingSettings = normalizeStudyOrganizerSettings(
+    getPlannerRoot(user)?.settings || {},
+  );
+  const nextManualStatus = normalizeManualDailyProgressEmailStatus({
+    ...(existingSettings?.manualDailyProgressEmail || {}),
+    status,
+    requestedAt,
+    completedAt,
+    reportDateKey,
+    lastError,
+  });
+  const nextSettings = serializeStudyOrganizerSettingsForStorage({
+    ...existingSettings,
+    manualDailyProgressEmail: nextManualStatus,
+  });
+  user.set("memory.MOI.studyPlanner.settings", nextSettings);
+  user.markModified("memory.MOI.studyPlanner.settings");
+  await user.save();
+  return nextManualStatus;
+};
 
 const resolveReportRecipientUser = async () => {
   const recipientUsername = getRecipientUsername();
@@ -371,10 +438,12 @@ const buildReportText = ({
   displayName = "",
   reportDateKey = "",
   groups = [],
+  reportRequestedAtLabel = "",
 } = {}) => {
   const header = [
     `Daily study progress report for ${displayName || "Student"}`,
     `Report date: ${reportDateKey}`,
+    `Last report request time: ${reportRequestedAtLabel || "-"}`,
     "",
   ];
   if (groups.length === 0) {
@@ -492,6 +561,7 @@ export const runDailyStudyProgressEmailSweep = async ({
       "profile.firstname profile.lastname profile.email auth.username memory.MOI.studyPlanner",
     );
     let sent = 0;
+    const reportRequestedAtLabel = formatDateTimeInTimeZone(now, timeZone);
     for (const user of users) {
       const plannerRoot = getPlannerRoot(user);
       const hasPlannerContent =
@@ -518,6 +588,7 @@ export const runDailyStudyProgressEmailSweep = async ({
         displayName: getDisplayName(user),
         reportDateKey,
         groups,
+        reportRequestedAtLabel,
       });
       try {
         await sendMail({
@@ -552,6 +623,7 @@ export const sendDailyStudyProgressEmailForUser = async ({
   timeZone = trimText(process.env.DAILY_PROGRESS_EMAIL_TIMEZONE) || "UTC",
   reportDateOffsetDays = 0,
   markAsSent = false,
+  reportRequestedAt = "",
 } = {}) => {
   const normalizedUserId = trimText(userId);
   if (!normalizedUserId) {
@@ -587,10 +659,15 @@ export const sendDailyStudyProgressEmailForUser = async ({
     reportDateKey,
     timeZone,
   });
+  const reportRequestedAtLabel = formatDateTimeInTimeZone(
+    reportRequestedAt || now,
+    timeZone,
+  );
   const text = buildReportText({
     displayName: getDisplayName(user),
     reportDateKey,
     groups,
+    reportRequestedAtLabel,
   });
   await sendMail({
     to: recipientEmail,
@@ -608,4 +685,77 @@ export const sendDailyStudyProgressEmailForUser = async ({
     await user.save();
   }
   return { sent: 1, reportDateKey };
+};
+
+export const queueDailyStudyProgressEmailForUser = async ({
+  userId = "",
+  now = new Date(),
+  timeZone = trimText(process.env.DAILY_PROGRESS_EMAIL_TIMEZONE) || "UTC",
+} = {}) => {
+  const normalizedUserId = trimText(userId);
+  if (!normalizedUserId) {
+    throw new Error("User ID is required.");
+  }
+  const reportDateKey = getRelativeDateKeyInTimeZone(0, timeZone, now);
+  if (!reportDateKey) {
+    throw new Error("Could not resolve report date.");
+  }
+  const requestedAt = new Date(now).toISOString();
+  const manualDailyProgressEmail =
+    await persistManualDailyProgressEmailStatusForUser({
+      userId: normalizedUserId,
+      status: "pending",
+      requestedAt,
+      completedAt: "",
+      reportDateKey,
+      lastError: "",
+    });
+
+  setTimeout(() => {
+    void sendDailyStudyProgressEmailForUser({
+      userId: normalizedUserId,
+      now,
+      timeZone,
+      reportDateOffsetDays: 0,
+      markAsSent: false,
+      reportRequestedAt: requestedAt,
+    })
+      .then(async (result) => {
+        await persistManualDailyProgressEmailStatusForUser({
+          userId: normalizedUserId,
+          status: "sent",
+          requestedAt,
+          completedAt: new Date().toISOString(),
+          reportDateKey: String(result?.reportDateKey || reportDateKey).trim(),
+          lastError: "",
+        });
+      })
+      .catch(async (error) => {
+        try {
+          await persistManualDailyProgressEmailStatusForUser({
+            userId: normalizedUserId,
+            status: "failed",
+            requestedAt,
+            completedAt: new Date().toISOString(),
+            reportDateKey,
+            lastError: trimText(error?.message || "Failed to send report."),
+          });
+        } catch (persistError) {
+          console.error(
+            `Failed to persist manual daily study progress email error for user ${normalizedUserId}`,
+            persistError,
+          );
+        }
+        console.error(
+          `Failed to send manual daily study progress email for user ${normalizedUserId}`,
+          error,
+        );
+      });
+  }, 0);
+
+  return {
+    queued: 1,
+    reportDateKey,
+    manualDailyProgressEmail,
+  };
 };

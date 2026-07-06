@@ -23,6 +23,22 @@ const normalizePlannerSettingsStringList = (value) =>
         .filter((entry, index, entries) => entries.indexOf(entry) === index)
     : [];
 
+const normalizeManualDailyProgressEmailStatus = (value = {}) => {
+  const nextValue =
+    value && typeof value === "object" ? toPlainObject(value) || {} : {};
+  const statusRaw = trimString(nextValue?.status).toLowerCase();
+  const status = ["pending", "sent", "failed"].includes(statusRaw)
+    ? statusRaw
+    : "";
+  return {
+    status,
+    requestedAt: trimString(nextValue?.requestedAt),
+    completedAt: trimString(nextValue?.completedAt),
+    reportDateKey: trimString(nextValue?.reportDateKey),
+    lastError: trimString(nextValue?.lastError),
+  };
+};
+
 const buildHalfHour12hOptions = () => {
   const options = [];
   for (let hour = 0; hour < 24; hour += 1) {
@@ -677,6 +693,9 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
   const dailyProgressEmailLastSentDate = trimString(
     normalizedSettings?.dailyProgressEmailLastSentDate,
   );
+  const manualDailyProgressEmail = normalizeManualDailyProgressEmailStatus(
+    normalizedSettings?.manualDailyProgressEmail,
+  );
   const rawMessageFriend =
     normalizedSettings?.messageFriend &&
     typeof normalizedSettings.messageFriend === "object"
@@ -742,6 +761,7 @@ const normalizeStudyOrganizerSettings = (settings = {}) => {
     voiceDictationEnabled,
     programCoursesComponentVisibilityToken,
     dailyProgressEmailLastSentDate,
+    manualDailyProgressEmail,
     logoFixedClock,
     fieldDefaults: normalizePlannerSettingsFieldDefaults(fieldDefaultsSource),
     messageFriend,
@@ -788,6 +808,13 @@ const getDefaultStudyOrganizerSettings = () => ({
   voiceDictationEnabled: false,
   programCoursesComponentVisibilityToken: "",
   dailyProgressEmailLastSentDate: "",
+  manualDailyProgressEmail: {
+    status: "",
+    requestedAt: "",
+    completedAt: "",
+    reportDateKey: "",
+    lastError: "",
+  },
   logoFixedClock: "9",
   fieldDefaults: buildEmptyPlannerFieldDefaults(),
   messageFriend: {
@@ -1077,6 +1104,17 @@ const PlannerPredictionToolEntrySchema = new Schema(
   { _id: false },
 );
 
+const PlannerManualDailyProgressEmailSchema = new Schema(
+  {
+    status: { type: String, trim: true, default: "" },
+    requestedAt: { type: String, trim: true, default: "" },
+    completedAt: { type: String, trim: true, default: "" },
+    reportDateKey: { type: String, trim: true, default: "" },
+    lastError: { type: String, trim: true, default: "" },
+  },
+  { _id: false },
+);
+
 const PlannerSettingsSchema = new Schema(
   {
     optionsSelects: { type: PlannerOptionsSelectsSchema, default: () => ({ independent: [], dependent: [] }) },
@@ -1086,6 +1124,16 @@ const PlannerSettingsSchema = new Schema(
     aiHelpersEnabled: { type: Boolean, default: false },
     programCoursesComponentVisibilityToken: { type: String, trim: true, default: "" },
     dailyProgressEmailLastSentDate: { type: String, trim: true, default: "" },
+    manualDailyProgressEmail: {
+      type: PlannerManualDailyProgressEmailSchema,
+      default: () => ({
+        status: "",
+        requestedAt: "",
+        completedAt: "",
+        reportDateKey: "",
+        lastError: "",
+      }),
+    },
     logoFixedClock: { type: String, trim: true, default: "9" },
     fieldDefaults: { type: [PlannerFieldDefaultSchema], default: [] },
     relationships: { type: [PlannerRelationshipSchema], default: [] },

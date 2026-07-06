@@ -24,7 +24,9 @@ import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
 import { setUserConnectionState } from "../helpers/connectionStatus.js";
 import { queueStudyStatusNotifications } from "../helpers/studyStatusEmail.js";
-import { sendDailyStudyProgressEmailForUser } from "../helpers/dailyStudyProgressEmail.js";
+import {
+  queueDailyStudyProgressEmailForUser,
+} from "../helpers/dailyStudyProgressEmail.js";
 import {
   findAiSettingsLean,
   buildUserMemoryLean,
@@ -7070,16 +7072,19 @@ UserRouter.post(
         targetUserId = requestedTargetUserId;
       }
 
-      const result = await sendDailyStudyProgressEmailForUser({
+      const result = await queueDailyStudyProgressEmailForUser({
         userId: targetUserId,
-        reportDateOffsetDays: 0,
-        markAsSent: false,
       });
 
-      return res.status(200).json({
-        message: "Today's study progress report was sent successfully.",
+      return res.status(202).json({
+        message: "Today's study progress report is waiting to be sent by Brevo.",
         reportDateKey: String(result?.reportDateKey || "").trim(),
         targetUserId,
+        manualDailyProgressEmail:
+          result?.manualDailyProgressEmail &&
+          typeof result.manualDailyProgressEmail === "object"
+            ? result.manualDailyProgressEmail
+            : null,
       });
     } catch (error) {
       const smtpErrorCode = String(
