@@ -9,6 +9,42 @@ const inFlightSweep = { active: false };
 const DEFAULT_RECIPIENT_USERNAME = "rudyhamame";
 
 const trimText = (value) => String(value ?? "").trim();
+const normalizeUserId = (value) => trimText(value);
+
+const getRelationshipEntries = (user = {}) => {
+  if (!user || typeof user !== "object") {
+    return [];
+  }
+  if (Array.isArray(user.connections) && user.connections.length > 0) {
+    return user.connections;
+  }
+  if (Array.isArray(user.friends) && user.friends.length > 0) {
+    return user.friends;
+  }
+  return [];
+};
+
+const getFriendIds = (user = {}) =>
+  Array.from(
+    new Set(
+      getRelationshipEntries(user)
+        .map((entry) => {
+          if (!entry) {
+            return "";
+          }
+          const candidate =
+            typeof entry === "object" && entry !== null
+              ? entry.id || entry.userID || entry.friendID || entry._id || entry
+              : entry;
+          const normalized =
+            typeof candidate === "object" && candidate !== null
+              ? candidate._id || candidate.id || candidate
+              : candidate;
+          return normalizeUserId(normalized);
+        })
+        .filter(Boolean),
+    ),
+  );
 
 const resolveTransportConfig = () => {
   const host = trimText(process.env.EMAIL_SMTP_HOST || process.env.SMTP_HOST);
@@ -142,20 +178,41 @@ const getRecipientUsername = () =>
       DEFAULT_RECIPIENT_USERNAME,
   ).toLowerCase();
 
-const resolveReportRecipientEmail = async () => {
+const resolveReportRecipientUser = async () => {
   const recipientUsername = getRecipientUsername();
   if (!recipientUsername) {
-    return "";
+    return null;
   }
-  const recipientUser = await UserModel.findOne({
+  return UserModel.findOne({
     $or: [
       { username: recipientUsername },
       { "auth.username": recipientUsername },
       { "identity.atSignup.username": recipientUsername },
       { "identity.personal.username": recipientUsername },
     ],
-  }).select("profile.email");
+  }).select("profile.email auth.username connections friends");
+};
+
+const resolveReportRecipientEmail = async () => {
+  const recipientUser = await resolveReportRecipientUser();
   return getEmail(recipientUser);
+};
+
+const shouldRunDailySweepNow = (now = new Date(), timeZone = "UTC") => {
+  const date = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const hour = Number(parts.find((entry) => entry.type === "hour")?.value || NaN);
+  const minute = Number(parts.find((entry) => entry.type === "minute")?.value || NaN);
+  return hour === 0 && Number.isFinite(minute) && minute >= 0 && minute < 5;
 };
 
 const buildDailyProgressReport = ({
@@ -405,9 +462,13 @@ const sendMail = async ({ to, subject, text }) => {
 export const runDailyStudyProgressEmailSweep = async ({
   now = new Date(),
   timeZone = trimText(process.env.DAILY_PROGRESS_EMAIL_TIMEZONE) || "UTC",
+  force = false,
 } = {}) => {
   if (inFlightSweep.active) {
     return { sent: 0, skipped: "in-flight" };
+  }
+  if (!force && !shouldRunDailySweepNow(now, timeZone)) {
+    return { sent: 0, skipped: "outside-midnight-window" };
   }
   inFlightSweep.active = true;
   try {
@@ -419,11 +480,18 @@ export const runDailyStudyProgressEmailSweep = async ({
     if (!transportBundle) {
       return { sent: 0, skipped: "missing-email-config" };
     }
-    const recipientEmail = await resolveReportRecipientEmail();
+    const recipientUser = await resolveReportRecipientUser();
+    const recipientEmail = getEmail(recipientUser);
     if (!recipientEmail) {
       return { sent: 0, skipped: "missing-report-recipient-email" };
     }
-    const users = await UserModel.find({}).select(
+    const recipientFriendIds = getFriendIds(recipientUser);
+    if (recipientFriendIds.length === 0) {
+      return { sent: 0, skipped: "no-recipient-friends" };
+    }
+    const users = await UserModel.find({
+      _id: { $in: recipientFriendIds },
+    }).select(
       "profile.firstname profile.lastname profile.email auth.username memory.MOI.studyPlanner",
     );
     let sent = 0;
