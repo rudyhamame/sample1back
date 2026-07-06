@@ -7021,14 +7021,31 @@ UserRouter.post(
   async function (req, res, next) {
     try {
       const userId = String(req.params.my_id || "").trim();
-      const result = await sendDailyStudyProgressEmailForUser({
-        userId,
-        reportDateOffsetDays: 0,
-        markAsSent: false,
-      });
-      return res.status(200).json({
-        message: "Today's study progress report was sent successfully.",
-        reportDateKey: result?.reportDateKey || "",
+      const reportDateKey = new Intl.DateTimeFormat("en-CA", {
+        timeZone:
+          String(process.env.DAILY_PROGRESS_EMAIL_TIMEZONE || "").trim() ||
+          "UTC",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+
+      setTimeout(() => {
+        void sendDailyStudyProgressEmailForUser({
+          userId,
+          reportDateOffsetDays: 0,
+          markAsSent: false,
+        }).catch((error) => {
+          console.error(
+            `Failed to send manual daily study progress email for user ${userId || "unknown"}`,
+            error,
+          );
+        });
+      }, 0);
+
+      return res.status(202).json({
+        message: "Today's study progress report was queued successfully.",
+        reportDateKey,
       });
     } catch (error) {
       return next(error);
