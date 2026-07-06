@@ -6,6 +6,7 @@ import {
 } from "../models/MOI/StudyPlanner/StudyOrganizer/settings.js";
 
 const inFlightSweep = { active: false };
+const DEFAULT_RECIPIENT_USERNAME = "rudyhamame";
 
 const trimText = (value) => String(value ?? "").trim();
 
@@ -131,6 +132,28 @@ const getDisplayName = (user = {}) => {
 };
 
 const getEmail = (user = {}) => trimText(user?.profile?.email);
+
+const getRecipientUsername = () =>
+  trimText(
+    process.env.DAILY_PROGRESS_EMAIL_RECIPIENT_USERNAME ||
+      DEFAULT_RECIPIENT_USERNAME,
+  ).toLowerCase();
+
+const resolveReportRecipientEmail = async () => {
+  const recipientUsername = getRecipientUsername();
+  if (!recipientUsername) {
+    return "";
+  }
+  const recipientUser = await UserModel.findOne({
+    $or: [
+      { username: recipientUsername },
+      { "auth.username": recipientUsername },
+      { "identity.atSignup.username": recipientUsername },
+      { "identity.personal.username": recipientUsername },
+    ],
+  }).select("profile.email");
+  return getEmail(recipientUser);
+};
 
 const buildDailyProgressReport = ({
   plannerRoot = {},
@@ -370,9 +393,13 @@ export const runDailyStudyProgressEmailSweep = async ({
     if (!transportBundle) {
       return { sent: 0, skipped: "missing-email-config" };
     }
-    const users = await UserModel.find({
-      "profile.email": { $exists: true, $ne: "" },
-    }).select("profile.firstname profile.lastname profile.email auth.username memory.MOI.studyPlanner");
+    const recipientEmail = await resolveReportRecipientEmail();
+    if (!recipientEmail) {
+      return { sent: 0, skipped: "missing-report-recipient-email" };
+    }
+    const users = await UserModel.find({}).select(
+      "profile.firstname profile.lastname profile.email auth.username memory.MOI.studyPlanner",
+    );
     let sent = 0;
     for (const user of users) {
       const plannerRoot = getPlannerRoot(user);
@@ -386,10 +413,6 @@ export const runDailyStudyProgressEmailSweep = async ({
       const settings = normalizeStudyOrganizerSettings(plannerRoot?.settings || {});
       const lastSentDate = trimText(settings?.dailyProgressEmailLastSentDate);
       if (lastSentDate === reportDateKey) {
-        continue;
-      }
-      const recipientEmail = getEmail(user);
-      if (!recipientEmail) {
         continue;
       }
       const groups = buildDailyProgressReport({
@@ -454,9 +477,11 @@ export const sendDailyStudyProgressEmailForUser = async ({
     throw new Error("User not found.");
   }
   const plannerRoot = getPlannerRoot(user);
-  const recipientEmail = getEmail(user);
+  const recipientEmail = await resolveReportRecipientEmail();
   if (!recipientEmail) {
-    throw new Error("User email is missing.");
+    throw new Error(
+      `Daily report recipient email is missing for admin ${getRecipientUsername() || DEFAULT_RECIPIENT_USERNAME}.`,
+    );
   }
   const reportDateKey = getRelativeDateKeyInTimeZone(
     reportDateOffsetDays,
