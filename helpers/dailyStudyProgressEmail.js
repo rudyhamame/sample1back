@@ -68,6 +68,9 @@ const getTransporter = () => {
     port: transportConfig.port,
     secure: transportConfig.secure,
     auth: transportConfig.auth,
+    connectionTimeout: 10 * 1000,
+    greetingTimeout: 10 * 1000,
+    socketTimeout: 20 * 1000,
   });
   return { transporter: cachedTransport, transportConfig };
 };
@@ -367,13 +370,36 @@ const sendMail = async ({ to, subject, text }) => {
     return { sent: false, skipped: "missing-email-config" };
   }
   const { transporter, transportConfig } = transportBundle;
-  await transporter.sendMail({
+  const primaryMessage = {
     from: transportConfig.fromAddress,
     to,
     subject,
     text,
-  });
-  return { sent: true };
+  };
+
+  try {
+    await transporter.sendMail(primaryMessage);
+    return { sent: true, sender: "configured-from-address" };
+  } catch (primaryError) {
+    const fallbackMessage = {
+      from: {
+        name: "MCTOSH",
+        address: transportConfig.auth.user,
+      },
+      replyTo: transportConfig.fromAddress,
+      to,
+      subject,
+      text,
+    };
+
+    try {
+      await transporter.sendMail(fallbackMessage);
+      return { sent: true, sender: "smtp-auth-user" };
+    } catch (fallbackError) {
+      fallbackError.cause = primaryError;
+      throw fallbackError;
+    }
+  }
 };
 
 export const runDailyStudyProgressEmailSweep = async ({

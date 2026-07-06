@@ -7020,32 +7020,66 @@ UserRouter.post(
   requireSelfParam("my_id"),
   async function (req, res, next) {
     try {
-      const userId = String(req.params.my_id || "").trim();
-      const reportDateKey = new Intl.DateTimeFormat("en-CA", {
-        timeZone:
-          String(process.env.DAILY_PROGRESS_EMAIL_TIMEZONE || "").trim() ||
-          "UTC",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(new Date());
+      const requesterUserId = String(req.params.my_id || "").trim();
+      const requestedTargetUserId = String(req.body?.targetUserId || "").trim();
+      let targetUserId = requesterUserId;
 
-      setTimeout(() => {
-        void sendDailyStudyProgressEmailForUser({
-          userId,
-          reportDateOffsetDays: 0,
-          markAsSent: false,
-        }).catch((error) => {
-          console.error(
-            `Failed to send manual daily study progress email for user ${userId || "unknown"}`,
-            error,
-          );
-        });
-      }, 0);
+      if (
+        requestedTargetUserId &&
+        requestedTargetUserId !== requesterUserId
+      ) {
+        const requester = await UserModel.findById(requesterUserId).select(
+          "auth.username connections friends",
+        );
+        if (!requester?._id) {
+          return res.status(404).json({ message: "User not found." });
+        }
+        if (String(requester?.auth?.username || "").trim().toLowerCase() !== "rudyhamame") {
+          return res.status(403).json({
+            message: "You are not allowed to send reports for another user.",
+          });
+        }
 
-      return res.status(202).json({
-        message: "Today's study progress report was queued successfully.",
-        reportDateKey,
+        const relatedEntries = [
+          ...(Array.isArray(requester?.connections) ? requester.connections : []),
+          ...(Array.isArray(requester?.friends) ? requester.friends : []),
+        ];
+        const allowedTargetIds = new Set(
+          relatedEntries
+            .map((entry) =>
+              String(
+                entry?._id ||
+                  entry?.id ||
+                  entry?.userID ||
+                  entry?.friendID ||
+                  entry?.user?._id ||
+                  entry?.user?.id ||
+                  entry ||
+                  "",
+              ).trim(),
+            )
+            .filter(Boolean),
+        );
+
+        if (!allowedTargetIds.has(requestedTargetUserId)) {
+          return res.status(403).json({
+            message: "Selected report target is not allowed.",
+          });
+        }
+
+        targetUserId = requestedTargetUserId;
+      }
+
+      const result = await sendDailyStudyProgressEmailForUser({
+        userId: targetUserId,
+        reportDateOffsetDays: 0,
+        markAsSent: false,
+      });
+
+      return res.status(200).json({
+        message: "Today's study progress report was sent successfully.",
+        reportDateKey: String(result?.reportDateKey || "").trim(),
+        targetUserId,
       });
     } catch (error) {
       return next(error);
