@@ -1,19 +1,12 @@
-import nodemailer from "nodemailer";
 import UserModel from "../compat/UserModel.js";
+import { sendBrevoEmail } from "./sendBrevoEmail.js";
 
 const sentAtByRecipientKey = new Map();
 const inFlightRecipientKeys = new Set();
 const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
 const DEFAULT_RECIPIENT_USERNAME = "rudyhamame";
-const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 30 * 1000;
-const DEFAULT_SMTP_GREETING_TIMEOUT_MS = 30 * 1000;
-const DEFAULT_SMTP_SOCKET_TIMEOUT_MS = 60 * 1000;
 
 const trimText = (value) => String(value ?? "").trim();
-const getTimeoutMs = (value, fallback) => {
-  const normalized = Number(value);
-  return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback;
-};
 
 const normalizeUserId = (value) => trimText(value);
 
@@ -91,102 +84,19 @@ const resolveCooldownMs = () => {
     : DEFAULT_COOLDOWN_MS;
 };
 
-const resolveTransportConfig = () => {
-  const host = trimText(process.env.EMAIL_SMTP_HOST || process.env.SMTP_HOST);
-  const port = Number(process.env.EMAIL_SMTP_PORT || process.env.SMTP_PORT || 587);
-  const username = trimText(process.env.EMAIL_SMTP_USER || process.env.SMTP_USER);
-  const password = trimText(process.env.EMAIL_SMTP_PASS || process.env.SMTP_PASS);
-  const fromAddress = trimText(
-    process.env.EMAIL_FROM_ADDRESS ||
-      process.env.SMTP_FROM ||
-      process.env.EMAIL_SMTP_USER ||
-      process.env.SMTP_USER,
-  );
-
-  if (!host || !username || !password || !fromAddress) {
-    return null;
-  }
-
-  const secureEnv = String(
-    process.env.EMAIL_SMTP_SECURE ?? process.env.SMTP_SECURE ?? "",
-  )
-    .trim()
-    .toLowerCase();
-  const secure =
-    secureEnv === "true"
-      ? true
-      : secureEnv === "false"
-        ? false
-        : port === 465;
-
-  return {
-    host,
-    port,
-    secure,
-    auth: {
-      user: username,
-      pass: password,
-    },
-    fromAddress,
-  };
-};
-
-let cachedTransport = null;
-let cachedTransportSignature = "";
-
-const getTransporter = () => {
-  const transportConfig = resolveTransportConfig();
-  if (!transportConfig) {
-    return null;
-  }
-
-  const signature = JSON.stringify({
-    host: transportConfig.host,
-    port: transportConfig.port,
-    secure: transportConfig.secure,
-    user: transportConfig.auth.user,
-    fromAddress: transportConfig.fromAddress,
-  });
-
-  if (cachedTransport && cachedTransportSignature === signature) {
-    return cachedTransport;
-  }
-
-  cachedTransportSignature = signature;
-  cachedTransport = nodemailer.createTransport({
-    host: transportConfig.host,
-    port: transportConfig.port,
-    secure: transportConfig.secure,
-    auth: transportConfig.auth,
-    connectionTimeout: getTimeoutMs(
-      process.env.EMAIL_SMTP_CONNECTION_TIMEOUT_MS ||
-        process.env.SMTP_CONNECTION_TIMEOUT_MS,
-      DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
-    ),
-    greetingTimeout: getTimeoutMs(
-      process.env.EMAIL_SMTP_GREETING_TIMEOUT_MS ||
-        process.env.SMTP_GREETING_TIMEOUT_MS,
-      DEFAULT_SMTP_GREETING_TIMEOUT_MS,
-    ),
-    socketTimeout: getTimeoutMs(
-      process.env.EMAIL_SMTP_SOCKET_TIMEOUT_MS ||
-        process.env.SMTP_SOCKET_TIMEOUT_MS,
-      DEFAULT_SMTP_SOCKET_TIMEOUT_MS,
-    ),
-  });
-
-  return cachedTransport;
-};
+const hasBrevoEmailConfig = () =>
+  trimText(
+    process.env.BREVO_API_KEY ||
+      process.env.EMAIL_BREVO_API_KEY ||
+      process.env.BREVO_TRANSACTIONAL_API_KEY,
+  ) !== "";
 
 const sendStudyStatusMail = async ({
-  transporter,
-  transportConfig,
   recipientEmail,
   subjectName,
   sentAtIso,
 }) => {
-  const primaryMessage = {
-    from: transportConfig.fromAddress,
+  return sendBrevoEmail({
     to: recipientEmail,
     subject: `${subjectName} is studying now`,
     text: [
@@ -195,36 +105,8 @@ const sendStudyStatusMail = async ({
       `This is an automated update from NogaPlanner.`,
       `Time: ${sentAtIso}`,
     ].join("\n"),
-  };
-
-  try {
-    await transporter.sendMail(primaryMessage);
-    return { sent: true, sender: "configured-from-address" };
-  } catch (primaryError) {
-    const fallbackMessage = {
-      from: {
-        name: "MCTOSH",
-        address: transportConfig.auth.user,
-      },
-      replyTo: transportConfig.fromAddress,
-      to: recipientEmail,
-      subject: `${subjectName} is studying now`,
-      text: [
-        `${subjectName} is studying now.`,
-        "",
-        `This is an automated update from NogaPlanner.`,
-        `Time: ${sentAtIso}`,
-      ].join("\n"),
-    };
-
-    try {
-      await transporter.sendMail(fallbackMessage);
-      return { sent: true, sender: "smtp-auth-user" };
-    } catch (fallbackError) {
-      fallbackError.cause = primaryError;
-      throw fallbackError;
-    }
-  }
+    replyTo: process.env.EMAIL_FROM_ADDRESS || process.env.SMTP_FROM || "",
+  });
 };
 
 export const queueStudyStatusNotifications = async ({
@@ -249,8 +131,7 @@ export const queueStudyStatusNotifications = async ({
     return { sent: 0, skipped: "missing-subject-user" };
   }
 
-  const transporter = getTransporter();
-  if (!transporter) {
+  if (!hasBrevoEmailConfig()) {
     return { sent: 0, skipped: "missing-email-config" };
   }
 
@@ -259,7 +140,6 @@ export const queueStudyStatusNotifications = async ({
     return { sent: 0, skipped: "missing-recipient-username" };
   }
 
-  const fromAddress = resolveTransportConfig()?.fromAddress || "";
   const recipientUser = await UserModel.findOne({
     "auth.username": recipientUsername,
   })
@@ -299,11 +179,6 @@ export const queueStudyStatusNotifications = async ({
   inFlightRecipientKeys.add(recipientKey);
   try {
     const sendResult = await sendStudyStatusMail({
-      transporter,
-      transportConfig: {
-        ...resolveTransportConfig(),
-        fromAddress,
-      },
       recipientEmail,
       subjectName,
       sentAtIso,

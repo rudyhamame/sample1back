@@ -1,5 +1,5 @@
-import nodemailer from "nodemailer";
 import UserModel from "../compat/UserModel.js";
+import { sendBrevoEmail } from "./sendBrevoEmail.js";
 import {
   normalizeStudyOrganizerSettings,
   serializeStudyOrganizerSettingsForStorage,
@@ -46,86 +46,12 @@ const getFriendIds = (user = {}) =>
     ),
   );
 
-const resolveTransportConfig = () => {
-  const host = trimText(process.env.EMAIL_SMTP_HOST || process.env.SMTP_HOST);
-  const port = Number(process.env.EMAIL_SMTP_PORT || process.env.SMTP_PORT || 587);
-  const username = trimText(process.env.EMAIL_SMTP_USER || process.env.SMTP_USER);
-  const password = trimText(process.env.EMAIL_SMTP_PASS || process.env.SMTP_PASS);
-  const fromAddress = trimText(
-    process.env.EMAIL_FROM_ADDRESS ||
-      process.env.SMTP_FROM ||
-      process.env.EMAIL_SMTP_USER ||
-      process.env.SMTP_USER,
-  );
-  if (!host || !username || !password || !fromAddress) {
-    return null;
-  }
-  const secureEnv = String(
-    process.env.EMAIL_SMTP_SECURE ?? process.env.SMTP_SECURE ?? "",
-  )
-    .trim()
-    .toLowerCase();
-  const secure =
-    secureEnv === "true"
-      ? true
-      : secureEnv === "false"
-        ? false
-        : port === 465;
-  return {
-    host,
-    port,
-    secure,
-    auth: { user: username, pass: password },
-    fromAddress,
-  };
-};
-
-let cachedTransport = null;
-let cachedTransportSignature = "";
-const resetTransporterCache = () => {
-  cachedTransport = null;
-  cachedTransportSignature = "";
-};
-const isRetryableSmtpError = (error) => {
-  const message = trimText(error?.message).toLowerCase();
-  const code = trimText(error?.code).toUpperCase();
-  return (
-    code === "ETIMEDOUT" ||
-    code === "ESOCKET" ||
-    message.includes("connection timeout") ||
-    message.includes("greeting never received") ||
-    message.includes("timeout")
-  );
-};
-const wait = (ms) =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
-const getTransporter = () => {
-  const transportConfig = resolveTransportConfig();
-  if (!transportConfig) {
-    return null;
-  }
-  const signature = JSON.stringify({
-    host: transportConfig.host,
-    port: transportConfig.port,
-    secure: transportConfig.secure,
-    user: transportConfig.auth.user,
-    fromAddress: transportConfig.fromAddress,
-  });
-  if (cachedTransport && cachedTransportSignature === signature) {
-    return { transporter: cachedTransport, transportConfig };
-  }
-  cachedTransportSignature = signature;
-  cachedTransport = nodemailer.createTransport({
-    host: transportConfig.host,
-    port: transportConfig.port,
-    secure: transportConfig.secure,
-    auth: transportConfig.auth,
-  });
-  return { transporter: cachedTransport, transportConfig };
-};
+const hasBrevoEmailConfig = () =>
+  trimText(
+    process.env.BREVO_API_KEY ||
+      process.env.EMAIL_BREVO_API_KEY ||
+      process.env.BREVO_TRANSACTIONAL_API_KEY,
+  ) !== "";
 
 const getPlannerRoot = (user = {}) => {
   const directPlanner =
@@ -507,56 +433,12 @@ const buildReportText = ({
 };
 
 const sendMail = async ({ to, subject, text }) => {
-  const transportBundle = getTransporter();
-  if (!transportBundle) {
-    return { sent: false, skipped: "missing-email-config" };
-  }
-  const buildPrimaryMessage = (transportConfig) => ({
-    from: transportConfig.fromAddress,
+  return sendBrevoEmail({
     to,
     subject,
     text,
+    replyTo: process.env.EMAIL_FROM_ADDRESS || process.env.SMTP_FROM || "",
   });
-  const buildFallbackMessage = (transportConfig) => ({
-    from: {
-      name: "MCTOSH",
-      address: transportConfig.auth.user,
-    },
-    replyTo: transportConfig.fromAddress,
-    to,
-    subject,
-    text,
-  });
-  const sendWithBundle = async (bundle) => {
-    const { transporter, transportConfig } = bundle;
-    try {
-      await transporter.sendMail(buildPrimaryMessage(transportConfig));
-      return { sent: true, sender: "configured-from-address" };
-    } catch (primaryError) {
-      try {
-        await transporter.sendMail(buildFallbackMessage(transportConfig));
-        return { sent: true, sender: "smtp-auth-user" };
-      } catch (fallbackError) {
-        fallbackError.cause = primaryError;
-        throw fallbackError;
-      }
-    }
-  };
-
-  try {
-    return await sendWithBundle(transportBundle);
-  } catch (error) {
-    if (!isRetryableSmtpError(error) && !isRetryableSmtpError(error?.cause)) {
-      throw error;
-    }
-    resetTransporterCache();
-    await wait(1500);
-    const retryBundle = getTransporter();
-    if (!retryBundle) {
-      throw error;
-    }
-    return sendWithBundle(retryBundle);
-  }
 };
 
 export const runDailyStudyProgressEmailSweep = async ({
@@ -576,8 +458,7 @@ export const runDailyStudyProgressEmailSweep = async ({
     if (!reportDateKey) {
       return { sent: 0, skipped: "invalid-report-date" };
     }
-    const transportBundle = getTransporter();
-    if (!transportBundle) {
+    if (!hasBrevoEmailConfig()) {
       return { sent: 0, skipped: "missing-email-config" };
     }
     const recipientUser = await resolveReportRecipientUser();
@@ -663,8 +544,7 @@ export const sendDailyStudyProgressEmailForUser = async ({
   if (!normalizedUserId) {
     throw new Error("User ID is required.");
   }
-  const transportBundle = getTransporter();
-  if (!transportBundle) {
+  if (!hasBrevoEmailConfig()) {
     throw new Error("Missing email configuration.");
   }
   const user = await UserModel.findById(normalizedUserId).select(
