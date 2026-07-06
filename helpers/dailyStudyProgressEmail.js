@@ -82,6 +82,25 @@ const resolveTransportConfig = () => {
 
 let cachedTransport = null;
 let cachedTransportSignature = "";
+const resetTransporterCache = () => {
+  cachedTransport = null;
+  cachedTransportSignature = "";
+};
+const isRetryableSmtpError = (error) => {
+  const message = trimText(error?.message).toLowerCase();
+  const code = trimText(error?.code).toUpperCase();
+  return (
+    code === "ETIMEDOUT" ||
+    code === "ESOCKET" ||
+    message.includes("connection timeout") ||
+    message.includes("greeting never received") ||
+    message.includes("timeout")
+  );
+};
+const wait = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 const getTransporter = () => {
   const transportConfig = resolveTransportConfig();
@@ -492,36 +511,51 @@ const sendMail = async ({ to, subject, text }) => {
   if (!transportBundle) {
     return { sent: false, skipped: "missing-email-config" };
   }
-  const { transporter, transportConfig } = transportBundle;
-  const primaryMessage = {
+  const buildPrimaryMessage = (transportConfig) => ({
     from: transportConfig.fromAddress,
     to,
     subject,
     text,
+  });
+  const buildFallbackMessage = (transportConfig) => ({
+    from: {
+      name: "MCTOSH",
+      address: transportConfig.auth.user,
+    },
+    replyTo: transportConfig.fromAddress,
+    to,
+    subject,
+    text,
+  });
+  const sendWithBundle = async (bundle) => {
+    const { transporter, transportConfig } = bundle;
+    try {
+      await transporter.sendMail(buildPrimaryMessage(transportConfig));
+      return { sent: true, sender: "configured-from-address" };
+    } catch (primaryError) {
+      try {
+        await transporter.sendMail(buildFallbackMessage(transportConfig));
+        return { sent: true, sender: "smtp-auth-user" };
+      } catch (fallbackError) {
+        fallbackError.cause = primaryError;
+        throw fallbackError;
+      }
+    }
   };
 
   try {
-    await transporter.sendMail(primaryMessage);
-    return { sent: true, sender: "configured-from-address" };
-  } catch (primaryError) {
-    const fallbackMessage = {
-      from: {
-        name: "MCTOSH",
-        address: transportConfig.auth.user,
-      },
-      replyTo: transportConfig.fromAddress,
-      to,
-      subject,
-      text,
-    };
-
-    try {
-      await transporter.sendMail(fallbackMessage);
-      return { sent: true, sender: "smtp-auth-user" };
-    } catch (fallbackError) {
-      fallbackError.cause = primaryError;
-      throw fallbackError;
+    return await sendWithBundle(transportBundle);
+  } catch (error) {
+    if (!isRetryableSmtpError(error) && !isRetryableSmtpError(error?.cause)) {
+      throw error;
     }
+    resetTransporterCache();
+    await wait(1500);
+    const retryBundle = getTransporter();
+    if (!retryBundle) {
+      throw error;
+    }
+    return sendWithBundle(retryBundle);
   }
 };
 
