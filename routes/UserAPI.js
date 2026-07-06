@@ -7082,6 +7082,24 @@ UserRouter.post(
         targetUserId,
       });
     } catch (error) {
+      const smtpErrorCode = String(
+        error?.cause?.code || error?.code || "",
+      ).trim();
+      const isTimeoutLike = ["ETIMEDOUT", "ESOCKET", "ECONNECTION"].includes(
+        smtpErrorCode,
+      );
+      console.error(
+        "Failed to send daily study progress email for user",
+        req.params.my_id,
+        { code: smtpErrorCode || undefined, command: error?.command },
+        error,
+      );
+      if (isTimeoutLike) {
+        return res.status(504).json({
+          message:
+            "Timed out reaching the email server. Please try again shortly.",
+        });
+      }
       return next(error);
     }
   },
