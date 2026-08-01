@@ -23,10 +23,6 @@ import { AccessToken } from "livekit-server-sdk";
 import geoip from "geoip-lite";
 import { emitUserRefresh } from "../helpers/realtime.js";
 import { setUserConnectionState } from "../helpers/connectionStatus.js";
-import { queueStudyStatusNotifications } from "../helpers/studyStatusEmail.js";
-import {
-  queueDailyStudyProgressEmailForUser,
-} from "../helpers/dailyStudyProgressEmail.js";
 import {
   findAiSettingsLean,
   buildUserMemoryLean,
@@ -5700,19 +5696,6 @@ UserRouter.put("/isOnline/:id", function (req, res, next) {
         targetUserId: String(req.params.id),
       });
 
-      if (requestedStatusValue === "studying") {
-        void queueStudyStatusNotifications({
-          subjectUser: user,
-          previousStatusValue,
-          nextStatusValue: requestedStatusValue,
-          at: new Date(),
-        }).catch((error) => {
-          console.error(
-            "[presence] failed to send studying email notifications:",
-            error?.message || error,
-          );
-        });
-      }
       res.status(201).json(user);
     })
     .catch(next);
@@ -5755,19 +5738,6 @@ UserRouter.put("/heartbeat/:id", function (req, res, next) {
         targetUserId: String(user._id),
       });
 
-      if (requestedStatusValue === "studying") {
-        void queueStudyStatusNotifications({
-          subjectUser: user,
-          previousStatusValue,
-          nextStatusValue: requestedStatusValue,
-          at: new Date(),
-        }).catch((error) => {
-          console.error(
-            "[presence] failed to send studying email notifications:",
-            error?.message || error,
-          );
-        });
-      }
       return res.status(200).json({
         ok: true,
         userId: String(user._id),
@@ -7011,100 +6981,6 @@ UserRouter.get(
         : [];
       return res.status(200).json({ events });
     } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-UserRouter.post(
-  "/studyPlanner/daily-progress-email/:my_id",
-  checkAuth,
-  requireSelfParam("my_id"),
-  async function (req, res, next) {
-    try {
-      const requesterUserId = String(req.params.my_id || "").trim();
-      const requestedTargetUserId = String(req.body?.targetUserId || "").trim();
-      let targetUserId = requesterUserId;
-
-      if (
-        requestedTargetUserId &&
-        requestedTargetUserId !== requesterUserId
-      ) {
-        const requester = await UserModel.findById(requesterUserId).select(
-          "auth.username connections friends",
-        );
-        if (!requester?._id) {
-          return res.status(404).json({ message: "User not found." });
-        }
-        if (String(requester?.auth?.username || "").trim().toLowerCase() !== "rudyhamame") {
-          return res.status(403).json({
-            message: "You are not allowed to send reports for another user.",
-          });
-        }
-
-        const relatedEntries = [
-          ...(Array.isArray(requester?.connections) ? requester.connections : []),
-          ...(Array.isArray(requester?.friends) ? requester.friends : []),
-        ];
-        const allowedTargetIds = new Set(
-          relatedEntries
-            .map((entry) =>
-              String(
-                entry?._id ||
-                  entry?.id ||
-                  entry?.userID ||
-                  entry?.friendID ||
-                  entry?.user?._id ||
-                  entry?.user?.id ||
-                  entry ||
-                  "",
-              ).trim(),
-            )
-            .filter(Boolean),
-        );
-
-        if (!allowedTargetIds.has(requestedTargetUserId)) {
-          return res.status(403).json({
-            message: "Selected report target is not allowed.",
-          });
-        }
-
-        targetUserId = requestedTargetUserId;
-      }
-
-      const result = await queueDailyStudyProgressEmailForUser({
-        userId: targetUserId,
-      });
-
-      return res.status(202).json({
-        message: "Today's study progress report is waiting to be sent by Brevo.",
-        reportDateKey: String(result?.reportDateKey || "").trim(),
-        targetUserId,
-        manualDailyProgressEmail:
-          result?.manualDailyProgressEmail &&
-          typeof result.manualDailyProgressEmail === "object"
-            ? result.manualDailyProgressEmail
-            : null,
-      });
-    } catch (error) {
-      const smtpErrorCode = String(
-        error?.cause?.code || error?.code || "",
-      ).trim();
-      const isTimeoutLike = ["ETIMEDOUT", "ESOCKET", "ECONNECTION"].includes(
-        smtpErrorCode,
-      );
-      console.error(
-        "Failed to send daily study progress email for user",
-        req.params.my_id,
-        { code: smtpErrorCode || undefined, command: error?.command },
-        error,
-      );
-      if (isTimeoutLike) {
-        return res.status(504).json({
-          message:
-            "Timed out reaching the email server. Please try again shortly.",
-        });
-      }
       return next(error);
     }
   },

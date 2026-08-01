@@ -20,7 +20,6 @@ import JamendoAPI from "./routes/JamendoAPI.js";
 // import VideoAPI from "./routes/VideoAPI.js";
 import UserModel from "./compat/UserModel.js";
 import { setUserConnectionState } from "./helpers/connectionStatus.js";
-import { runDailyStudyProgressEmailSweep } from "./helpers/dailyStudyProgressEmail.js";
 import { emitChatRead, emitUserRefresh } from "./helpers/realtime.js";
 import { getUserAndFriendIds } from "./routes/user/helpers/friends.js";
 
@@ -157,8 +156,6 @@ const activeSocketIdsByUser = new Map();
 const getUserRoom = (userId) => `user:${userId}`;
 const USER_STALE_OFFLINE_AFTER_MS = 90 * 1000;
 const USER_STALE_CHECK_INTERVAL_MS = 30 * 1000;
-const DAILY_STUDY_PROGRESS_EMAIL_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
-
 const getCloudinaryHealthConfig = () => {
   const envCloudName = String(process.env.CLOUDINARY_CLOUD_NAME || "").trim();
   const envApiKey = String(process.env.CLOUDINARY_API_KEY || "").trim();
@@ -986,9 +983,6 @@ app.use(function (error, req, res, next) {
 
 server.listen(process.env.PORT || 4000, function () {
   startTelegramSyncWorker();
-  runDailyStudyProgressEmailSweep().catch((error) => {
-    console.error("Failed to run startup daily study progress email sweep", error);
-  });
   console.log("now listening on port 4000");
 });
 
@@ -1030,11 +1024,3 @@ setInterval(async () => {
     console.error("Failed to reconcile stale online users", error);
   }
 }, USER_STALE_CHECK_INTERVAL_MS);
-
-setInterval(async () => {
-  try {
-    await runDailyStudyProgressEmailSweep();
-  } catch (error) {
-    console.error("Failed to send daily study progress emails", error);
-  }
-}, DAILY_STUDY_PROGRESS_EMAIL_SWEEP_INTERVAL_MS);
