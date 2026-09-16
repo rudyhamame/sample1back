@@ -981,7 +981,7 @@ app.use(function (error, req, res, next) {
   });
 });
 
-server.listen(process.env.PORT || 4000, '127.0.0.1', function () {
+server.listen(process.env.PORT || 4000, '0.0.0.0', function () {
   startTelegramSyncWorker();
   console.log("now listening on port 4000");
 });
